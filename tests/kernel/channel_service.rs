@@ -30,6 +30,7 @@ pub(super) enum Error {
     Group,
     Process(ProcessError),
     Service(ChannelServiceError),
+    Sleep(crate::kernel::task::SleepError),
     State(usize),
 }
 
@@ -41,6 +42,7 @@ impl core::fmt::Debug for Error {
             Self::Group => formatter.write_str("Group"),
             Self::Process(error) => formatter.debug_tuple("Process").field(error).finish(),
             Self::Service(error) => formatter.debug_tuple("Service").field(error).finish(),
+            Self::Sleep(error) => formatter.debug_tuple("Sleep").field(error).finish(),
             Self::State(stage) => formatter.debug_tuple("State").field(stage).finish(),
         }
     }
@@ -55,6 +57,12 @@ impl From<ProcessError> for Error {
 impl From<ChannelServiceError> for Error {
     fn from(error: ChannelServiceError) -> Self {
         Self::Service(error)
+    }
+}
+
+impl From<crate::kernel::task::SleepError> for Error {
+    fn from(error: crate::kernel::task::SleepError) -> Self {
+        Self::Sleep(error)
     }
 }
 
@@ -91,16 +99,13 @@ pub(super) fn run() -> Result<(), Error> {
         if process.snapshot().phase != ProcessPhase::Retiring {
             return Err(Error::State(91));
         }
-        if let Some(cpu) = retry_cpu {
-            for _ in 0..100 {
-                if crate::kernel::reaper::retry_observed_on_for_test(cpu) {
-                    break;
-                }
-                crate::kernel::task::sleep_ms(1).map_err(|_| Error::Construction)?;
-            }
-            if !crate::kernel::reaper::retry_observed_on_for_test(cpu) {
-                return Err(Error::State(95));
-            }
+        if let Some(cpu) = retry_cpu
+            && !crate::kernel::task::wait_for_test_progress(
+                crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
+                || Ok::<_, Error>(crate::kernel::reaper::retry_observed_on_for_test(cpu)),
+            )?
+        {
+            return Err(Error::State(95));
         }
         drop(retained_space);
         retire_process(&process)
@@ -653,11 +658,12 @@ fn scratch_image(offset: u64, length: u64) -> Result<UserSlice, Error> {
 
 fn retire_process(process: &Process) -> Result<(), Error> {
     // Observation only: production kreaper must own and complete retirement.
-    for _ in 0..1000 {
-        if process.snapshot().phase == ProcessPhase::Retired {
-            return Ok(());
-        }
-        crate::kernel::task::sleep_ms(1).map_err(|_| Error::Construction)?;
+    if crate::kernel::task::wait_for_test_progress(
+        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
+        || Ok::<_, Error>(process.snapshot().phase == ProcessPhase::Retired),
+    )? {
+        Ok(())
+    } else {
+        Err(Error::Construction)
     }
-    Err(Error::Construction)
 }

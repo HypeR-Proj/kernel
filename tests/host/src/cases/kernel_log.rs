@@ -433,43 +433,24 @@ fn byte_ring_transaction_prefix_survives_storage_wraparound() {
 }
 
 #[test]
-fn byte_ring_prepares_one_newline_delimited_transaction() {
-    let mut queue = ByteRing::<8>::new();
-    for byte in *b"a\nb\n" {
-        assert!(queue.push(byte));
-    }
-
-    let mut observed = [0; 8];
-    let count = queue.peek_through(b'\n', &mut observed);
-    assert_eq!(&observed[..count], b"a\n");
-    assert_eq!(queue.front(), Some(b'a'));
-    assert!(queue.discard_front(count));
-
-    let count = queue.peek_through(b'\n', &mut observed);
-    assert_eq!(&observed[..count], b"b\n");
-}
-
-#[test]
-fn byte_ring_delimited_transaction_is_bounded_and_wrap_safe() {
+fn byte_ring_treats_console_control_bytes_as_opaque_data() {
     let mut queue = ByteRing::<6>::new();
     assert!(queue.push(b'x'));
     assert!(queue.push(b'y'));
     assert_eq!(queue.pop_front(), Some(b'x'));
     assert_eq!(queue.pop_front(), Some(b'y'));
-    for byte in *b"abc\nde" {
+    for byte in *b"a\n\0\rde" {
         assert!(queue.push(byte));
     }
 
     let mut short = [0; 3];
-    assert_eq!(queue.peek_through(b'\n', &mut short), short.len());
-    assert_eq!(&short, b"abc");
+    assert_eq!(queue.peek_into(&mut short), short.len());
+    assert_eq!(&short, b"a\n\0");
     assert_eq!(queue.front(), Some(b'a'));
 
-    let mut line = [0; 6];
-    let count = queue.peek_through(b'\n', &mut line);
-    assert_eq!(&line[..count], b"abc\n");
-    assert!(queue.discard_front(count));
-    assert_eq!(queue.front(), Some(b'd'));
+    let mut complete = [0; 6];
+    assert_eq!(queue.peek_into(&mut complete), complete.len());
+    assert_eq!(&complete, b"a\n\0\rde");
 }
 
 #[test]

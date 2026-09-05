@@ -53,6 +53,7 @@ static QUEUED_ARBITRATION: QueuedArbitration = QueuedArbitration::new();
 pub(super) enum Error {
     Quiescence(super::support::QuiescenceError),
     Scheduler(scheduler::Error),
+    Sleep(crate::kernel::task::SleepError),
     Synchronization(crate::kernel::sync::Error),
     TimedWait(crate::kernel::task::TimedWaitError),
     StateMismatch(usize),
@@ -61,6 +62,12 @@ pub(super) enum Error {
 impl From<scheduler::Error> for Error {
     fn from(error: scheduler::Error) -> Self {
         Self::Scheduler(error)
+    }
+}
+
+impl From<crate::kernel::task::SleepError> for Error {
+    fn from(error: crate::kernel::task::SleepError) -> Self {
+        Self::Sleep(error)
     }
 }
 
@@ -183,15 +190,14 @@ fn exercise_timed_wait_paths() -> Result<(), Error> {
 }
 
 fn wait_for_timed_waiter() -> Result<(), Error> {
-    const MAX_PROGRESS_PASSES: usize = 4_096;
-
-    for _ in 0..MAX_PROGRESS_PASSES {
-        if TIMED_QUEUE.len()? == 1 {
-            return Ok(());
-        }
-        scheduler::yield_now()?;
+    if crate::kernel::task::wait_for_test_progress(
+        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
+        || Ok::<_, Error>(TIMED_QUEUE.len()? == 1),
+    )? {
+        Ok(())
+    } else {
+        Err(Error::StateMismatch(19))
     }
-    Err(Error::StateMismatch(19))
 }
 
 extern "C" fn timed_wait_worker(_argument: usize) {
@@ -245,7 +251,7 @@ fn exercise_unqueued_arbitration() -> Result<(), Error> {
 /// round proves that the first ticket cannot cancel a later wait on the same
 /// Thread and queue. Selecting CPU 1 when available also exercises remote
 /// ready publication; a one-CPU system executes the identical protocol after a
-/// local yield.
+/// bounded scheduler-aware wait.
 fn exercise_queued_arbitration_and_stale_ticket() -> Result<(), Error> {
     let state = &QUEUED_ARBITRATION;
     state.outcomes.store(0, Ordering::Release);
@@ -312,19 +318,25 @@ fn exercise_queued_arbitration_and_stale_ticket() -> Result<(), Error> {
 }
 
 fn wait_for_published_ticket(previous: Option<WaitTicket>) -> Result<WaitTicket, Error> {
-    const MAX_PROGRESS_PASSES: usize = 4_096;
-
-    for _ in 0..MAX_PROGRESS_PASSES {
-        if let Some(ticket) = QUEUED_ARBITRATION
-            .state
-            .with(|state| state.published_ticket)
-            && Some(ticket) != previous
-        {
-            return Ok(ticket);
-        }
-        scheduler::yield_now()?;
+    let mut observed = None;
+    let published = crate::kernel::task::wait_for_test_progress(
+        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
+        || {
+            let ticket = QUEUED_ARBITRATION
+                .state
+                .with(|state| state.published_ticket);
+            if ticket.is_some() && ticket != previous {
+                observed = ticket;
+                return Ok::<_, Error>(true);
+            }
+            Ok(false)
+        },
+    )?;
+    if published {
+        observed.ok_or(Error::StateMismatch(20))
+    } else {
+        Err(Error::StateMismatch(20))
     }
-    Err(Error::StateMismatch(20))
 }
 
 extern "C" fn queued_arbitration_worker(_argument: usize) {
@@ -406,24 +418,19 @@ fn exercise_cpu_local_migration_barrier() -> Result<(), Error> {
     Ok(())
 }
 
-/// Waits for a worker without parking the bootstrap Thread.
+/// Waits for a worker without entering an unbounded completion wait.
 ///
-/// Kernel self-tests run before CPU0 becomes its idle Thread. A blocking
-/// completion wait would therefore be invalid when every eligible worker is
-/// remote. Yielding preserves scheduler progress while keeping bootstrap
-/// runnable on CPU0.
+/// The timed observer blocks briefly between nonblocking claims, allowing a
+/// remote worker to progress while retaining a deterministic failure bound.
 fn wait_for_completion(done: &Semaphore, failure: usize) -> Result<(), Error> {
-    const MAX_PROGRESS_PASSES: usize = 4_096;
-
-    for pass in 0..=MAX_PROGRESS_PASSES {
-        if done.try_acquire() {
-            return Ok(());
-        }
-        if pass != MAX_PROGRESS_PASSES {
-            scheduler::yield_now()?;
-        }
+    if crate::kernel::task::wait_for_test_progress(
+        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
+        || Ok::<_, Error>(done.try_acquire()),
+    )? {
+        Ok(())
+    } else {
+        Err(Error::StateMismatch(failure))
     }
-    Err(Error::StateMismatch(failure))
 }
 
 extern "C" fn cpu_local_worker(_argument: usize) {

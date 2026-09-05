@@ -147,6 +147,7 @@ fn export_kernel_configuration(
             )
         })?;
     validate_architecture_configuration(&configuration, target)?;
+    export_log_compile_configuration(&configuration)?;
     let mut rust_source = String::from("// Generated kernel configuration. Do not edit.\n\n");
     for symbol in &schema.symbols {
         let rust_name = format!("CONFIG_{}", symbol.name);
@@ -188,6 +189,37 @@ fn export_kernel_configuration(
         }
     }
     fs::write(output_directory.join("kernel_config.rs"), rust_source)?;
+    Ok(())
+}
+
+fn export_log_compile_configuration(
+    configuration: &kconfig::Configuration,
+) -> Result<(), Box<dyn Error>> {
+    const LEVELS: [&str; 8] = [
+        "emergency",
+        "alert",
+        "critical",
+        "error",
+        "warning",
+        "notice",
+        "info",
+        "debug",
+    ];
+
+    let maximum = configuration
+        .value("LOG_COMPILE_LEVEL")
+        .ok_or("CONFIG_LOG_COMPILE_LEVEL is missing")?
+        .parse::<usize>()?;
+    if maximum >= LEVELS.len() {
+        return Err(format!("CONFIG_LOG_COMPILE_LEVEL is outside 0..=7: {maximum}").into());
+    }
+    for (value, name) in LEVELS.iter().enumerate() {
+        let cfg = format!("hyper_log_compile_{name}");
+        println!("cargo:rustc-check-cfg=cfg({cfg})");
+        if value <= maximum {
+            println!("cargo:rustc-cfg={cfg}");
+        }
+    }
     Ok(())
 }
 

@@ -9,6 +9,7 @@ pub(super) enum Error {
     Interrupts(crate::hal::vm::InterruptError),
     Memory(crate::kernel::vm::memory::Error),
     Registry(crate::kernel::vm::registry::Error),
+    DormantVcpuQuiesce(crate::kernel::vm::registry::DormantVcpuQuiesceError),
     Scheduler(crate::kernel::task::scheduler::Error),
     InitialContext,
     SchedulerThreadLeaked,
@@ -65,5 +66,6 @@ fn prepare_test_vm() -> Result<crate::kernel::vm::registry::PreparedVm, Error> {
 
 fn verify_dormant_vcpu_stop() -> Result<(), Error> {
     let installed = prepare_test_vm()?.install().map_err(Error::Registry)?;
-    crate::kernel::vm::registry::verify_dormant_vcpu_quiesce(installed).map_err(Error::Registry)
+    crate::kernel::vm::registry::verify_dormant_vcpu_quiesce(installed)
+        .map_err(Error::DormantVcpuQuiesce)
 }

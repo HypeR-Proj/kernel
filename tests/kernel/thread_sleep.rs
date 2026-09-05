@@ -71,10 +71,11 @@ pub(super) fn run() -> Result<(), Error> {
         core::ptr::from_ref(&SLEEP_OBSERVATION).expose_provenance(),
     )?;
     crate::kernel::task::scheduler::thread_ready(worker)?;
-    while !SLEEP_OBSERVATION.complete.load(Ordering::Acquire) {
-        // The bootstrap thread remains runnable while the worker parks. Timer
-        // IRQ delivery eventually makes the worker eligible for this yield.
-        crate::kernel::task::scheduler::yield_now()?;
+    if !crate::kernel::task::wait_for_test_progress(
+        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
+        || Ok::<_, Error>(SLEEP_OBSERVATION.complete.load(Ordering::Acquire)),
+    )? {
+        return Err(Error::UnexpectedSleepResult);
     }
     if SLEEP_OBSERVATION.error.load(Ordering::Acquire) != 0 {
         return Err(Error::UnexpectedSleepResult);

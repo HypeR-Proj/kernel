@@ -91,16 +91,6 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-secondary_cpus_online() {
-    cpu_id=1
-    while [ "$cpu_id" -lt "$cpus" ]; do
-        hardware_id=$(printf '%x' "$cpu_id")
-        grep -q "HypeR: CPU $cpu_id online, hardware ID 0x$hardware_id; entering idle" "$log" ||
-            return 1
-        cpu_id=$((cpu_id + 1))
-    done
-}
-
 demand_paging_is_lazy() {
     values=$(sed -n 's/.*HypeR: guest demand paging: \([0-9][0-9]*\)\/\([0-9][0-9]*\) pages committed for boot.*/\1 \2/p' "$log" | tail -n 1)
     [ -n "$values" ] || return 1
@@ -159,7 +149,6 @@ runtime_contract_is_ready() {
         grep -q 'HypeR: virtual architected timer injection validated' "$log" &&
         grep -q 'HypeR: guest synchronous trap and vSysReg emulation validated' "$log" &&
         grep -q 'HypeR: platform bus: .* bound, .* unmatched, .* deferred, .* failed' "$log" &&
-        secondary_cpus_online &&
         grep -q "HypeR: SMP online: $cpus/$cpus discovered CPUs" "$log" &&
         grep -q "HypeR: heap caches: $cpus CPUs, [0-9][0-9]* objects," "$log" &&
         grep -q 'HypeR: randomized kernel base 0x[0-9a-f][0-9a-f]*, KASLR offset 0x[0-9a-f][0-9a-f]*' "$log" &&

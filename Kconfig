@@ -96,8 +96,13 @@ config SCHED_FAIR_QUANTUM_MS
     range 1 1000
     default 10
 
-config CONSOLE_LOGLEVEL
-    int "Maximum severity printed to the console"
+config LOG_COMPILE_LEVEL
+    int "Maximum kernel log severity compiled into the image"
+    range 0 7
+    default 6
+
+config CONSOLE_LOGLEVEL_DEFAULT
+    int "Default runtime console log severity"
     range 0 7
     default 6
 

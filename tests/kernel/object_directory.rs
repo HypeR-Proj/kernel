@@ -17,7 +17,13 @@ pub(super) enum Error {
     ObservationChangedOwnership,
     ReaperDidNotRun,
     RetainedDeadObject,
-    Scheduler,
+    Sleep(crate::kernel::task::SleepError),
+}
+
+impl From<crate::kernel::task::SleepError> for Error {
+    fn from(error: crate::kernel::task::SleepError) -> Self {
+        Self::Sleep(error)
+    }
 }
 
 pub(super) fn run() -> Result<(), Error> {
@@ -45,8 +51,6 @@ pub(super) fn run() -> Result<(), Error> {
 }
 
 fn verify_final_reap() -> Result<(), Error> {
-    const MAX_PROGRESS_PASSES: usize = 4_096;
-
     let domain =
         ResourceDomain::try_new_root(ResourceLimits::UNLIMITED).map_err(|_| Error::Construction)?;
     let before = domain.usage().committed(ResourceKind::KernelObjects);
@@ -57,13 +61,14 @@ fn verify_final_reap() -> Result<(), Error> {
         return Err(Error::Construction);
     }
     drop(probe);
-    for _ in 0..MAX_PROGRESS_PASSES {
-        if domain.usage().committed(ResourceKind::KernelObjects) == before {
-            return Ok(());
-        }
-        crate::kernel::task::scheduler::yield_now().map_err(|_| Error::Scheduler)?;
+    if crate::kernel::task::wait_for_test_progress(
+        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
+        || Ok::<_, Error>(domain.usage().committed(ResourceKind::KernelObjects) == before),
+    )? {
+        Ok(())
+    } else {
+        Err(Error::ReaperDidNotRun)
     }
-    Err(Error::ReaperDidNotRun)
 }
 
 fn verify_current_thread_object() -> Result<(), Error> {

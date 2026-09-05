@@ -4,19 +4,21 @@
 //! GICv3 CPU-interface initialization through explicit hardware capabilities.
 
 use core::ptr::{read_volatile, write_volatile};
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use hyper::drivers::interrupt::gicv3::{CpuInterface, Error as GicError, GicV3};
 use hyper::hal::barrier::{Barrier, BarrierAccess, BarrierDomain};
 use hyper::hal::interrupt::{
     InterruptController, InterruptId, InterruptPriority, InterruptTransitionError, InterruptTrigger,
 };
+use hyper::hal::timer::MonotonicCounter;
 use hyper::platform::{GicV3Info, MAX_GIC_REDISTRIBUTOR_REGIONS, PhysicalRange, RegionList};
 
 static CPU_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static ACKNOWLEDGED: AtomicU32 = AtomicU32::new(40);
 static COMPLETED: AtomicU32 = AtomicU32::new(u32::MAX);
 static CURRENT_AFFINITY: AtomicU32 = AtomicU32::new(0);
+static COUNTER_TICKS: AtomicU64 = AtomicU64::new(0);
 
 struct TestCpuInterface;
 
@@ -47,6 +49,20 @@ impl Barrier for TestBarrier {
     fn instruction_synchronization() {}
 }
 
+struct TestCounter;
+
+impl MonotonicCounter for TestCounter {
+    type Error = ();
+
+    fn frequency_hz() -> Result<u64, Self::Error> {
+        Ok(1_000_000_000)
+    }
+
+    fn read() -> u64 {
+        COUNTER_TICKS.fetch_add(100_000_000, Ordering::Relaxed)
+    }
+}
+
 #[test]
 fn initializes_and_configures_the_boot_cpu_interface() {
     const DISTRIBUTOR_PHYSICAL: u64 = 0x1000_0000;
@@ -56,6 +72,7 @@ fn initializes_and_configures_the_boot_cpu_interface() {
 
     CPU_INITIALIZED.store(false, Ordering::Relaxed);
     COMPLETED.store(u32::MAX, Ordering::Relaxed);
+    COUNTER_TICKS.store(0, Ordering::Relaxed);
     let mut distributor = vec![0u64; 0x1_0000 / 8];
     let mut redistributor = vec![0u64; 0x2_0000 / 8];
     let distributor_base = distributor.as_mut_ptr() as usize;
@@ -86,7 +103,7 @@ fn initializes_and_configures_the_boot_cpu_interface() {
     // SAFETY: The mapping closure returns the complete, exclusively owned test
     // banks described by `info`; both vectors outlive the controller.
     let mut controller = crate::require_ok(unsafe {
-        GicV3::<TestCpuInterface, TestBarrier>::bind(info, |address| match address {
+        GicV3::<TestCpuInterface, TestBarrier, TestCounter>::bind(info, |address| match address {
             DISTRIBUTOR_PHYSICAL => Some(distributor_base),
             REDISTRIBUTOR_PHYSICAL => Some(redistributor_base),
             _ => None,

@@ -32,6 +32,7 @@ pub(super) enum Error {
     Affinity(usize),
     Quiescence(super::support::QuiescenceError),
     Scheduler(scheduler::Error),
+    Sleep(crate::kernel::task::SleepError),
     Synchronization(crate::kernel::sync::Error),
     Worker(usize),
     StateMismatch,
@@ -40,6 +41,12 @@ pub(super) enum Error {
 impl From<scheduler::Error> for Error {
     fn from(error: scheduler::Error) -> Self {
         Self::Scheduler(error)
+    }
+}
+
+impl From<crate::kernel::task::SleepError> for Error {
+    fn from(error: crate::kernel::task::SleepError) -> Self {
+        Self::Sleep(error)
     }
 }
 
@@ -147,21 +154,20 @@ pub(super) fn run() -> Result<(), Error> {
 }
 
 fn wait_for_completions(semaphore: &Semaphore, mut remaining: usize) -> Result<(), Error> {
-    const MAX_PROGRESS_PASSES: usize = 64;
-
-    for pass in 0..=MAX_PROGRESS_PASSES {
-        while remaining != 0 && semaphore.try_acquire() {
-            remaining -= 1;
-        }
-        if remaining == 0 {
-            return Ok(());
-        }
-        if pass == MAX_PROGRESS_PASSES {
-            break;
-        }
-        scheduler::yield_now()?;
+    let completed = crate::kernel::task::wait_for_test_progress(
+        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
+        || {
+            while remaining != 0 && semaphore.try_acquire() {
+                remaining -= 1;
+            }
+            Ok::<_, Error>(remaining == 0)
+        },
+    )?;
+    if completed {
+        Ok(())
+    } else {
+        Err(Error::StateMismatch)
     }
-    Err(Error::StateMismatch)
 }
 
 fn exercise_policy_transitions() -> Result<(), Error> {

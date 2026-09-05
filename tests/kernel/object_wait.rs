@@ -32,6 +32,7 @@ pub(super) enum Error {
     Resource,
     Quiescence(super::support::QuiescenceError),
     Scheduler(scheduler::Error),
+    Sleep(crate::kernel::task::SleepError),
     StateMismatch(usize),
     Synchronization(crate::kernel::sync::Error),
 }
@@ -39,6 +40,12 @@ pub(super) enum Error {
 impl From<scheduler::Error> for Error {
     fn from(error: scheduler::Error) -> Self {
         Self::Scheduler(error)
+    }
+}
+
+impl From<crate::kernel::task::SleepError> for Error {
+    fn from(error: crate::kernel::task::SleepError) -> Self {
+        Self::Sleep(error)
     }
 }
 
@@ -243,13 +250,12 @@ fn reset_event(event: &Event) -> Result<(), Error> {
 }
 
 fn wait_for_registration(event: &Event) -> Result<(), Error> {
-    const MAX_PROGRESS_PASSES: usize = 4_096;
-
-    for _ in 0..MAX_PROGRESS_PASSES {
-        if event.waiter_count() == 1 {
-            return Ok(());
-        }
-        scheduler::yield_now()?;
+    if crate::kernel::task::wait_for_test_progress(
+        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
+        || Ok::<_, Error>(event.waiter_count() == 1),
+    )? {
+        Ok(())
+    } else {
+        Err(Error::StateMismatch(25))
     }
-    Err(Error::StateMismatch(25))
 }

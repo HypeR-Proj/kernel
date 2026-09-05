@@ -12,8 +12,6 @@ use crate::kernel::task::scheduler::{self, ThreadPriority};
 use crate::kernel::task::thread::ThreadId;
 
 const EMPTY_SLOT: usize = usize::MAX;
-const MAX_PROGRESS_PASSES: usize = 4_096;
-
 static SLOTS: [AtomicUsize; 2] = [AtomicUsize::new(EMPTY_SLOT), AtomicUsize::new(EMPTY_SLOT)];
 static OUTCOMES: [AtomicUsize; 2] = [AtomicUsize::new(0), AtomicUsize::new(0)];
 static DONE: Semaphore = Semaphore::new(0);
@@ -22,12 +20,19 @@ static DONE: Semaphore = Semaphore::new(0);
 pub(super) enum Error {
     Quiescence(super::support::QuiescenceError),
     Scheduler(scheduler::Error),
+    Sleep(crate::kernel::task::SleepError),
     State(usize),
 }
 
 impl From<scheduler::Error> for Error {
     fn from(error: scheduler::Error) -> Self {
         Self::Scheduler(error)
+    }
+}
+
+impl From<crate::kernel::task::SleepError> for Error {
+    fn from(error: crate::kernel::task::SleepError) -> Self {
+        Self::Sleep(error)
     }
 }
 
@@ -89,21 +94,30 @@ fn create_workers(count: usize) -> Result<[Option<ThreadId>; 2], Error> {
 }
 
 fn wait_until_queued(count: usize) -> Result<[usize; 2], Error> {
-    for _ in 0..MAX_PROGRESS_PASSES {
-        let mut slots = [EMPTY_SLOT; 2];
-        let mut queued = true;
-        for (index, slot) in slots.iter_mut().enumerate().take(count) {
-            *slot = SLOTS[index].load(Ordering::Acquire);
-            if *slot == EMPTY_SLOT || console::flush_barrier_waiter_count_for_test(*slot)? != 1 {
-                queued = false;
+    let mut observed = [EMPTY_SLOT; 2];
+    let queued = crate::kernel::task::wait_for_test_progress(
+        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
+        || {
+            let mut slots = [EMPTY_SLOT; 2];
+            let mut queued = true;
+            for (index, slot) in slots.iter_mut().enumerate().take(count) {
+                *slot = SLOTS[index].load(Ordering::Acquire);
+                if *slot == EMPTY_SLOT || console::flush_barrier_waiter_count_for_test(*slot)? != 1
+                {
+                    queued = false;
+                }
             }
-        }
-        if queued {
-            return Ok(slots);
-        }
-        scheduler::yield_now()?;
+            if queued {
+                observed = slots;
+            }
+            Ok::<_, Error>(queued)
+        },
+    )?;
+    if queued {
+        Ok(observed)
+    } else {
+        Err(Error::State(4))
     }
-    Err(Error::State(4))
 }
 
 fn cancel_workers(
@@ -123,16 +137,20 @@ fn cancel_workers(
 }
 
 fn wait_until_done(mut remaining: usize) -> Result<(), Error> {
-    for _ in 0..MAX_PROGRESS_PASSES {
-        while remaining != 0 && DONE.try_acquire() {
-            remaining -= 1;
-        }
-        if remaining == 0 {
-            return Ok(());
-        }
-        scheduler::yield_now()?;
+    let completed = crate::kernel::task::wait_for_test_progress(
+        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
+        || {
+            while remaining != 0 && DONE.try_acquire() {
+                remaining -= 1;
+            }
+            Ok::<_, Error>(remaining == 0)
+        },
+    )?;
+    if completed {
+        Ok(())
+    } else {
+        Err(Error::State(7))
     }
-    Err(Error::State(7))
 }
 
 fn verify_retired(count: usize) -> Result<(), Error> {

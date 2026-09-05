@@ -42,7 +42,7 @@ impl From<crate::kernel::time::Error> for Error {
 
 pub(super) fn run() -> Result<(), Error> {
     if crate::kernel::cpu::online_cpu_count() <= 1 {
-        crate::println!("HypeR test: targeted reschedule IPI skipped (one CPU online)");
+        crate::pr_notice!("HypeR test: targeted reschedule IPI skipped (one CPU online)");
         return Ok(());
     }
 
@@ -81,7 +81,7 @@ pub(super) fn run() -> Result<(), Error> {
     })?;
     super::support::quiesce_workers()?;
 
-    crate::println!("HypeR test: targeted reschedule IPI delivery and EOI passed");
+    crate::pr_info!("HypeR test: targeted reschedule IPI delivery and EOI passed");
     Ok(())
 }
 

@@ -75,7 +75,7 @@ pub(super) fn run() -> Result<(), Error> {
     exercise_terminated_rejection()?;
 
     if crate::kernel::cpu::online_cpu_count() <= 1 {
-        crate::println!("HypeR test: cross-CPU thread migration skipped (one CPU online)");
+        crate::pr_notice!("HypeR test: cross-CPU thread migration skipped (one CPU online)");
         return Ok(());
     }
 
@@ -90,7 +90,7 @@ pub(super) fn run() -> Result<(), Error> {
     exercise_blocked_migration(target)?;
     exercise_sleep_migration(target)?;
     quiesce_threads()?;
-    crate::println!("HypeR test: cross-CPU thread migration passed");
+    crate::pr_info!("HypeR test: cross-CPU thread migration passed");
     Ok(())
 }
 

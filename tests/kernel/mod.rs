@@ -87,32 +87,32 @@ pub(crate) fn run() {
         guest_entry_irq::run,
     );
     crate::hal::irq::enable_local();
-    crate::println!("HypeR test: scheduler ready/wait queues and sleeping sync passed");
-    crate::println!("HypeR test: guarded thread, IRQ, and emergency stacks passed");
-    crate::println!("HypeR test: deadline-based thread sleep passed");
-    crate::println!("HypeR test: race-safe wait arbitration passed");
-    crate::println!("HypeR test: level-triggered object waits passed");
-    crate::println!("HypeR test: bounded Channel FIFO and signal lifecycle passed");
-    crate::println!("HypeR test: typed init capability objects passed");
+    crate::pr_info!("HypeR test: scheduler ready/wait queues and sleeping sync passed");
+    crate::pr_info!("HypeR test: guarded thread, IRQ, and emergency stacks passed");
+    crate::pr_info!("HypeR test: deadline-based thread sleep passed");
+    crate::pr_info!("HypeR test: race-safe wait arbitration passed");
+    crate::pr_info!("HypeR test: level-triggered object waits passed");
+    crate::pr_info!("HypeR test: bounded Channel FIFO and signal lifecycle passed");
+    crate::pr_info!("HypeR test: typed init capability objects passed");
     #[cfg(CONFIG_ARCH_AARCH64)]
-    crate::println!("HypeR test: Channel Process and user-copy transactions passed");
-    crate::println!("HypeR test: Native syscall validation passed");
+    crate::pr_info!("HypeR test: Channel Process and user-copy transactions passed");
+    crate::pr_info!("HypeR test: Native syscall validation passed");
     #[cfg(CONFIG_ARCH_AARCH64)]
-    crate::println!("HypeR test: AArch64 EL0 syscall and fault containment passed");
-    crate::println!("HypeR test: fatal-path readiness contract passed");
+    crate::pr_info!("HypeR test: AArch64 EL0 syscall and fault containment passed");
+    crate::pr_info!("HypeR test: fatal-path readiness contract passed");
     #[cfg(CONFIG_ARCH_AARCH64)]
-    crate::println!("HypeR test: AArch64 guest-entry IRQ mask contract passed");
+    crate::pr_info!("HypeR test: AArch64 guest-entry IRQ mask contract passed");
     if guest_execution {
-        crate::println!("HypeR test: checked stage-2 guest-memory copies passed");
+        crate::pr_info!("HypeR test: checked stage-2 guest-memory copies passed");
     } else {
-        crate::println!("HypeR test: stage-2 guest-memory copies skipped (no virtualization)");
+        crate::pr_notice!("HypeR test: stage-2 guest-memory copies skipped (no virtualization)");
     }
-    crate::println!("HypeR test: checked application-memory copies passed");
+    crate::pr_info!("HypeR test: checked application-memory copies passed");
     if guest_execution {
-        crate::println!("HypeR test: VM and dormant-vCPU rollback passed");
+        crate::pr_info!("HypeR test: VM and dormant-vCPU rollback passed");
     } else {
-        crate::println!("HypeR test: VM reservation rollback passed");
-        crate::println!("HypeR test: dormant-vCPU rollback skipped (no virtualization)");
+        crate::pr_info!("HypeR test: VM reservation rollback passed");
+        crate::pr_notice!("HypeR test: dormant-vCPU rollback skipped (no virtualization)");
     }
 }
 

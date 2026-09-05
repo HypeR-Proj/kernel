@@ -8,7 +8,7 @@ edition = "2024"
 build = "build.rs"
 license = "Apache-2.0"
 description = "A modular, Rust-based type-1 hypervisor kernel"
-repository = "https://github.com/roolrz/HypeR-Kernel"
+repository = "https://github.com/roolrz/HypeR"
 publish = false
 
 [features]

@@ -3,7 +3,7 @@
 
 //! Guard-page, watermark, thread-stack, and IRQ-stack integration tests.
 
-use core::hint::{black_box, spin_loop};
+use core::hint::black_box;
 use core::ptr::write_volatile;
 
 use hyper::sync::atomic::{AtomicUsize, Ordering};
@@ -13,7 +13,6 @@ use crate::kernel::sync::Semaphore;
 use crate::kernel::task::scheduler;
 
 static IRQ_CALLBACK_SP: AtomicUsize = AtomicUsize::new(0);
-const MAX_WORKER_PARK_PASSES: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Error {
@@ -34,6 +33,7 @@ pub(super) enum Error {
     #[cfg(CONFIG_ARCH_X86_64)]
     ShootdownMissing,
     Scheduler(scheduler::Error),
+    Sleep(crate::kernel::task::SleepError),
     Stack(stack::Error),
     StackUsageMissing,
     Synchronization(crate::kernel::sync::Error),
@@ -42,6 +42,12 @@ pub(super) enum Error {
 impl From<scheduler::Error> for Error {
     fn from(error: scheduler::Error) -> Self {
         Self::Scheduler(error)
+    }
+}
+
+impl From<crate::kernel::task::SleepError> for Error {
+    fn from(error: crate::kernel::task::SleepError) -> Self {
+        Self::Sleep(error)
     }
 }
 
@@ -162,17 +168,17 @@ fn validate_thread_stack() -> Result<(), Error> {
 }
 
 fn wait_until_worker_parked() -> Result<(), Error> {
-    for _ in 0..MAX_WORKER_PARK_PASSES {
-        if THREAD_PROBE.release.waiter_count()? == 1 {
-            return Ok(());
-        }
-        // The ready notification is published before the worker enters its
-        // blocking acquire. An IRQ-tail preemption may resume this test in
-        // that interval, so yield until the wait queue owns the worker before
-        // inspecting its stopped stack.
-        scheduler::yield_now()?;
+    // The ready notification is published before the worker enters its
+    // blocking acquire. Wait until the queue owns the worker before inspecting
+    // its stopped stack.
+    if crate::kernel::task::wait_for_test_progress(
+        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
+        || Ok::<_, Error>(THREAD_PROBE.release.waiter_count()? == 1),
+    )? {
+        Ok(())
+    } else {
+        Err(Error::WorkerNotParked)
     }
-    Err(Error::WorkerNotParked)
 }
 
 extern "C" fn stack_worker(argument: usize) {
@@ -196,14 +202,12 @@ fn validate_irq_stack_switch() -> Result<(), Error> {
     IRQ_CALLBACK_SP.store(0, Ordering::Release);
     crate::kernel::time::schedule_after(1, record_irq_stack, 0)
         .map_err(|_| Error::IrqCallbackMissing)?;
-    for _ in 0..10_000_000 {
-        if IRQ_CALLBACK_SP.load(Ordering::Acquire) != 0 {
-            break;
-        }
-        spin_loop();
-    }
+    let delivered = crate::kernel::task::wait_for_test_progress(
+        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
+        || Ok::<_, Error>(IRQ_CALLBACK_SP.load(Ordering::Acquire) != 0),
+    )?;
     let pointer = IRQ_CALLBACK_SP.load(Ordering::Acquire);
-    if pointer == 0 {
+    if !delivered || pointer == 0 {
         return Err(Error::IrqCallbackMissing);
     }
     let cpu = crate::kernel::cpu::current_index().ok_or(Error::StackUsageMissing)?;

@@ -5,8 +5,6 @@
 
 use crate::kernel::task::scheduler;
 
-const MAX_QUIESCENCE_PASSES: usize = 4_096;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct QuiescenceSnapshot {
     threads: usize,
@@ -60,50 +58,44 @@ pub(super) fn quiesce_workers() -> Result<scheduler::Statistics, QuiescenceError
         idle_class_threads: 0,
         online_cpus: crate::kernel::cpu::online_cpu_count(),
     };
+    let mut stable_statistics = None;
 
-    for _ in 0..MAX_QUIESCENCE_PASSES {
-        scheduler::yield_now()?;
-        let statistics = scheduler::statistics()?;
-        let online_cpus = crate::kernel::cpu::online_cpu_count();
-        last = QuiescenceSnapshot {
-            threads: statistics.threads,
-            ready: statistics.ready,
-            running: statistics.running,
-            blocked: statistics.blocked,
-            migrating: statistics.migrating,
-            retirements_in_progress: statistics.retirements_in_progress,
-            idle: statistics.idle,
-            idle_class_threads: statistics.idle_class_threads,
-            online_cpus,
-        };
-        if statistics.retirements_in_progress != 0 {
-            // A remote CPU may own the detached Thread's lock-external
-            // destructor. A local yield with no ready peer does not provide
-            // physical CPU progress, particularly under QEMU TCG. Sleeping
-            // lets that legitimate in-flight owner release-publish completion.
-            crate::kernel::task::sleep_ms(1)?;
-            continue;
-        }
-        if statistics.ready == 0
-            && statistics.blocked == service_workers
-            && statistics.migrating == 0
-            && statistics.running == 1
-            && statistics.idle == online_cpus
-            && statistics.idle_class_threads == online_cpus
-            && statistics.threads
-                == online_cpus
-                    .saturating_add(1)
-                    .saturating_add(service_workers)
-        {
-            return Ok(statistics);
-        }
-
-        // A non-quiescent owner may be executing on another physical CPU.
-        // Repeated local yields only advance the boot CPU and can exhaust this
-        // bounded poll before QEMU TCG schedules the remote owner. The timer
-        // wait preserves local scheduler progress while yielding host time to
-        // every online CPU.
-        crate::kernel::task::sleep_ms(1)?;
+    let quiescent = crate::kernel::task::wait_for_test_progress(
+        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
+        || {
+            let statistics = scheduler::statistics()?;
+            let online_cpus = crate::kernel::cpu::online_cpu_count();
+            last = QuiescenceSnapshot {
+                threads: statistics.threads,
+                ready: statistics.ready,
+                running: statistics.running,
+                blocked: statistics.blocked,
+                migrating: statistics.migrating,
+                retirements_in_progress: statistics.retirements_in_progress,
+                idle: statistics.idle,
+                idle_class_threads: statistics.idle_class_threads,
+                online_cpus,
+            };
+            let stable = statistics.retirements_in_progress == 0
+                && statistics.ready == 0
+                && statistics.blocked == service_workers
+                && statistics.migrating == 0
+                && statistics.running == 1
+                && statistics.idle == online_cpus
+                && statistics.idle_class_threads == online_cpus
+                && statistics.threads
+                    == online_cpus
+                        .saturating_add(1)
+                        .saturating_add(service_workers);
+            if stable {
+                stable_statistics = Some(statistics);
+            }
+            Ok::<_, QuiescenceError>(stable)
+        },
+    )?;
+    if quiescent {
+        stable_statistics.ok_or(QuiescenceError::Timeout(last))
+    } else {
+        Err(QuiescenceError::Timeout(last))
     }
-    Err(QuiescenceError::Timeout(last))
 }
