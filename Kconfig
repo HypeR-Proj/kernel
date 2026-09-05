@@ -1,0 +1,114 @@
+# SPDX-FileCopyrightText: 2026 roolrz
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "HypeR Kernel Configuration"
+
+menu "Architecture"
+
+config ARCH_AARCH64
+    bool "AArch64 architecture"
+    default y
+
+config ARCH_RISCV64
+    bool "RISC-V 64-bit architecture"
+    default n
+
+config ARCH_X86_64
+    bool "x86-64 architecture"
+    default n
+
+config ARM64_VA_BITS
+    int "AArch64 host virtual-address width"
+    range 42 48
+    default 48
+    depends on ARCH_AARCH64
+
+config ARM64_PA_BITS
+    int "Maximum AArch64 physical-address width"
+    range 32 48
+    default 48
+    depends on ARCH_AARCH64
+
+config ARM64_IPA_BITS
+    int "AArch64 guest intermediate-physical-address width"
+    range 32 39
+    default 39
+    depends on ARCH_AARCH64
+
+config ARM64_MAX_GIC_REDISTRIBUTOR_REGIONS
+    int "Maximum GICv3 Redistributor regions"
+    range 1 64
+    default 16
+    depends on ARCH_AARCH64
+
+endmenu
+
+menu "Platform"
+
+config PLATFORM_QEMU
+    bool "QEMU platform"
+    default y
+
+endmenu
+
+menu "Kernel"
+
+config RANDOMIZE_BASE
+    bool "Randomize the kernel virtual address"
+    default y
+
+config MAX_CPUS
+    int "Maximum supported CPU count"
+    range 1 256
+    default 8
+
+config MAX_KERNEL_STACKS
+    int "Maximum simultaneously allocated kernel stacks"
+    range 64 16384
+    default 1024
+
+config KERNEL_STACK_SIZE_KB
+    int "Kernel thread stack size in KiB"
+    range 16 256
+    default 16
+
+config IRQ_STACK_SIZE_KB
+    int "Per-CPU IRQ stack size in KiB"
+    range 16 128
+    default 32
+
+config EMERGENCY_STACK_SIZE_KB
+    int "Per-CPU emergency stack size in KiB"
+    range 16 128
+    default 32
+
+config CRASH_CONSOLE
+    bool "Interactive crash console"
+    default n
+
+config TIMER_HZ
+    int "Kernel timer frequency"
+    range 10 10000
+    default 100
+
+config SCHED_FAIR_QUANTUM_MS
+    int "Initial fair scheduler quantum in milliseconds"
+    range 1 1000
+    default 10
+
+config CONSOLE_LOGLEVEL
+    int "Maximum severity printed to the console"
+    range 0 7
+    default 6
+
+config LOG_BUF_SHIFT
+    int "Kernel log ring size as a power of two"
+    range 12 20
+    default 16
+
+config LOG_LINE_MAX
+    int "Maximum formatted kernel log record length"
+    range 128 2048
+    default 512
+
+endmenu

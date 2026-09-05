@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 roolrz
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "hyper-host-tests"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+hyper = { path = "../..", features = ["host-vm-model-tests"] }
+
+[lints.clippy]
+expect_used = "deny"
+missing_safety_doc = "deny"
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+
+[workspace]

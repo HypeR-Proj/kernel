@@ -1,0 +1,25 @@
+#!/usr/bin/sh
+# SPDX-FileCopyrightText: 2026 roolrz
+# SPDX-License-Identifier: Apache-2.0
+
+# Deterministic first-userspace process for the hypervisor boot integration.
+
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+/usr/bin/busybox mount -t proc proc /proc
+/usr/bin/busybox mount -t sysfs sysfs /sys
+/usr/bin/busybox mount -t devtmpfs devtmpfs /dev
+
+echo "HypeR guest: /init reached"
+echo "HypeR guest: Linux userspace is running"
+
+# Exercise repeated virtual-timer retirement and reinjection. A single wakeup
+# cannot detect a level source that remains masked after its first list-register
+# lifecycle completes.
+timer_wakeups=0
+while [ "$timer_wakeups" -lt 8 ]; do
+    /usr/bin/busybox sleep 1
+    timer_wakeups=$((timer_wakeups + 1))
+done
+echo "HypeR guest: repeated timer wakeups passed"
+
+/usr/bin/busybox sh
