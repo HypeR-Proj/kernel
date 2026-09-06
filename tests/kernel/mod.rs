@@ -3,6 +3,7 @@
 
 //! Bare-metal integration tests compiled only by `kernel-self-test`.
 
+mod capability_channel;
 mod capability_objects;
 mod channel;
 #[cfg(CONFIG_ARCH_AARCH64)]
@@ -57,14 +58,18 @@ pub(crate) fn run() {
     run_case("AArch64 native-user entry tests", native_user_entry::run);
     run_case("kernel object-wait tests", object_wait::run);
     run_case("kernel object-directory tests", object_directory::run);
-    run_case("kernel Channel core tests", channel::run);
+    run_case(
+        "kernel CapabilityChannel core tests",
+        capability_channel::run,
+    );
+    run_case("kernel ByteChannel core tests", channel::run);
     run_case(
         "kernel init capability-object tests",
         capability_objects::run,
     );
     #[cfg(CONFIG_ARCH_AARCH64)]
     run_case(
-        "kernel Channel service transaction tests",
+        "kernel ByteChannel service transaction tests",
         channel_service::run,
     );
     run_case("kernel wait-arbitration tests", wait_arbitration::run);
@@ -93,6 +98,7 @@ pub(crate) fn run() {
     crate::pr_info!("HypeR test: race-safe wait arbitration passed");
     crate::pr_info!("HypeR test: level-triggered object waits passed");
     crate::pr_info!("HypeR test: bounded Channel FIFO and signal lifecycle passed");
+    crate::pr_info!("HypeR test: synchronous capability rendezvous contracts passed");
     crate::pr_info!("HypeR test: typed init capability objects passed");
     #[cfg(CONFIG_ARCH_AARCH64)]
     crate::pr_info!("HypeR test: Channel Process and user-copy transactions passed");

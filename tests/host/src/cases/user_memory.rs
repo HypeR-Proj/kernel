@@ -816,6 +816,50 @@ fn user_write_reservation_blocks_mapping_commit_until_release() {
 }
 
 #[test]
+fn user_write_reservation_prefix_leaves_unused_capacity_unchanged() {
+    let (backend, account) = fixtures();
+    let address_space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x73_000, PAGE_SIZE),
+        backend.clone(),
+        account.clone(),
+    ));
+    let vmo = crate::require_ok(WritableVmo::try_new(PAGE_SIZE, backend, account));
+    assert!(vmo.populate(0, PAGE_SIZE).is_ok());
+    let map = crate::require_ok(address_space.prepare_map_writable(
+        address_space.root_vmar(),
+        slice(0x73_000, PAGE_SIZE),
+        vmo,
+        0,
+        Permissions::read_write(),
+        Permissions::read_write(),
+    ));
+    complete(crate::require_ok(map.commit_for_test()));
+    assert!(
+        address_space
+            .copy_to_user(slice(0x73_000, 6), &[1, 2, 3, 4, 5, 6])
+            .is_ok()
+    );
+
+    let reservation =
+        crate::require_ok(address_space.prepare_user_write_for_test(slice(0x73_000, 6)));
+    assert!(
+        address_space
+            .write_user_reservation_prefix_for_test(&reservation, &[9, 8, 7])
+            .is_ok()
+    );
+    address_space.release_user_write_for_test(reservation);
+
+    let mut observed = [0; 6];
+    assert!(
+        address_space
+            .copy_from_user(slice(0x73_000, 6), &mut observed)
+            .is_ok()
+    );
+    assert_eq!(observed, [9, 8, 7, 4, 5, 6]);
+}
+
+#[test]
 fn backend_failures_report_defined_partial_copy_effects() {
     let (backend, account) = fixtures();
     let address_space = crate::require_ok(UserAddressSpace::try_new(

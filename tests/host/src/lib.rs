@@ -72,6 +72,9 @@ mod cache_publication;
 #[path = "cases/capability_core.rs"]
 mod capability_core;
 #[cfg(test)]
+#[path = "../../../src/kernel/ipc/capability_wire.rs"]
+mod capability_wire;
+#[cfg(test)]
 #[path = "cases/cpio.rs"]
 mod cpio;
 #[cfg(test)]
@@ -131,6 +134,9 @@ mod physical_ranges;
 #[cfg(test)]
 #[path = "cases/plic.rs"]
 mod plic;
+#[cfg(test)]
+#[path = "cases/process_builder_input.rs"]
+mod process_builder_input;
 #[cfg(test)]
 #[path = "cases/process_lifecycle.rs"]
 mod process_lifecycle;

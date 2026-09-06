@@ -11,14 +11,18 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[allow(dead_code, unused_imports)]
 mod kernel;
 
+#[path = "../../../../src/kernel/process/builder_policy.rs"]
+mod builder_policy;
+
 use kernel::capability::{
-    HandleBatchReservationStorage, HandleError, HandleFlags, HandleScanCursor, HandleTable,
-    HandleTableStoragePlan, HandleTransferRequest, HandleTransferStorage, HandleValue,
-    InTransitHandleBatch, PreparedHandle, Rights,
+    DirectHandleTransfer, HandleBatchReservationStorage, HandleError, HandleFlags,
+    HandleScanCursor, HandleTable, HandleTableLockOrder, HandleTableStoragePlan,
+    HandleTransferOperation, HandleTransferRequest, HandleTransferRoute, HandleTransferStorage,
+    HandleValue, InTransitHandleBatch, PreparedHandle, Rights,
 };
 use kernel::object::{
     ExportPolicy, KernelObject, KernelRef, KernelService, ObjectHandleState, ObjectKind,
-    ObjectRetirement, PublishableRef, Scheduler,
+    ObjectRetirement, PublishableRef, Scheduler, TransferClass, UserExportableObject,
 };
 
 const TEST_KIND: ObjectKind = match NonZeroU32::new(0x7fff_ff01) {
@@ -34,6 +38,38 @@ const CASCADING_KIND: ObjectKind = match NonZeroU32::new(0x7fff_ff03) {
     None => panic!("test object kind must be nonzero"),
 };
 
+#[test]
+fn process_builder_storage_policy_is_explicit_and_cycle_averse() {
+    for admitted in [
+        ObjectKind::EVENT,
+        ObjectKind::BYTE_CHANNEL,
+        ObjectKind::CAPABILITY_CHANNEL,
+        ObjectKind::RESOURCE_DOMAIN,
+        ObjectKind::TASK_FACTORY,
+        ObjectKind::EXECUTABLE_AUTHORITY,
+        ObjectKind::VMO,
+        ObjectKind::CONSOLE,
+        ObjectKind::BOOT_FS,
+        ObjectKind::BOOT_FILE,
+    ] {
+        assert!(builder_policy::BuilderStorable::permits_kind_id(
+            admitted.get()
+        ));
+    }
+    for rejected in [
+        ObjectKind::PROCESS_BUILDER,
+        ObjectKind::PROCESS,
+        ObjectKind::THREAD,
+        ObjectKind::TASK_GROUP,
+        ObjectKind::VMAR,
+        TEST_KIND,
+    ] {
+        assert!(!builder_policy::BuilderStorable::permits_kind_id(
+            rejected.get()
+        ));
+    }
+}
+
 struct TestObject {
     value: u64,
     zero_transitions: Arc<AtomicUsize>,
@@ -44,10 +80,12 @@ impl kernel::object::private::UserExportable for TestObject {}
 
 impl KernelObject for TestObject {
     const KIND: ObjectKind = TEST_KIND;
+    const TRANSFER_CLASS: TransferClass = TransferClass::Leaf;
     const SUPPORTED_RIGHTS: Rights = Rights::DUPLICATE
         .union(Rights::TRANSFER)
         .union(Rights::WAIT)
-        .union(Rights::INSPECT);
+        .union(Rights::INSPECT)
+        .union(Rights::START);
 
     fn signal_source(&self) -> Option<kernel::object::signals::SignalSource<'_>> {
         Some(kernel::object::signals::SignalSource::for_test())
@@ -100,6 +138,19 @@ impl KernelObject for OtherObject {
     const SUPPORTED_RIGHTS: Rights = Rights::INSPECT;
 }
 
+struct RendezvousObject;
+
+impl kernel::object::private::Sealed for RendezvousObject {}
+impl kernel::object::private::UserExportable for RendezvousObject {}
+
+impl KernelObject for RendezvousObject {
+    const KIND: ObjectKind = OTHER_KIND;
+    const SUPPORTED_RIGHTS: Rights = Rights::DUPLICATE
+        .union(Rights::TRANSFER)
+        .union(Rights::INSPECT);
+    const TRANSFER_CLASS: TransferClass = TransferClass::RendezvousOnly;
+}
+
 struct VariantRightsObject {
     writable: bool,
 }
@@ -144,7 +195,10 @@ fn object(value: u64, zero_transitions: &Arc<AtomicUsize>) -> TestObjectRef {
     }))
 }
 
-fn prepared(object: TestObjectRef, rights: Rights) -> PreparedHandle {
+fn prepared<T: UserExportableObject>(
+    object: PublishableRef<T, KernelService>,
+    rights: Rights,
+) -> PreparedHandle {
     crate::require_ok(PreparedHandle::try_from_new_object(
         object.publication(),
         rights,
@@ -842,17 +896,28 @@ fn transfer_claim_rollback_restores_exact_values_and_authority() {
     let requests = [
         HandleTransferRequest {
             value: values[0],
+            offered_rights: None,
             rights: Rights::INSPECT,
+            offered_kind: None,
             expected_kind: None,
+            operation: HandleTransferOperation::Move,
         },
         HandleTransferRequest {
             value: values[1],
+            offered_rights: None,
             rights,
+            offered_kind: None,
             expected_kind: None,
+            operation: HandleTransferOperation::Move,
         },
     ];
 
-    let claim = crate::require_ok(table.prepare_transfer(&requests, None, None));
+    let claim = crate::require_ok(table.prepare_transfer(
+        &requests,
+        None,
+        None,
+        HandleTransferRoute::Buffered,
+    ));
     assert_eq!(table.get_info(values[0]), Err(HandleError::Busy));
     assert_eq!(table.remove(values[1]).err(), Some(HandleError::Busy));
     assert!(matches!(
@@ -868,6 +933,96 @@ fn transfer_claim_rollback_restores_exact_values_and_authority() {
     assert_eq!(transitions.load(Ordering::Relaxed), 0);
     remove_all(&mut table);
     assert_eq!(transitions.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn lifecycle_consumption_requires_operation_right_not_transfer() {
+    let transitions = Arc::new(AtomicUsize::new(0));
+    let target = object(35, &transitions);
+    let other = object(36, &transitions);
+    let rights = Rights::START.union(Rights::INSPECT);
+    let mut table = HandleTable::new();
+    let reservation = crate::require_ok(table.reserve::<1>());
+    let value = reservation.publish(&mut table, [prepared(target.clone(), rights)])[0];
+
+    let mut wrong_storage = Some(crate::require_ok(HandleTransferStorage::try_new(1)));
+    assert_eq!(
+        table
+            .prepare_consumption_with_storage(
+                value,
+                Rights::START,
+                TEST_KIND,
+                other.koid(),
+                &mut wrong_storage,
+            )
+            .err(),
+        Some(HandleError::InvalidHandle)
+    );
+    assert_eq!(crate::require_ok(table.get_info(value)).rights, rights);
+
+    let mut storage = Some(crate::require_ok(HandleTransferStorage::try_new(1)));
+    let claim = crate::require_ok(table.prepare_consumption_with_storage(
+        value,
+        Rights::START,
+        TEST_KIND,
+        target.koid(),
+        &mut storage,
+    ));
+    assert_eq!(table.get_info(value), Err(HandleError::Busy));
+    claim.rollback(&mut table);
+    assert_eq!(crate::require_ok(table.get_info(value)).rights, rights);
+
+    let mut storage = Some(crate::require_ok(HandleTransferStorage::try_new(1)));
+    let claim = crate::require_ok(table.prepare_consumption_with_storage(
+        value,
+        Rights::START,
+        TEST_KIND,
+        target.koid(),
+        &mut storage,
+    ));
+    let consumed = claim.commit(&mut table);
+    assert_eq!(table.get_info(value), Err(HandleError::InvalidHandle));
+    consumed.release();
+    assert_eq!(transitions.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn consecutive_batch_publication_preserves_startup_handle_order() {
+    let transitions = Arc::new(AtomicUsize::new(0));
+    let mut table = HandleTable::new();
+    let first = crate::require_ok(table.reserve_batch(2));
+    let first_values = first.values().to_vec();
+    let second = crate::require_ok(table.reserve_batch(1));
+    let second_values = second.values().to_vec();
+    let mut handles = vec![
+        prepared(object(37, &transitions), Rights::INSPECT),
+        prepared(object(38, &transitions), Rights::INSPECT),
+        prepared(object(39, &transitions), Rights::INSPECT),
+    ];
+    handles.reverse();
+
+    drop(first.publish_from_reversed(&mut table, &mut handles));
+    drop(second.publish_from_reversed(&mut table, &mut handles));
+    assert!(handles.is_empty());
+    assert_eq!(
+        crate::require_ok(table.resolve::<TestObject>(first_values[0], Rights::INSPECT))
+            .object()
+            .value,
+        37
+    );
+    assert_eq!(
+        crate::require_ok(table.resolve::<TestObject>(first_values[1], Rights::INSPECT))
+            .object()
+            .value,
+        38
+    );
+    assert_eq!(
+        crate::require_ok(table.resolve::<TestObject>(second_values[0], Rights::INSPECT))
+            .object()
+            .value,
+        39
+    );
+    remove_all(&mut table);
 }
 
 #[test]
@@ -890,17 +1045,28 @@ fn transfer_commit_moves_active_owners_and_advances_source_generations() {
     let requests = [
         HandleTransferRequest {
             value: source_values[0],
+            offered_rights: None,
             rights: Rights::WAIT,
+            offered_kind: None,
             expected_kind: None,
+            operation: HandleTransferOperation::Move,
         },
         HandleTransferRequest {
             value: source_values[1],
+            offered_rights: None,
             rights: Rights::INSPECT,
+            offered_kind: None,
             expected_kind: None,
+            operation: HandleTransferOperation::Move,
         },
     ];
 
-    let claim = crate::require_ok(source_table.prepare_transfer(&requests, None, None));
+    let claim = crate::require_ok(source_table.prepare_transfer(
+        &requests,
+        None,
+        None,
+        HandleTransferRoute::Buffered,
+    ));
     let batch = claim.commit(&mut source_table);
     assert_eq!(batch.len(), 2);
     assert_eq!(
@@ -958,67 +1124,144 @@ fn transfer_validation_is_all_or_nothing() {
     let duplicate = [
         HandleTransferRequest {
             value: values[0],
+            offered_rights: None,
             rights: Rights::INSPECT,
+            offered_kind: None,
             expected_kind: None,
+            operation: HandleTransferOperation::Move,
         },
         HandleTransferRequest {
             value: values[0],
+            offered_rights: None,
             rights: Rights::INSPECT,
+            offered_kind: None,
             expected_kind: None,
+            operation: HandleTransferOperation::Move,
         },
     ];
     assert_eq!(
-        table.prepare_transfer(&duplicate, None, None).err(),
+        table
+            .prepare_transfer(&duplicate, None, None, HandleTransferRoute::Buffered)
+            .err(),
         Some(HandleError::InvalidHandle)
     );
     let excessive = [HandleTransferRequest {
         value: values[0],
+        offered_rights: None,
         rights: Rights::WAIT,
+        offered_kind: None,
         expected_kind: None,
+        operation: HandleTransferOperation::Move,
     }];
     assert_eq!(
-        table.prepare_transfer(&excessive, None, None).err(),
+        table
+            .prepare_transfer(&excessive, None, None, HandleTransferRoute::Buffered)
+            .err(),
         Some(HandleError::AccessDenied)
     );
     let missing_transfer = [HandleTransferRequest {
         value: values[1],
+        offered_rights: None,
         rights: Rights::INSPECT,
+        offered_kind: None,
         expected_kind: None,
+        operation: HandleTransferOperation::Move,
     }];
     assert_eq!(
-        table.prepare_transfer(&missing_transfer, None, None).err(),
+        table
+            .prepare_transfer(&missing_transfer, None, None, HandleTransferRoute::Buffered,)
+            .err(),
         Some(HandleError::AccessDenied)
     );
     let forbidden = [HandleTransferRequest {
         value: values[0],
+        offered_rights: None,
         rights: Rights::INSPECT,
+        offered_kind: None,
         expected_kind: None,
+        operation: HandleTransferOperation::Move,
     }];
     assert_eq!(
         table
-            .prepare_transfer(&forbidden, Some(transferable.koid()), None)
+            .prepare_transfer(
+                &forbidden,
+                Some(transferable.koid()),
+                None,
+                HandleTransferRoute::Buffered,
+            )
             .err(),
         Some(HandleError::AccessDenied)
     );
     let wrong_kind = [HandleTransferRequest {
         value: values[0],
+        offered_rights: None,
         rights: Rights::INSPECT,
+        offered_kind: None,
         expected_kind: Some(OTHER_KIND),
+        operation: HandleTransferOperation::Move,
     }];
     assert_eq!(
-        table.prepare_transfer(&wrong_kind, None, None).err(),
+        table
+            .prepare_transfer(&wrong_kind, None, None, HandleTransferRoute::Buffered)
+            .err(),
         Some(HandleError::WrongObjectType)
+    );
+    let wrong_offered_kind = [HandleTransferRequest {
+        value: values[0],
+        offered_rights: None,
+        rights: Rights::INSPECT,
+        offered_kind: Some(OTHER_KIND),
+        expected_kind: None,
+        operation: HandleTransferOperation::Move,
+    }];
+    assert_eq!(
+        table
+            .prepare_transfer(
+                &wrong_offered_kind,
+                None,
+                None,
+                HandleTransferRoute::Rendezvous,
+            )
+            .err(),
+        Some(HandleError::WrongObjectType)
+    );
+    let receiver_overgrant = [HandleTransferRequest {
+        value: values[0],
+        offered_rights: Some(Rights::INSPECT),
+        rights: Rights::WAIT,
+        offered_kind: None,
+        expected_kind: None,
+        operation: HandleTransferOperation::Move,
+    }];
+    assert_eq!(
+        table
+            .prepare_transfer(
+                &receiver_overgrant,
+                None,
+                None,
+                HandleTransferRoute::Rendezvous,
+            )
+            .err(),
+        Some(HandleError::AccessDenied)
     );
     assert_eq!(
         table
-            .prepare_transfer(&forbidden, None, Some(TEST_KIND))
+            .prepare_transfer(
+                &forbidden,
+                None,
+                Some(TEST_KIND),
+                HandleTransferRoute::Buffered,
+            )
             .err(),
         Some(HandleError::UnsupportedTransfer)
     );
     let disguised_forbidden = [HandleTransferRequest {
         value: values[0],
+        offered_rights: None,
         rights: Rights::INSPECT,
+        offered_kind: None,
         expected_kind: Some(OTHER_KIND),
+        operation: HandleTransferOperation::Move,
     }];
     assert_eq!(
         table
@@ -1026,6 +1269,7 @@ fn transfer_validation_is_all_or_nothing() {
                 &disguised_forbidden,
                 Some(transferable.koid()),
                 Some(TEST_KIND),
+                HandleTransferRoute::Buffered,
             )
             .err(),
         Some(HandleError::UnsupportedTransfer)
@@ -1039,6 +1283,301 @@ fn transfer_validation_is_all_or_nothing() {
     assert_eq!(transferable.active_handle_count(), 1);
     remove_all(&mut table);
     assert_eq!(transitions.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn copy_transfer_requires_both_propagation_rights_and_attenuates_them() {
+    let transitions = Arc::new(AtomicUsize::new(0));
+    let source_object = object(61, &transitions);
+    let missing_duplicate_object = object(60, &transitions);
+    let missing_transfer_object = object(59, &transitions);
+    let source_rights = Rights::DUPLICATE
+        .union(Rights::TRANSFER)
+        .union(Rights::WAIT)
+        .union(Rights::INSPECT);
+    let mut source_table = HandleTable::new();
+    let values = {
+        let reservation = crate::require_ok(source_table.reserve::<3>());
+        reservation.publish(
+            &mut source_table,
+            [
+                prepared(
+                    missing_duplicate_object,
+                    Rights::TRANSFER.union(Rights::WAIT).union(Rights::INSPECT),
+                ),
+                prepared(source_object.clone(), source_rights),
+                prepared(
+                    missing_transfer_object,
+                    Rights::DUPLICATE.union(Rights::WAIT).union(Rights::INSPECT),
+                ),
+            ],
+        )
+    };
+
+    let missing_duplicate = [HandleTransferRequest {
+        value: values[0],
+        offered_rights: None,
+        rights: Rights::INSPECT,
+        offered_kind: None,
+        expected_kind: None,
+        operation: HandleTransferOperation::Copy,
+    }];
+    assert_eq!(
+        source_table
+            .prepare_transfer(
+                &missing_duplicate,
+                None,
+                None,
+                HandleTransferRoute::Rendezvous,
+            )
+            .err(),
+        Some(HandleError::AccessDenied)
+    );
+    let missing_transfer = [HandleTransferRequest {
+        value: values[2],
+        offered_rights: None,
+        rights: Rights::INSPECT,
+        offered_kind: None,
+        expected_kind: None,
+        operation: HandleTransferOperation::Copy,
+    }];
+    assert_eq!(
+        source_table
+            .prepare_transfer(
+                &missing_transfer,
+                None,
+                None,
+                HandleTransferRoute::Rendezvous,
+            )
+            .err(),
+        Some(HandleError::AccessDenied)
+    );
+
+    let source_value = values[1];
+    let request = [HandleTransferRequest {
+        value: source_value,
+        offered_rights: None,
+        rights: Rights::TRANSFER.union(Rights::INSPECT),
+        offered_kind: None,
+        expected_kind: None,
+        operation: HandleTransferOperation::Copy,
+    }];
+    let claim = crate::require_ok(source_table.prepare_transfer(
+        &request,
+        None,
+        None,
+        HandleTransferRoute::Rendezvous,
+    ));
+    assert!(matches!(
+        source_table.begin_teardown(),
+        Err(HandleError::OutstandingReservation)
+    ));
+    assert_eq!(source_object.active_handle_count(), 2);
+    assert_eq!(
+        crate::require_ok(source_table.get_info(source_value)).rights,
+        source_rights
+    );
+
+    let mut destination_table = HandleTable::new();
+    let destination = crate::require_ok(destination_table.reserve_batch(1));
+    let transfer = DirectHandleTransfer::new(1, 2, claim, destination);
+    assert_eq!(
+        transfer.lock_order(),
+        HandleTableLockOrder::SourceThenDestination
+    );
+    let destination_value = transfer.destination_values()[0];
+    let retired = transfer.commit_between(&mut source_table, &mut destination_table);
+    drop(retired);
+
+    assert_eq!(
+        crate::require_ok(destination_table.get_info(destination_value)).rights,
+        Rights::TRANSFER.union(Rights::INSPECT)
+    );
+    assert_eq!(
+        destination_table
+            .duplicate(destination_value, Rights::INSPECT)
+            .err(),
+        Some(HandleError::AccessDenied)
+    );
+    assert_eq!(source_object.active_handle_count(), 2);
+    remove_all(&mut source_table);
+    assert_eq!(transitions.load(Ordering::Relaxed), 2);
+    remove_all(&mut destination_table);
+    assert_eq!(transitions.load(Ordering::Relaxed), 3);
+}
+
+#[test]
+fn direct_move_commit_supports_one_table_without_aliasing_references() {
+    let transitions = Arc::new(AtomicUsize::new(0));
+    let source_object = object(62, &transitions);
+    let rights = Rights::TRANSFER.union(Rights::INSPECT);
+    let mut table = HandleTable::new();
+    let source_value = {
+        let reservation = crate::require_ok(table.reserve::<1>());
+        reservation.publish(&mut table, [prepared(source_object.clone(), rights)])[0]
+    };
+    let destination = crate::require_ok(table.reserve_batch(1));
+    let request = [HandleTransferRequest {
+        value: source_value,
+        offered_rights: None,
+        rights: Rights::INSPECT,
+        offered_kind: None,
+        expected_kind: None,
+        operation: HandleTransferOperation::Move,
+    }];
+    let claim = crate::require_ok(table.prepare_transfer(
+        &request,
+        None,
+        None,
+        HandleTransferRoute::Rendezvous,
+    ));
+    let transfer = DirectHandleTransfer::new(7, 7, claim, destination);
+    assert_eq!(transfer.lock_order(), HandleTableLockOrder::SameTable);
+    let destination_value = transfer.destination_values()[0];
+    let retired = transfer.commit_within(&mut table);
+    drop(retired);
+
+    assert_eq!(
+        table.get_info(source_value),
+        Err(HandleError::InvalidHandle)
+    );
+    assert_eq!(
+        crate::require_ok(table.get_info(destination_value)).rights,
+        Rights::INSPECT
+    );
+    assert_eq!(source_object.active_handle_count(), 1);
+    remove_all(&mut table);
+    assert_eq!(transitions.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn batch_reservation_trim_releases_only_the_unused_tail() {
+    let mut table = HandleTable::new();
+    let mut reservation = crate::require_ok(table.reserve_batch(3));
+    let original = reservation.values().to_vec();
+    reservation.trim_to(&mut table, 2);
+    assert_eq!(reservation.values(), &original[..2]);
+    assert_eq!(table.get_info(original[2]), Err(HandleError::InvalidHandle));
+
+    let retired = reservation.abort(&mut table);
+    drop(retired);
+    for value in original {
+        assert_eq!(table.get_info(value), Err(HandleError::InvalidHandle));
+    }
+    assert!(table.free_list_is_consistent_for_test());
+}
+
+#[test]
+fn direct_transfer_rollback_restores_moves_and_releases_copies_out_of_lock() {
+    let transitions = Arc::new(AtomicUsize::new(0));
+    let moved_object = object(63, &transitions);
+    let copied_object = object(64, &transitions);
+    let rights = Rights::DUPLICATE
+        .union(Rights::TRANSFER)
+        .union(Rights::INSPECT);
+    let mut source_table = HandleTable::new();
+    let values = {
+        let reservation = crate::require_ok(source_table.reserve::<2>());
+        reservation.publish(
+            &mut source_table,
+            [
+                prepared(moved_object.clone(), rights),
+                prepared(copied_object.clone(), rights),
+            ],
+        )
+    };
+    let requests = [
+        HandleTransferRequest {
+            value: values[0],
+            offered_rights: None,
+            rights: Rights::INSPECT,
+            offered_kind: None,
+            expected_kind: None,
+            operation: HandleTransferOperation::Move,
+        },
+        HandleTransferRequest {
+            value: values[1],
+            offered_rights: None,
+            rights: Rights::INSPECT,
+            offered_kind: None,
+            expected_kind: None,
+            operation: HandleTransferOperation::Copy,
+        },
+    ];
+    let claim = crate::require_ok(source_table.prepare_transfer(
+        &requests,
+        None,
+        None,
+        HandleTransferRoute::Rendezvous,
+    ));
+    let mut destination_table = HandleTable::new();
+    let destination = crate::require_ok(destination_table.reserve_batch(2));
+    let transfer = DirectHandleTransfer::new(9, 3, claim, destination);
+    assert_eq!(
+        transfer.lock_order(),
+        HandleTableLockOrder::DestinationThenSource
+    );
+    let future_values = transfer.destination_values().to_vec();
+    let retired = transfer.rollback_between(&mut source_table, &mut destination_table);
+
+    assert_eq!(
+        crate::require_ok(source_table.get_info(values[0])).rights,
+        rights
+    );
+    assert_eq!(
+        crate::require_ok(source_table.get_info(values[1])).rights,
+        rights
+    );
+    assert_eq!(moved_object.active_handle_count(), 1);
+    // The duplicate owner is intentionally retained until transaction storage
+    // leaves the Process-lock scope.
+    assert_eq!(copied_object.active_handle_count(), 2);
+    drop(retired);
+    assert_eq!(copied_object.active_handle_count(), 1);
+    for value in future_values {
+        assert_eq!(
+            destination_table.get_info(value),
+            Err(HandleError::InvalidHandle)
+        );
+    }
+    remove_all(&mut source_table);
+    remove_all(&mut destination_table);
+    assert_eq!(transitions.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn buffered_routes_reject_graph_objects_but_rendezvous_accepts_them() {
+    let object = crate::require_ok(PublishableRef::try_new(RendezvousObject));
+    let rights = Rights::DUPLICATE
+        .union(Rights::TRANSFER)
+        .union(Rights::INSPECT);
+    let mut table = HandleTable::new();
+    let value = {
+        let reservation = crate::require_ok(table.reserve::<1>());
+        reservation.publish(&mut table, [prepared(object, rights)])[0]
+    };
+    let request = [HandleTransferRequest {
+        value,
+        offered_rights: None,
+        rights: Rights::INSPECT,
+        offered_kind: None,
+        expected_kind: Some(OTHER_KIND),
+        operation: HandleTransferOperation::Move,
+    }];
+    assert_eq!(
+        table
+            .prepare_transfer(&request, None, None, HandleTransferRoute::Buffered)
+            .err(),
+        Some(HandleError::UnsupportedTransfer)
+    );
+    let claim = crate::require_ok(table.prepare_transfer(
+        &request,
+        None,
+        None,
+        HandleTransferRoute::Rendezvous,
+    ));
+    claim.rollback(&mut table);
+    remove_all(&mut table);
 }
 
 #[test]

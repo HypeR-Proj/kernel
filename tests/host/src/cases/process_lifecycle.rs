@@ -71,6 +71,40 @@ fn first_terminal_reason_wins_every_later_stop_race() {
 }
 
 #[test]
+fn process_start_is_a_one_shot_transition() {
+    let mut process = ProcessLifecycle::prepared();
+    assert_eq!(process.publish(), Ok(()));
+    assert_eq!(process.start(), Ok(()));
+    assert_eq!(process.start(), Err(LifecycleError::AdmissionClosed));
+    assert_eq!(process.phase(), ProcessPhase::Running);
+}
+
+#[test]
+fn unpublished_child_admits_exactly_one_initial_thread() {
+    let mut process = ProcessLifecycle::prepared();
+    assert_eq!(process.reserve_initial_thread(), Ok(()));
+    assert_eq!(process.pending_threads(), 1);
+    assert_eq!(
+        process.reserve_initial_thread(),
+        Err(LifecycleError::AdmissionClosed)
+    );
+    assert_eq!(process.publish_thread(), Ok(()));
+    assert_eq!(process.active_threads(), 1);
+    assert_eq!(process.publish(), Ok(()));
+    assert_eq!(process.start(), Ok(()));
+}
+
+#[test]
+fn cancelled_initial_thread_restores_unpublished_child() {
+    let mut process = ProcessLifecycle::prepared();
+    assert_eq!(process.reserve_initial_thread(), Ok(()));
+    assert_eq!(process.abort_thread(), Ok(false));
+    assert_eq!(process.phase(), ProcessPhase::Prepared);
+    assert_eq!(process.pending_threads(), 0);
+    assert_eq!(process.reserve_initial_thread(), Ok(()));
+}
+
+#[test]
 fn explicit_thread_exit_supplies_the_last_thread_status() {
     let mut process = ProcessLifecycle::prepared();
     assert_eq!(process.publish(), Ok(()));

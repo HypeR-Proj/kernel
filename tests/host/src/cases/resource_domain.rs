@@ -9,10 +9,20 @@ use std::sync::{Arc, Barrier};
 #[allow(dead_code, unused_imports)]
 mod accounting;
 
-use accounting::{ResourceAmount, ResourceDomain, ResourceError, ResourceKind, ResourceLimits};
+use accounting::{
+    ChargeReservation, CommittedCharge, ResourceAmount, ResourceDomain, ResourceError,
+    ResourceKind, ResourceLimits,
+};
 
 fn amount(kind: ResourceKind, value: u64) -> ResourceAmount {
     ResourceAmount::ZERO.with(kind, value)
+}
+
+#[test]
+fn charge_owners_retain_a_bounded_inline_accounting_delta() {
+    assert!(core::mem::size_of::<ResourceAmount>() <= 56);
+    assert!(core::mem::size_of::<ChargeReservation>() <= 64);
+    assert!(core::mem::size_of::<CommittedCharge>() <= 64);
 }
 
 fn all_kinds() -> [ResourceKind; 19] {
@@ -119,6 +129,38 @@ fn empty_requests_are_rejected_without_observable_usage() {
     assert!(matches!(
         domain.reserve(ResourceAmount::ZERO),
         Err(ResourceError::EmptyCharge)
+    ));
+    for kind in all_kinds() {
+        assert_eq!(domain.usage().total(kind), 0);
+    }
+}
+
+#[test]
+fn compact_requests_replace_remove_and_bound_distinct_dimensions() {
+    let replaced = ResourceAmount::ZERO
+        .with(ResourceKind::Handles, 1)
+        .with(ResourceKind::Threads, 2)
+        .with(ResourceKind::Handles, 3)
+        .with(ResourceKind::Threads, 0);
+    assert_eq!(replaced.get(ResourceKind::Handles), 3);
+    assert_eq!(replaced.get(ResourceKind::Threads), 0);
+
+    let six_dimensions = ResourceAmount::ZERO
+        .with(ResourceKind::KernelMemoryBytes, 1)
+        .with(ResourceKind::KernelObjects, 1)
+        .with(ResourceKind::CommittedPages, 1)
+        .with(ResourceKind::PinnedPages, 1)
+        .with(ResourceKind::UserAddressSpaces, 1)
+        .with(ResourceKind::UserMappings, 1);
+    let domain = crate::require_ok(ResourceDomain::try_new_root(ResourceLimits::UNLIMITED));
+    let reservation = crate::require_ok(domain.reserve(six_dimensions));
+    assert_eq!(domain.usage().pending(ResourceKind::UserMappings), 1);
+    reservation.abort();
+
+    let overflowed = six_dimensions.with(ResourceKind::Threads, 1);
+    assert!(matches!(
+        domain.reserve(overflowed),
+        Err(ResourceError::TooManyChargeDimensions)
     ));
     for kind in all_kinds() {
         assert_eq!(domain.usage().total(kind), 0);
