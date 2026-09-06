@@ -21,8 +21,8 @@ use crate::kernel::mm::user_space::{
 };
 use crate::kernel::object::{Event, KernelObject};
 use crate::kernel::process::{
-    MachineAbi, PreparedProcess, Process, ProcessError, ProcessImage, ProcessPhase, TaskGroup,
-    TerminalReason,
+    MachineAbi, PreparedProcess, Process, ProcessError, ProcessImage, ProcessObject, ProcessPhase,
+    TaskGroup, TerminalReason,
 };
 
 const IMAGE_BASE: u64 = 0x80_0000;
@@ -446,7 +446,11 @@ fn create_process(domain: &ResourceDomain, group: &TaskGroup) -> Result<Process,
                 return Err(Error::Construction);
             }
         };
-    Ok(prepared.publish())
+    let object = ProcessObject::try_service(prepared.process()).map_err(|_| Error::Construction)?;
+    Ok(prepared.publish(
+        object,
+        crate::kernel::process::ProcessNameSnapshot::from_validated("channel-test"),
+    ))
 }
 
 fn write_user(process: &Process, offset: u64, bytes: &[u8]) -> Result<UserSlice, Error> {

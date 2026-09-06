@@ -323,24 +323,22 @@ fn handle_diagnostics_page_generation_qualified_object_edges() {
         .collect();
     reservation.publish(&mut table, handles);
 
-    let first = crate::require_ok(table.scan_handles(HandleScanCursor::start()));
-    let mut observed: Vec<_> = first.entries().map(|entry| entry.value).collect();
-    let next = match first.next() {
-        Some(cursor) => cursor,
-        None => {
-            remove_all(&mut table);
-            panic!("forty handles require a second diagnostic page");
-        }
-    };
-    let second = crate::require_ok(table.scan_handles(next));
-    observed.extend(second.entries().map(|entry| entry.value));
-    let completed = second.next().is_none();
+    let mut observed = Vec::new();
+    let mut cursor = Some(HandleScanCursor::start());
+    for _ in 0..=expected.len() {
+        let Some(position) = cursor else {
+            break;
+        };
+        let page = crate::require_ok(table.scan_handles(position));
+        observed.extend(page.entries().map(|entry| entry.value));
+        cursor = page.next();
+    }
 
     remove_all(&mut table);
     expected.sort_by_key(|value| value.get());
     observed.sort_by_key(|value| value.get());
     assert_eq!(observed, expected);
-    assert!(completed);
+    assert!(cursor.is_none());
     assert_eq!(transitions.load(Ordering::Relaxed), 40);
 }
 

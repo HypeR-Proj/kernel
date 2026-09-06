@@ -14,6 +14,7 @@ pub(super) enum Error {
     MissingLiveObject,
     MissingSchedulerObject,
     MissingSchedulerRelation,
+    MissingInspectorObservation,
     ObservationChangedOwnership,
     ReaperDidNotRun,
     RetainedDeadObject,
@@ -46,7 +47,29 @@ pub(super) fn run() -> Result<(), Error> {
     }
     verify_final_reap()?;
     verify_current_thread_object()?;
+    verify_system_inspectors(&domain)?;
     drop(domain);
+    Ok(())
+}
+
+fn verify_system_inspectors(domain: &ResourceDomain) -> Result<(), Error> {
+    let tasks = crate::kernel::inspect::TaskInspector::try_system(domain)
+        .map_err(|_| Error::Construction)?;
+    let threads = tasks
+        .scan_threads(0)
+        .map_err(|_| Error::MissingInspectorObservation)?;
+    if threads.len() == 0 {
+        return Err(Error::MissingInspectorObservation);
+    }
+
+    let objects = crate::kernel::inspect::ObjectInspector::try_system(domain)
+        .map_err(|_| Error::Construction)?;
+    let page = objects
+        .scan_objects(0)
+        .map_err(|_| Error::MissingInspectorObservation)?;
+    if page.len() == 0 {
+        return Err(Error::MissingInspectorObservation);
+    }
     Ok(())
 }
 
@@ -74,6 +97,8 @@ fn verify_final_reap() -> Result<(), Error> {
 fn verify_current_thread_object() -> Result<(), Error> {
     let thread =
         crate::kernel::task::scheduler::current_thread_id().map_err(|_| Error::CurrentThread)?;
+    let name =
+        crate::kernel::task::scheduler::thread_name(thread).map_err(|_| Error::CurrentThread)?;
     let object = crate::kernel::task::scheduler::thread_object_snapshot(thread)
         .map_err(|_| Error::MissingSchedulerObject)?;
     if object.object.kind != ObjectKind::THREAD
@@ -89,6 +114,7 @@ fn verify_current_thread_object() -> Result<(), Error> {
             .map_err(|_| Error::MissingSchedulerRelation)?;
         if page.entries().any(|entry| {
             entry.thread == thread
+                && entry.name == name
                 && entry.object.object.koid == object.object.koid
                 && entry.phase == ThreadObjectRegistryPhase::Resident
         }) {

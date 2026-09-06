@@ -351,13 +351,12 @@ fn exercise_affinity_creation() -> Result<(), Error> {
     let registry_before = scheduler::registry_slot_count()?;
     let before = scheduler::kthread_create("reservation-before", fifo_peer, 0)?;
     scheduler::discard_dormant_kernel_thread(before)?;
-    if scheduler::kthread_create(
-        "this-thread-name-is-deliberately-longer-than-the-fixed-capacity",
-        fifo_peer,
-        0,
-    )
-    .is_ok()
-    {
+    let overlong_name = [b'x'; crate::kernel::task::thread::MAX_THREAD_NAME_BYTES + 1];
+    let overlong_name = match core::str::from_utf8(&overlong_name) {
+        Ok(name) => name,
+        Err(_) => return Err(Error::Affinity(9)),
+    };
+    if scheduler::kthread_create(overlong_name, fifo_peer, 0).is_ok() {
         return Err(Error::Affinity(9));
     }
     let after = scheduler::kthread_create("reservation-after", fifo_peer, 0)?;
