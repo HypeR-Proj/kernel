@@ -39,11 +39,12 @@ const CASCADING_KIND: ObjectKind = match NonZeroU32::new(0x7fff_ff03) {
 };
 
 #[test]
-fn process_builder_storage_policy_is_explicit_and_cycle_averse() {
+fn process_builder_storage_policy_is_explicit_and_bounds_graph_authority() {
     for admitted in [
         ObjectKind::EVENT,
         ObjectKind::BYTE_CHANNEL,
         ObjectKind::CAPABILITY_CHANNEL,
+        ObjectKind::TASK_GROUP,
         ObjectKind::RESOURCE_DOMAIN,
         ObjectKind::TASK_FACTORY,
         ObjectKind::EXECUTABLE_AUTHORITY,
@@ -60,7 +61,6 @@ fn process_builder_storage_policy_is_explicit_and_cycle_averse() {
         ObjectKind::PROCESS_BUILDER,
         ObjectKind::PROCESS,
         ObjectKind::THREAD,
-        ObjectKind::TASK_GROUP,
         ObjectKind::VMAR,
         TEST_KIND,
     ] {

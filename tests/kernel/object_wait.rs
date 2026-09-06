@@ -9,7 +9,8 @@ use hyper::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::kernel::accounting::{ResourceAmount, ResourceDomain, ResourceKind, ResourceLimits};
 use crate::kernel::object::{
-    Event, EventError, PreparedSignalWait, SignalWaitError, SignalWaitOutcome,
+    Event, EventError, KernelObject, ObjectWaitError, PreparedSignalWait, SignalWaitError,
+    SignalWaitManyOutcome, SignalWaitOutcome, SignalWaitRequest,
 };
 use crate::kernel::sync::Semaphore;
 use crate::kernel::task::scheduler::{self, CpuMask};
@@ -25,6 +26,7 @@ const PRECURSOR_TIMEOUT: usize = 1;
 const PRECURSOR_CANCEL: usize = 2;
 const COMPLETION_TIMED_OUT: u64 = 2;
 const COMPLETION_CANCELLED: u64 = 3;
+const COMPLETION_MULTI_SECOND: u64 = 0x101;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Error {
@@ -65,12 +67,22 @@ pub(super) fn run() -> Result<(), Error> {
     let domain =
         ResourceDomain::try_new_root(ResourceLimits::UNLIMITED).map_err(|_| Error::Resource)?;
     let event = Event::try_new(&domain).map_err(|_| Error::Event)?;
-    let state = try_box(TestState { domain, event }).map_err(|_| Error::Resource)?;
+    let second_event = Event::try_new(&domain).map_err(|_| Error::Event)?;
+    let state = try_box(TestState {
+        domain,
+        event,
+        second_event,
+    })
+    .map_err(|_| Error::Resource)?;
 
     reset_event(&state.event)?;
     exercise_signal_before_arm(&state)?;
     reset_event(&state.event)?;
     exercise_latched_observation(&state)?;
+    reset_event(&state.event)?;
+    exercise_multi_wait_validation(&state)?;
+    exercise_multi_wait_cancellation(&state)?;
+    exercise_multi_wait_wakeup(&state)?;
     reset_event(&state.event)?;
     exercise_resolution_before_park(
         &state,
@@ -95,6 +107,98 @@ pub(super) fn run() -> Result<(), Error> {
 struct TestState {
     domain: ResourceDomain,
     event: Event,
+    second_event: Event,
+}
+
+/// Every item is validated before an already-ready duplicate may be selected.
+fn exercise_multi_wait_validation(state: &TestState) -> Result<(), Error> {
+    state
+        .event
+        .signal(0, Event::SIGNALED.bits())
+        .map_err(|_| Error::Event)?;
+    let source = state
+        .event
+        .signal_source()
+        .ok_or(Error::StateMismatch(31))?;
+    let invalid = [
+        SignalWaitRequest::new(source, 1_u64 << 63),
+        SignalWaitRequest::new(source, Event::SIGNALED.bits()),
+    ];
+    if !matches!(
+        crate::kernel::object::wait_many(
+            &invalid,
+            &state.domain,
+            hyper::abi::native::HYPER_NATIVE_DEADLINE_INFINITE,
+            || false,
+        ),
+        Err(ObjectWaitError::InvalidSignals)
+    ) {
+        return Err(Error::StateMismatch(32));
+    }
+    reset_event(&state.event)?;
+    Ok(())
+}
+
+/// Cancellation after scheduler arming must remove every shared registration.
+fn exercise_multi_wait_cancellation(state: &TestState) -> Result<(), Error> {
+    reset_event(&state.second_event)?;
+    let first = state
+        .event
+        .signal_source()
+        .ok_or(Error::StateMismatch(34))?;
+    let second = state
+        .second_event
+        .signal_source()
+        .ok_or(Error::StateMismatch(35))?;
+    let requests = [
+        SignalWaitRequest::new(first, Event::SIGNALED.bits()),
+        SignalWaitRequest::new(second, Event::SIGNALED.bits()),
+    ];
+    if crate::kernel::object::wait_many(
+        &requests,
+        &state.domain,
+        hyper::abi::native::HYPER_NATIVE_DEADLINE_INFINITE,
+        || true,
+    )
+    .map_err(|_| Error::StateMismatch(38))?
+        != SignalWaitManyOutcome::Cancelled
+    {
+        return Err(Error::StateMismatch(36));
+    }
+    if state.event.waiter_count() != 0 || state.second_event.waiter_count() != 0 {
+        return Err(Error::StateMismatch(37));
+    }
+    Ok(())
+}
+
+/// One shared scheduler generation must wake from any registered source.
+fn exercise_multi_wait_wakeup(state: &TestState) -> Result<(), Error> {
+    reset_event(&state.second_event)?;
+    COMPLETION.store(0, Ordering::Release);
+    FAILURE.store(0, Ordering::Release);
+    let waiter = scheduler::kthread_create_with_affinity(
+        "object-wait/many",
+        multi_event_waiter,
+        core::ptr::from_ref(state).expose_provenance(),
+        CpuMask::single(CpuIndex::BOOT),
+    )?;
+    scheduler::thread_ready(waiter)?;
+    if !crate::kernel::task::wait_for_test_progress(
+        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
+        || {
+            Ok::<_, Error>(
+                state.event.waiter_count() == 1 && state.second_event.waiter_count() == 1,
+            )
+        },
+    )? {
+        return Err(Error::StateMismatch(33));
+    }
+    state
+        .second_event
+        .signal(0, Event::SIGNALED.bits())
+        .map_err(|_| Error::Event)?;
+    DONE.acquire()?;
+    verify_waiter(COMPLETION_MULTI_SECOND, 3)
 }
 
 /// A level asserted before registration must complete the Armed generation.
@@ -143,14 +247,14 @@ fn exercise_sequence_exhaustion(event: &Event) -> Result<(), Error> {
     if event.signal(0, Event::SIGNALED.bits())
         != Err(EventError::SignalWait(SignalWaitError::SequenceExhausted))
     {
-        return Err(Error::StateMismatch(31));
+        return Err(Error::StateMismatch(41));
     }
     if event
         .observe(Event::SIGNALED.bits())
         .map_err(|_| Error::Event)?
         .is_some()
     {
-        return Err(Error::StateMismatch(32));
+        return Err(Error::StateMismatch(42));
     }
     Ok(())
 }
@@ -223,6 +327,41 @@ extern "C" fn event_waiter(argument: usize) {
         }
         Ok(SignalWaitOutcome::Cancelled) => {
             COMPLETION.store(COMPLETION_CANCELLED, Ordering::Release)
+        }
+        Ok(_) => FAILURE.store(1, Ordering::Release),
+        Err(()) => FAILURE.store(2, Ordering::Release),
+    }
+    if DONE.release().is_err() {
+        FAILURE.store(3, Ordering::Release);
+    }
+}
+
+extern "C" fn multi_event_waiter(argument: usize) {
+    // SAFETY: `run` retains the boxed state until DONE and worker quiescence.
+    let state = unsafe { &*core::ptr::with_exposed_provenance::<TestState>(argument) };
+    let result = state
+        .event
+        .signal_source()
+        .zip(state.second_event.signal_source())
+        .ok_or(())
+        .and_then(|(first, second)| {
+            let requests = [
+                SignalWaitRequest::new(first, Event::SIGNALED.bits()),
+                SignalWaitRequest::new(second, Event::SIGNALED.bits()),
+            ];
+            crate::kernel::object::wait_many(
+                &requests,
+                &state.domain,
+                hyper::abi::native::HYPER_NATIVE_DEADLINE_INFINITE,
+                || false,
+            )
+            .map_err(|_| ())
+        });
+    match result {
+        Ok(SignalWaitManyOutcome::Observed { index: 1, snapshot })
+            if snapshot.signals() == Event::SIGNALED =>
+        {
+            COMPLETION.store(COMPLETION_MULTI_SECOND, Ordering::Release);
         }
         Ok(_) => FAILURE.store(1, Ordering::Release),
         Err(()) => FAILURE.store(2, Ordering::Release),
