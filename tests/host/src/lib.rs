@@ -16,8 +16,20 @@ mod aarch64_stage2_retirement_model;
 #[path = "../../../src/arch/aarch64/user_contract.rs"]
 mod aarch64_user_contract_model;
 #[cfg(test)]
+#[path = "../../../src/kernel/io_cache/mod.rs"]
+mod file_data_cache;
+#[cfg(test)]
 #[path = "../../../src/arch/aarch64/registers.rs"]
 mod registers;
+#[cfg(test)]
+#[path = "../../../src/kernel/vfs/read_contract.rs"]
+mod vfs_read_contract;
+#[cfg(test)]
+#[path = "../../../src/kernel/vfs/resolve_state.rs"]
+mod vfs_resolve_state;
+#[cfg(test)]
+#[path = "../../../src/kernel/vfs/rights_contract.rs"]
+mod vfs_rights_contract;
 #[cfg(test)]
 #[path = "../../../src/kernel/vm/address_space_state.rs"]
 mod vm_address_space_state_model;
@@ -99,6 +111,9 @@ mod fallible_ownership;
 #[path = "cases/fdt.rs"]
 mod fdt;
 #[cfg(test)]
+#[path = "cases/file_data_cache.rs"]
+mod file_data_cache_cases;
+#[cfg(test)]
 #[path = "cases/foreign_memory_copy.rs"]
 mod foreign_memory_copy;
 #[cfg(test)]
@@ -176,6 +191,15 @@ mod translation_id;
 #[cfg(test)]
 #[path = "cases/user_memory.rs"]
 mod user_memory;
+#[cfg(test)]
+#[path = "cases/vfs_core.rs"]
+mod vfs_core;
+#[cfg(test)]
+#[path = "cases/vfs_read_contract.rs"]
+mod vfs_read_contract_cases;
+#[cfg(test)]
+#[path = "cases/vfs_rights_contract.rs"]
+mod vfs_rights_contract_cases;
 #[cfg(test)]
 #[path = "cases/vgic.rs"]
 mod vgic;

@@ -4,7 +4,8 @@
 //! CPIO parsing and nested VM package selection contracts.
 
 use hyper::archive::cpio::{Archive, EntryKind, Error};
-use hyper::fs::ramfs::{Error as RamFsError, NodeKind, RamFs};
+use hyper::fs::NodeKind;
+use hyper::fs::ramfs::{Error as RamFsError, RamFs};
 use hyper::vm::bundle;
 
 fn append_hex(output: &mut Vec<u8>, value: u32) {
@@ -145,7 +146,9 @@ fn mounts_an_immutable_root_filesystem_with_canonical_lookup() {
     ]);
     let root = crate::require_ok(RamFs::from_newc(&bytes));
 
-    assert_eq!(root.nodes().len(), 3);
+    assert_eq!(root.nodes().len(), 4);
+    assert_eq!(root.root().path(), "/");
+    assert_eq!(root.root().kind(), NodeKind::Directory);
     let init = crate::require_some(crate::require_ok(root.lookup("/init")));
     assert_eq!(init.kind(), NodeKind::File);
     assert!(init.is_executable());

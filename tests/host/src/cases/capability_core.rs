@@ -50,8 +50,8 @@ fn process_builder_storage_policy_is_explicit_and_bounds_graph_authority() {
         ObjectKind::EXECUTABLE_AUTHORITY,
         ObjectKind::VMO,
         ObjectKind::CONSOLE,
-        ObjectKind::BOOT_FS,
-        ObjectKind::BOOT_FILE,
+        ObjectKind::DIRECTORY,
+        ObjectKind::FILE,
     ] {
         assert!(builder_policy::BuilderStorable::permits_kind_id(
             admitted.get()

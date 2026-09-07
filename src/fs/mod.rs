@@ -3,4 +3,12 @@
 
 //! Reusable filesystem mechanisms consumed by kernel storage policy.
 
+mod name;
+mod node;
+mod path;
+
 pub mod ramfs;
+
+pub use name::{MAX_NAME_BYTES, Name, NameError};
+pub use node::{NodeAttributes, NodeId, NodeKind};
+pub use path::{MAX_PATH_BYTES, MAX_PATH_COMPONENTS, Path, PathComponent, PathError};

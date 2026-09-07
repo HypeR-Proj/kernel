@@ -23,7 +23,7 @@ enum KernelStartError {
     Cpu(crate::kernel::cpu::Error),
     Crash(crate::kernel::crash::InitializationError),
     EarlyCrash(crate::kernel::crash::EarlyInitializationError),
-    FileSystem(crate::kernel::fs::InitializationError),
+    FileSystem(crate::kernel::vfs::InitializationError),
     #[cfg(not(feature = "kernel-self-test"))]
     Init(crate::kernel::init::Error),
     Debug(crate::kernel::debug::InitializationError),
@@ -55,7 +55,7 @@ impl_kernel_start_error! {
     Cpu(crate::kernel::cpu::Error),
     Crash(crate::kernel::crash::InitializationError),
     EarlyCrash(crate::kernel::crash::EarlyInitializationError),
-    FileSystem(crate::kernel::fs::InitializationError),
+    FileSystem(crate::kernel::vfs::InitializationError),
     Debug(crate::kernel::debug::InitializationError),
     Device(crate::kernel::device::InitializationError),
     Interrupt(crate::kernel::irq::InitializationError),
@@ -117,7 +117,7 @@ extern "C" fn start_kernel() -> ! {
         crate::kernel::device::early_initialize(&boot)?;
 
         crate::kernel::mm::initialize()?;
-        crate::kernel::fs::initialize(&boot)?;
+        crate::kernel::vfs::initialize(&boot)?;
         crate::kernel::debug::initialize()?;
         crate::kernel::task::initialize()?;
         crate::kernel::reaper::initialize()?;
