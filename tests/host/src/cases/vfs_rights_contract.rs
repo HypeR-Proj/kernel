@@ -3,7 +3,7 @@
 
 use hyper::abi::native;
 
-use crate::vfs_rights_contract::directory_rights_for_file;
+use crate::vfs_rights_contract::{directory_rights_for_directory, directory_rights_for_file};
 
 #[test]
 fn every_file_right_is_derived_from_the_source_directory() {
@@ -36,6 +36,31 @@ fn non_file_rights_cannot_cross_the_directory_boundary() {
     );
     assert_eq!(
         directory_rights_for_file(native::HYPER_NATIVE_RIGHT_READ | native::HYPER_NATIVE_RIGHT_MAP),
+        None
+    );
+}
+
+#[test]
+fn child_directory_rights_are_monotonically_derived() {
+    for requested in [
+        0,
+        native::HYPER_NATIVE_RIGHT_READ,
+        native::HYPER_NATIVE_RIGHT_EXECUTE,
+        native::HYPER_NATIVE_RIGHT_DUPLICATE,
+        native::HYPER_NATIVE_RIGHT_TRANSFER,
+        native::HYPER_NATIVE_RIGHT_INSPECT,
+    ] {
+        let required = crate::require_some(directory_rights_for_directory(requested));
+        assert_ne!(required & native::HYPER_NATIVE_RIGHT_READ, 0);
+        assert_eq!(required & requested, requested);
+    }
+
+    assert_eq!(
+        directory_rights_for_directory(native::HYPER_NATIVE_RIGHT_WRITE),
+        None
+    );
+    assert_eq!(
+        directory_rights_for_directory(native::HYPER_NATIVE_RIGHT_MAP),
         None
     );
 }
