@@ -190,19 +190,50 @@ fn vhe_register_encoding_uses_the_stage1_asid_field() {
 
 #[test]
 fn lower_el_vector_does_not_determine_the_vhe_return_world() {
+    // HCR_EL2[11] is RES0 in the admitted AArch64 register contract. Keep it
+    // in the contaminated input so explicit guest policy cannot accidentally
+    // widen BSU into a two-bit field.
+    const HCR_EL2_RES0_11: u64 = 1 << 11;
     let host_hcr = registers::HCR_EL2_VHE_HOST_VALUE
         | registers::HCR_EL2_VM
         | registers::HCR_EL2_VI
         | registers::HCR_EL2_VF
-        | registers::HCR_EL2_FB;
+        | registers::HCR_EL2_FB
+        | registers::HCR_EL2_DC
+        | registers::HCR_EL2_TID0
+        | registers::HCR_EL2_TID1
+        | registers::HCR_EL2_TID2
+        | registers::HCR_EL2_TSW
+        | registers::HCR_EL2_TPCP
+        | registers::HCR_EL2_TPU
+        | registers::HCR_EL2_TTLB
+        | HCR_EL2_RES0_11;
     let native = LowerElReturnRegime::Native(UserTranslationRegime::VheHostStage1)
         .transition_hcr(host_hcr)
         .unwrap_or_else(|error| panic!("valid native return rejected: {error:?}"));
     let guest = LowerElReturnRegime::Guest
-        .transition_hcr(host_hcr)
+        .transition_hcr(host_hcr & !registers::HCR_EL2_FB)
         .unwrap_or_else(|error| panic!("valid guest return rejected: {error:?}"));
+    let expected_guest = registers::HCR_EL2_E2H
+        | registers::HCR_EL2_VM
+        | registers::HCR_EL2_SWIO
+        | registers::HCR_EL2_PTW
+        | registers::HCR_EL2_RW
+        | registers::HCR_EL2_FMO
+        | registers::HCR_EL2_IMO
+        | registers::HCR_EL2_AMO
+        | registers::HCR_EL2_TWI
+        | registers::HCR_EL2_TWE
+        | registers::HCR_EL2_TID3
+        | registers::HCR_EL2_TSC
+        | registers::HCR_EL2_TACR
+        | registers::HCR_EL2_TIDCP
+        | registers::HCR_EL2_FB
+        | registers::HCR_EL2_BSU_IS;
 
     assert_ne!(native & registers::HCR_EL2_TGE, 0);
+    assert_eq!(guest, expected_guest, "guest HCR must be explicit policy");
+    assert_eq!(registers::HCR_EL2_BSU_MASK & HCR_EL2_RES0_11, 0);
     assert_eq!(native & registers::HCR_EL2_VM, 0);
     assert_eq!(
         native & (registers::HCR_EL2_VI | registers::HCR_EL2_VF | registers::HCR_EL2_FB),
@@ -212,6 +243,26 @@ fn lower_el_vector_does_not_determine_the_vhe_return_world() {
     assert_eq!(guest & registers::HCR_EL2_TGE, 0);
     assert_ne!(guest & registers::HCR_EL2_VM, 0);
     assert_ne!(
+        guest & registers::HCR_EL2_E2H,
+        0,
+        "guest entry must preserve the host's VHE register regime"
+    );
+    assert_ne!(
+        guest & registers::HCR_EL2_FB,
+        0,
+        "migratable guests require broadcast guest cache/TLB maintenance"
+    );
+    assert_eq!(
+        guest & registers::HCR_EL2_BSU_MASK,
+        registers::HCR_EL2_BSU_IS,
+        "guest barriers must complete broadcast maintenance in the inner-shareable domain"
+    );
+    assert_eq!(
+        guest & (registers::HCR_EL2_SWIO | registers::HCR_EL2_PTW),
+        registers::HCR_EL2_SWIO | registers::HCR_EL2_PTW,
+        "guest cache and table-walk policy must preserve host memory integrity"
+    );
+    assert_ne!(
         guest & registers::HCR_EL2_TWI,
         0,
         "guest entry must route WFI through the scheduler wait contract"
@@ -220,6 +271,28 @@ fn lower_el_vector_does_not_determine_the_vhe_return_world() {
         guest & registers::HCR_EL2_TWE,
         0,
         "guest entry must route WFE through explicit exit handling"
+    );
+    assert_ne!(
+        guest & registers::HCR_EL2_TID3,
+        0,
+        "guest feature-ID reads must route through the sanitized virtual CPU model"
+    );
+    assert_eq!(
+        guest & (registers::HCR_EL2_TSC | registers::HCR_EL2_TACR | registers::HCR_EL2_TIDCP),
+        registers::HCR_EL2_TSC | registers::HCR_EL2_TACR | registers::HCR_EL2_TIDCP,
+        "guest firmware and implementation-defined accesses must remain virtualized"
+    );
+    assert_eq!(
+        guest
+            & (registers::HCR_EL2_TID0
+                | registers::HCR_EL2_TID1
+                | registers::HCR_EL2_TID2
+                | registers::HCR_EL2_TSW
+                | registers::HCR_EL2_TPCP
+                | registers::HCR_EL2_TPU
+                | registers::HCR_EL2_TTLB),
+        0,
+        "native-only trap policy must not leak into a guest"
     );
 }
 
@@ -245,6 +318,8 @@ fn nvhe_native_and_guest_returns_have_different_cache_regimes() {
     assert_ne!(native & registers::HCR_EL2_DC, 0);
     assert_eq!(guest & registers::HCR_EL2_TGE, 0);
     assert_eq!(guest & registers::HCR_EL2_DC, 0);
+    assert_eq!(guest & registers::HCR_EL2_E2H, 0);
+    assert_ne!(guest & registers::HCR_EL2_VM, 0);
 }
 
 #[test]

@@ -15,6 +15,9 @@ rustflags = [
     "-C", "link-arg=--pack-dyn-relocs=relr",
     "-C", "link-arg=--export-dynamic",
     "-C", "relocation-model=pic",
+    # Keep baseline Armv8-A code while compiler-builtins dispatches atomic
+    # read-modify-write operations to LSE after the kernel publishes its
+    # runtime selector. Rust currently diagnoses this LLVM feature as unstable.
     "-C", "target-feature=+outline-atomics",
     "-C", "force-frame-pointers=yes",
 ]

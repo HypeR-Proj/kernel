@@ -73,6 +73,51 @@ fn reservation_commit_and_release_preserve_distinct_usage_states() {
 }
 
 #[test]
+fn committed_charge_extension_is_atomic_and_releases_the_combined_delta() {
+    let domain = crate::require_ok(ResourceDomain::try_new_root(
+        ResourceLimits::UNLIMITED
+            .with(ResourceKind::GuestPages, 3)
+            .with(ResourceKind::PinnedPages, 3),
+    ));
+    let mut charge = crate::require_ok(
+        domain.reserve(
+            ResourceAmount::ZERO
+                .with(ResourceKind::GuestPages, 1)
+                .with(ResourceKind::PinnedPages, 1),
+        ),
+    )
+    .commit();
+
+    assert!(
+        charge
+            .try_extend(
+                ResourceAmount::ZERO
+                    .with(ResourceKind::GuestPages, 2)
+                    .with(ResourceKind::PinnedPages, 2),
+            )
+            .is_ok()
+    );
+    assert_eq!(charge.amount().get(ResourceKind::GuestPages), 3);
+    assert_eq!(domain.usage().committed(ResourceKind::GuestPages), 3);
+    assert_eq!(domain.usage().committed(ResourceKind::PinnedPages), 3);
+
+    assert!(matches!(
+        charge.try_extend(amount(ResourceKind::GuestPages, 1)),
+        Err(ResourceError::LimitExceeded {
+            resource: ResourceKind::GuestPages,
+            used: 3,
+            requested: 1,
+            ..
+        })
+    ));
+    assert_eq!(charge.amount().get(ResourceKind::GuestPages), 3);
+    assert_eq!(domain.usage().committed(ResourceKind::GuestPages), 3);
+    drop(charge);
+    assert_eq!(domain.usage().total(ResourceKind::GuestPages), 0);
+    assert_eq!(domain.usage().total(ResourceKind::PinnedPages), 0);
+}
+
+#[test]
 fn explicit_abort_and_drop_each_roll_back_pending_usage_once() {
     let root = crate::require_ok(ResourceDomain::try_new_root(ResourceLimits::UNLIMITED));
     let child = crate::require_ok(root.try_new_child(ResourceLimits::UNLIMITED));

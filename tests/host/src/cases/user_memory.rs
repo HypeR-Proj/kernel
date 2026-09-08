@@ -1170,6 +1170,36 @@ fn direct_vmo_access_is_excluded_by_active_and_retiring_write_mappings() {
 }
 
 #[test]
+fn exclusive_hardware_write_lease_closes_native_access_until_release() {
+    let (backend, account) = fixtures();
+    let writable = crate::require_ok(WritableVmo::try_new(PAGE_SIZE, backend, account));
+    assert!(writable.populate(0, PAGE_SIZE).is_ok());
+    assert!(writable.write(0, &[0x5a]).is_ok());
+
+    let retained = writable.clone();
+    let hardware = crate::require_ok(writable.try_exclusive_hardware_write_lease());
+    let mut observed = [0];
+    assert!(matches!(
+        retained.read(0, &mut observed),
+        Err(VmoError::Busy)
+    ));
+    assert!(matches!(retained.write(0, &[0xa5]), Err(VmoError::Busy)));
+    assert!(matches!(
+        retained.try_executable_snapshot(&ExecutableProvenance::for_test(), &()),
+        Err(VmoError::Busy)
+    ));
+    assert!(matches!(
+        retained.try_mapping_write_lease(),
+        Err(VmoError::Busy)
+    ));
+
+    drop(hardware);
+    assert!(retained.read(0, &mut observed).is_ok());
+    assert_eq!(observed, [0x5a]);
+    assert!(retained.write(0, &[0xa5]).is_ok());
+}
+
+#[test]
 fn direct_write_uses_exposed_access_with_a_read_only_machine_mapping() {
     let (backend, account) = fixtures();
     let address_space = crate::require_ok(UserAddressSpace::try_new(

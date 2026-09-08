@@ -35,6 +35,7 @@ enum KernelStartError {
     Scheduler(crate::kernel::task::scheduler::Error),
     Time(crate::kernel::time::InitializationError),
     VirtualMachineInitialization(crate::kernel::vm::InitializationError),
+    #[cfg(feature = "kernel-self-test")]
     VirtualMachine(crate::kernel::vm::StartError),
 }
 
@@ -65,7 +66,13 @@ impl_kernel_start_error! {
     Scheduler(crate::kernel::task::scheduler::Error),
     Time(crate::kernel::time::InitializationError),
     VirtualMachineInitialization(crate::kernel::vm::InitializationError),
-    VirtualMachine(crate::kernel::vm::StartError),
+}
+
+#[cfg(feature = "kernel-self-test")]
+impl From<crate::kernel::vm::StartError> for KernelStartError {
+    fn from(error: crate::kernel::vm::StartError) -> Self {
+        Self::VirtualMachine(error)
+    }
 }
 
 #[cfg(not(feature = "kernel-self-test"))]
@@ -94,6 +101,7 @@ impl core::fmt::Debug for KernelStartError {
             Self::Scheduler(error) => ("scheduler", error),
             Self::Time(error) => ("time", error),
             Self::VirtualMachineInitialization(error) => ("virtual-machine-initialization", error),
+            #[cfg(feature = "kernel-self-test")]
             Self::VirtualMachine(error) => ("virtual-machine", error),
         };
         formatter

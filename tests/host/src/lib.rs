@@ -10,11 +10,17 @@
 extern crate alloc;
 
 #[cfg(test)]
+#[path = "../../../src/arch/aarch64/guest_cpu_contract.rs"]
+mod aarch64_guest_cpu_contract_model;
+#[cfg(test)]
 #[path = "../../../src/arch/aarch64/stage2_retirement.rs"]
 mod aarch64_stage2_retirement_model;
 #[cfg(test)]
 #[path = "../../../src/arch/aarch64/user_contract.rs"]
 mod aarch64_user_contract_model;
+#[cfg(test)]
+#[path = "../../../src/kernel/task/external_execution.rs"]
+mod external_execution_model;
 #[cfg(test)]
 #[path = "../../../src/kernel/io_cache/mod.rs"]
 mod file_data_cache;
@@ -62,6 +68,9 @@ fn require_some<T>(value: Option<T>) -> T {
 #[cfg(test)]
 #[path = "cases/aarch64_cache.rs"]
 mod aarch64_cache;
+#[cfg(test)]
+#[path = "cases/aarch64_guest_cpu_contract.rs"]
+mod aarch64_guest_cpu_contract;
 #[cfg(test)]
 #[path = "cases/aarch64_user_contract.rs"]
 mod aarch64_user_contract;

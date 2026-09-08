@@ -107,26 +107,40 @@ fn scoped_lease_blocks_unique_retirement_until_drop() {
 
 #[test]
 fn registry_vm_ownership_contains_no_exposed_raw_machine_pointer() {
-    let source = include_str!("../../../../src/kernel/vm/registry.rs");
+    let registry = include_str!("../../../../src/kernel/vm/registry.rs");
+    let execution = include_str!("../../../../src/kernel/vm/registry/execution.rs");
     let endpoint = include_str!("../../../../src/kernel/vm/endpoint.rs");
-    assert!(!source.contains("with_exposed_provenance::<VirtualMachine>"));
-    assert!(!source.contains("machine: usize"));
-    assert!(!source.contains("*const VirtualMachine"));
-    assert!(!source.contains("*mut VirtualMachine"));
-    assert!(!source.contains("NonNull<VirtualMachine>"));
-    assert!(source.contains("machine: FallibleArc<VirtualMachine>"));
-    assert!(source.contains("struct VmLease"));
-    assert!(source.contains("registry.lease(id)"));
-    assert!(source.contains("run_admission: super::run_admission::RunAdmission"));
+    let installed = include_str!("../../../../src/kernel/vm/installed.rs");
+    for source in [registry, execution] {
+        assert!(!source.contains("with_exposed_provenance::<VirtualMachine>"));
+        assert!(!source.contains("machine: usize"));
+        assert!(!source.contains("*const VirtualMachine"));
+        assert!(!source.contains("*mut VirtualMachine"));
+        assert!(!source.contains("NonNull<VirtualMachine>"));
+    }
+    assert!(execution.contains("machine: FallibleArc<VirtualMachine>"));
+    assert!(registry.contains("struct VmLease"));
+    assert!(registry.contains("registry.lease(id)"));
+    assert!(execution.contains("run_admission: crate::kernel::vm::run_admission::RunAdmission"));
     assert!(endpoint.contains("struct VcpuEndpoint"));
     assert!(endpoint.contains("thread: PublishedOnce<ThreadId>"));
-    assert!(source.contains("endpoints: Vec<super::endpoint::VcpuEndpoint>"));
-    assert!(source.contains("try_reserve_exact(count)"));
+    assert!(
+        execution
+            .contains("lifecycle: FallibleArc<crate::kernel::vm::installed::InstalledMachine>")
+    );
+    assert!(installed.contains("endpoints: Vec<FallibleArc<VcpuEndpoint>>"));
+    assert!(installed.contains("try_reserve_exact(count)"));
+    assert!(!installed.contains("FallibleArc<VirtualMachine>"));
+    assert!(installed.contains(
+        "RuntimeState::Running { .. } => self.endpoint(id)?.start().map_err(|_| Error::BadState)"
+    ));
 }
 
 #[test]
 fn vm_retirement_retains_linear_authority_and_unique_tombstone() {
     let registry = include_str!("../../../../src/kernel/vm/registry.rs");
+    let construction = include_str!("../../../../src/kernel/vm/registry/construction.rs");
+    let control = include_str!("../../../../src/kernel/vm/registry/control.rs");
     let lifecycle = include_str!("../../../../src/kernel/vm/lifecycle.rs");
     let device = include_str!("../../../../src/kernel/vm/device/aarch64.rs");
 
@@ -138,22 +152,40 @@ fn vm_retirement_retains_linear_authority_and_unique_tombstone() {
     assert!(registry.contains("Destroying"));
     assert!(registry.contains("machine.try_into_unique()"));
     assert!(!registry.contains("strong_count"));
-    assert!(registry.contains("lifecycle_machine(publication.vm)"));
+    assert!(!control.contains("strong_count"));
+    let execution = include_str!("../../../../src/kernel/vm/vcpu/execution.rs");
+    let active = include_str!("../../../../src/kernel/vm/active_vcpu.rs");
+    assert!(execution.contains("endpoint: hyper::mm::FallibleArc"));
+    assert!(execution.contains(".publish_reaped(thread, reason)"));
+    assert!(!execution.contains("REGISTRY"));
+    assert!(execution.contains("fn interrupt_context("));
+    assert!(!active.contains("execution.interrupts()"));
+    let thread = include_str!("../../../../src/kernel/task/thread.rs");
+    let scheduler = include_str!("../../../../src/kernel/task/scheduler/mod.rs");
+    assert!(thread.contains("trait ExternalThreadExecutionLifecycle"));
+    assert!(thread.contains("owner: Box<dyn ErasedExternalThreadExecution>"));
+    assert!(!thread.contains("destroy: unsafe fn"));
+    assert!(!thread.contains("Box::from_raw"));
+    assert!(thread.contains("struct ThreadRetirement"));
+    assert!(thread.contains("retirement_charge: Option<"));
+    assert!(thread.contains("retirement.retain_charge(ownership.take_retirement_charge())"));
+    assert!(!scheduler.contains("complete_vcpu_reap"));
+    assert!(!scheduler.contains("VcpuReapPublication"));
 
-    assert!(registry.contains("pub(super) struct VmControl"));
-    assert!(registry.contains("const fn mint_for_install"));
-    assert!(!registry.contains("pub(super) const fn mint_for_install"));
+    assert!(construction.contains("pub(in crate::kernel::vm) struct VmControl"));
+    assert!(construction.contains("const fn mint_for_install"));
+    assert!(!construction.contains("pub(super) const fn mint_for_install"));
     assert!(!lifecycle.contains("VmControl {"));
-    assert!(registry.contains("Pending(QuiescingVm)"));
-    assert!(registry.contains("Quiescent(QuiescentControl)"));
-    let destroy = registry
+    assert!(control.contains("Pending(QuiescingVm)"));
+    assert!(control.contains("Quiescent(QuiescentControl)"));
+    let destroy = control
         .find("let owner = match REGISTRY.with(|registry| registry.begin_destroy(self.id))")
         .unwrap_or_else(|| panic!("missing destruction cut"));
-    let owner_drop = registry[destroy..]
+    let owner_drop = control[destroy..]
         .find("drop(owner);")
         .map(|offset| destroy + offset)
         .unwrap_or_else(|| panic!("missing owner destruction"));
-    let generation = registry[owner_drop..]
+    let generation = control[owner_drop..]
         .find("registry.finish_destroy(self.id)")
         .map(|offset| owner_drop + offset)
         .unwrap_or_else(|| panic!("missing generation advancement"));

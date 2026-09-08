@@ -52,6 +52,8 @@ fn process_builder_storage_policy_is_explicit_and_bounds_graph_authority() {
         ObjectKind::CONSOLE,
         ObjectKind::DIRECTORY,
         ObjectKind::FILE,
+        ObjectKind::VIRTUAL_MACHINE_CREATION_AUTHORITY,
+        ObjectKind::VIRTUAL_MACHINE_CREATION_LEASE,
     ] {
         assert!(builder_policy::BuilderStorable::permits_kind_id(
             admitted.get()
@@ -62,6 +64,9 @@ fn process_builder_storage_policy_is_explicit_and_bounds_graph_authority() {
         ObjectKind::PROCESS,
         ObjectKind::THREAD,
         ObjectKind::VMAR,
+        ObjectKind::PENDING_VIRTUAL_MACHINE,
+        ObjectKind::VIRTUAL_MACHINE,
+        ObjectKind::VIRTUAL_CPU,
         TEST_KIND,
     ] {
         assert!(!builder_policy::BuilderStorable::permits_kind_id(
@@ -712,6 +717,40 @@ fn scheduler_ownership_is_counted_separately_from_service_ownership() {
 
     drop(scheduler);
     assert_eq!(service.snapshot().references.scheduler, 0);
+}
+
+#[test]
+fn committed_operation_pin_becomes_vm_device_ownership_before_handle_release() {
+    let transitions = Arc::new(AtomicUsize::new(0));
+    let object = object(103, &transitions);
+    let mut table = HandleTable::new();
+    let value = {
+        let reservation = crate::require_ok(table.reserve::<1>());
+        reservation.publish(
+            &mut table,
+            [prepared(
+                object.clone(),
+                Rights::TRANSFER.union(Rights::START),
+            )],
+        )[0]
+    };
+
+    let resolved = crate::require_ok(
+        table.resolve::<TestObject>(value, Rights::TRANSFER.union(Rights::START)),
+    );
+    let device_binding = resolved.into_operation_pin().into_vm_device_binding();
+    let bound = object.snapshot();
+    assert_eq!(bound.references.operation_pin, 0);
+    assert_eq!(bound.references.kernel_service, 1);
+    assert_eq!(bound.references.vm_device_binding, 1);
+
+    crate::require_ok(table.remove(value)).complete();
+    assert_eq!(transitions.load(Ordering::Relaxed), 1);
+    let retired = object.snapshot();
+    assert_eq!(retired.references.user_authority, 0);
+    assert_eq!(retired.references.kernel_service, 1);
+    assert_eq!(retired.references.vm_device_binding, 1);
+    assert_eq!(device_binding.object().value, 103);
 }
 
 #[test]

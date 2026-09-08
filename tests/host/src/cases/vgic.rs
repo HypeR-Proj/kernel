@@ -88,6 +88,83 @@ fn one_interrupt(id: u32, cpus: u32, slots: usize) -> hyper::vm::arm::gic::Virtu
 }
 
 #[test]
+fn allocation_plan_matches_the_complete_retained_controller_layout() {
+    const VCPU_COUNT: u32 = 2;
+    const PRIVATE_ENTRIES_PER_VCPU: usize = 32;
+    const SHARED_ENTRIES: usize = 32;
+    const LIST_REGISTERS: usize = 16;
+
+    let expected = crate::require_ok(hyper::vm::arm::gic::VirtualGic::allocation_requirement(
+        VCPU_COUNT,
+        PRIVATE_ENTRIES_PER_VCPU,
+        SHARED_ENTRIES,
+        LIST_REGISTERS,
+    ));
+    let entry_count = PRIVATE_ENTRIES_PER_VCPU * VCPU_COUNT as usize + SHARED_ENTRIES;
+    let mut builder = crate::require_ok(VirtualGicBuilder::new_with_entry_capacity(
+        VCPU_COUNT,
+        entry_count,
+    ));
+    for cpu_index in 0..VCPU_COUNT {
+        for id in 0..PRIVATE_ENTRIES_PER_VCPU as u32 {
+            crate::require_ok(builder.configure(
+                interrupt(id),
+                VirtualCpuId::new(cpu_index),
+                0x80,
+                InterruptGroup::Group1,
+                InterruptTrigger::Level,
+            ));
+        }
+    }
+    for id in 32..(32 + SHARED_ENTRIES as u32) {
+        crate::require_ok(builder.configure(
+            interrupt(id),
+            VirtualCpuId::new(0),
+            0x80,
+            InterruptGroup::Group1,
+            InterruptTrigger::Level,
+        ));
+    }
+    let vgic = crate::require_ok(builder.finish(LIST_REGISTERS));
+
+    assert_eq!(vgic.allocation_size(), Some(expected));
+}
+
+#[test]
+fn allocation_plan_rejects_unbounded_or_impossible_layouts() {
+    use hyper::vm::arm::gic::VirtualGic;
+
+    assert_eq!(
+        VirtualGic::allocation_requirement(0, 32, 32, 16),
+        Err(BuildError::InvalidStoragePlan)
+    );
+    assert_eq!(
+        VirtualGic::allocation_requirement(1, 33, 32, 16),
+        Err(BuildError::InvalidStoragePlan)
+    );
+    assert_eq!(
+        VirtualGic::allocation_requirement(1, 32, 32, 0),
+        Err(BuildError::InvalidStoragePlan)
+    );
+
+    let mut builder = crate::require_ok(VirtualGicBuilder::new_with_entry_capacity(1, 1));
+    for id in 32..=33 {
+        let result = builder.configure(
+            interrupt(id),
+            VirtualCpuId::new(0),
+            0x80,
+            InterruptGroup::Group1,
+            InterruptTrigger::Level,
+        );
+        if id == 32 {
+            crate::require_ok(result);
+        } else {
+            assert_eq!(result, Err(BuildError::InvalidStoragePlan));
+        }
+    }
+}
+
+#[test]
 fn schedules_pending_interrupts_by_priority_and_cpu() {
     let mut builder = crate::require_ok(VirtualGicBuilder::new(2));
     let cpu0 = VirtualCpuId::new(0);
@@ -608,7 +685,7 @@ fn boot_prepares_validates_then_commits_interrupt_virtualization() {
     assert!(controller.contains("list_registers: usize"));
 
     let facade = include_str!("../../../../src/hal/selected/vm.rs");
-    let constructor = crate::require_some(facade.find("fn create_interrupt_controller("));
+    let constructor = crate::require_some(facade.find("fn prepare_interrupt_controller("));
     let constructor = &facade[constructor..];
     let constructor_end = crate::require_some(constructor.find("\n}\n"));
     let constructor = &constructor[..constructor_end];

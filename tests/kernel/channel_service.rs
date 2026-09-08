@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use hyper::mm::PAGE_SIZE;
 
 use crate::kernel::accounting::{ResourceDomain, ResourceKind, ResourceLimits};
-use crate::kernel::capability::{HandleValue, Rights};
+use crate::kernel::capability::{HandleError, HandleFlags, HandleValue, PreparedHandle, Rights};
 use crate::kernel::ipc::{
     ByteChannelError, ByteChannelReadOutcome, ByteChannelServiceError, CapabilityChannel,
     CapabilityChannelServiceError, CapabilityDeliveryInfo, CapabilityReceiveOutcome,
@@ -19,7 +19,7 @@ use crate::kernel::ipc::{
 use crate::kernel::mm::user_space::{
     UserAddress, UserSlice, fail_exposed_write_after_copy_for_test, prepare_native_entry_self_test,
 };
-use crate::kernel::object::{Event, KernelObject};
+use crate::kernel::object::{Event, KernelObject, ObjectPublication};
 use crate::kernel::process::{
     MachineAbi, PreparedProcess, Process, ProcessError, ProcessImage, ProcessObject, ProcessPhase,
     TaskGroup, TerminalReason,
@@ -105,6 +105,7 @@ pub(super) fn run() -> Result<(), Error> {
     let process = create_process(&domain, &group)?;
 
     verify_handle_accounting_churn(&process)?;
+    verify_atomic_handle_replacement(&process)?;
     verify_fifo_and_buffer_contract(&process)?;
     verify_copy_failure_restores_message(&process)?;
     verify_cross_process_capability_transfer(&process, &domain, &group)?;
@@ -145,6 +146,18 @@ fn verify_cross_process_capability_transfer(
     group: &TaskGroup,
 ) -> Result<(), Error> {
     let destination = create_process(domain, group)?;
+    let fixed_reservation = destination.reserve_handles::<1>()?;
+    if fixed_reservation.belongs_to(source) || !fixed_reservation.belongs_to(&destination) {
+        destination.abort_handles(fixed_reservation);
+        return Err(Error::State(35));
+    }
+    destination.abort_handles(fixed_reservation);
+    let batch_reservation = destination.reserve_handle_batch(1)?;
+    if batch_reservation.belongs_to(source) || !batch_reservation.belongs_to(&destination) {
+        destination.abort_handle_batch(batch_reservation);
+        return Err(Error::State(36));
+    }
+    destination.abort_handle_batch(batch_reservation);
     let (sender_object, receiver_object) =
         CapabilityChannel::try_pair(domain).map_err(CapabilityChannelServiceError::Channel)?;
     let channel_rights = <CapabilityChannel as KernelObject>::SUPPORTED_RIGHTS;
@@ -325,6 +338,66 @@ fn verify_handle_accounting_churn(process: &Process) -> Result<(), Error> {
     {
         return Err(Error::State(2));
     }
+    Ok(())
+}
+
+/// Exercises the transaction used by consume-on-success lifecycle syscalls.
+///
+/// An observer interleaved after the source claim must see neither the claimed
+/// source nor a prematurely published destination. Rollback must restore the
+/// exact source generation, while commit must make the source stale and the
+/// replacement live in one table mutation.
+fn verify_atomic_handle_replacement(process: &Process) -> Result<(), Error> {
+    let rights = Rights::WAIT.union(Rights::INSPECT);
+    let source = process.create_object(
+        Event::try_new(&process.resource_domain()).map_err(|_| Error::Construction)?,
+        rights,
+    )?;
+    let source_info = process.handle_info(source, Rights::NONE)?;
+    let reservation = process.reserve_handles::<1>()?;
+    let consumption = process.prepare_handle_consumption(
+        source,
+        Rights::WAIT,
+        source_info.kind,
+        source_info.koid,
+    )?;
+    if !matches!(
+        process.handle_info(source, Rights::NONE),
+        Err(ProcessError::Handle(HandleError::Busy))
+    ) {
+        consumption.rollback();
+        process.abort_handles(reservation);
+        return Err(Error::State(31));
+    }
+    consumption.rollback();
+    process.abort_handles(reservation);
+    if process.handle_info(source, rights)?.koid != source_info.koid {
+        return Err(Error::State(32));
+    }
+
+    let reservation = process.reserve_handles::<1>()?;
+    let consumption = process.prepare_handle_consumption(
+        source,
+        Rights::WAIT,
+        source_info.kind,
+        source_info.koid,
+    )?;
+    let replacement = ObjectPublication::try_new(
+        Event::try_new(&process.resource_domain()).map_err(|_| Error::Construction)?,
+    )
+    .map_err(|_| Error::Construction)?;
+    let replacement = PreparedHandle::try_from_new_object(replacement, rights, HandleFlags::NONE)
+        .map_err(ProcessError::from)?;
+    let replacement = consumption.commit_replacement(reservation, [replacement])[0];
+    if process.handle_info(source, Rights::NONE).is_ok() {
+        process.close_handle(replacement)?;
+        return Err(Error::State(33));
+    }
+    if process.handle_info(replacement, rights)?.koid == source_info.koid {
+        process.close_handle(replacement)?;
+        return Err(Error::State(34));
+    }
+    process.close_handle(replacement)?;
     Ok(())
 }
 

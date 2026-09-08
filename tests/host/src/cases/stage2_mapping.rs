@@ -6,9 +6,11 @@
 use core::cell::Cell;
 
 use hyper::cpu::CpuIndex;
+use hyper::vm::exit::MemoryAccess;
 use hyper::vm::translation::{
     ActiveMappingError, ExclusiveExecution, ExecutionError, ExecutionReleaseFailure,
-    publish_active_mapping, residency_is_current,
+    GuestInstructionContext, GuestInstructionContextTransition, Stage2FaultResolution,
+    Stage2PagePermissions, publish_active_mapping, residency_is_current, resolve_stage2_fault,
 };
 
 fn release_error(result: Result<(), ExecutionReleaseFailure>) -> Option<ExecutionError> {
@@ -143,4 +145,77 @@ fn zero_root_never_aliases_the_unobserved_epoch() {
     assert!(!residency_is_current(0, 0, 0, 1));
     assert!(residency_is_current(0, 1, 0, 1));
     assert!(!residency_is_current(0, 1, 0, 2));
+}
+
+#[test]
+fn demand_permissions_grant_execute_only_to_final_instruction_faults() {
+    assert_eq!(
+        Stage2PagePermissions::for_fault(MemoryAccess::Read, false),
+        Stage2PagePermissions::ReadWrite
+    );
+    assert_eq!(
+        Stage2PagePermissions::for_fault(MemoryAccess::Write, false),
+        Stage2PagePermissions::ReadWrite
+    );
+    assert_eq!(
+        Stage2PagePermissions::for_fault(MemoryAccess::Execute, true),
+        Stage2PagePermissions::ReadWrite,
+        "an execute fault during a guest page walk names guest table data"
+    );
+    assert_eq!(
+        Stage2PagePermissions::for_fault(MemoryAccess::Execute, false),
+        Stage2PagePermissions::ReadWriteExecute
+    );
+}
+
+#[test]
+fn stage2_fault_resolution_separates_data_mapping_and_execute_promotion() {
+    assert_eq!(
+        resolve_stage2_fault(false, false, MemoryAccess::Read, false),
+        Stage2FaultResolution::Map(Stage2PagePermissions::ReadWrite)
+    );
+    assert_eq!(
+        resolve_stage2_fault(false, false, MemoryAccess::Write, false),
+        Stage2FaultResolution::Map(Stage2PagePermissions::ReadWrite)
+    );
+    assert_eq!(
+        resolve_stage2_fault(true, false, MemoryAccess::Execute, false),
+        Stage2FaultResolution::PromoteExecute
+    );
+    assert_eq!(
+        resolve_stage2_fault(false, false, MemoryAccess::Execute, true),
+        Stage2FaultResolution::Map(Stage2PagePermissions::ReadWrite)
+    );
+    assert_eq!(
+        resolve_stage2_fault(true, true, MemoryAccess::Execute, false),
+        Stage2FaultResolution::Refresh
+    );
+}
+
+#[test]
+fn guest_instruction_context_synchronizes_only_real_migration() {
+    let cpu0 = CpuIndex::new(0).unwrap_or(CpuIndex::BOOT);
+    let cpu1 = CpuIndex::new(1).unwrap_or(CpuIndex::BOOT);
+    let mut context = GuestInstructionContext::new();
+
+    assert_eq!(
+        context.enter(cpu0),
+        GuestInstructionContextTransition::First
+    );
+    assert_eq!(
+        context.enter(cpu0),
+        GuestInstructionContextTransition::SameCpu
+    );
+    assert_eq!(
+        context.enter(cpu1),
+        GuestInstructionContextTransition::Migrated
+    );
+    assert_eq!(
+        context.enter(cpu1),
+        GuestInstructionContextTransition::SameCpu
+    );
+    assert_eq!(
+        context.enter(cpu0),
+        GuestInstructionContextTransition::Migrated
+    );
 }
