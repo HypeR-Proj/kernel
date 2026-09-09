@@ -19,6 +19,7 @@ pub use address_space_state::{
 };
 pub use allocation::{
     AllocationError, DeferredArcDrop, FallibleArc, UniqueFallibleArc, WeakFallibleArc, try_box,
+    try_box_uninit,
 };
 pub use allocator::{BuddyAllocator, BuddyError, BuddyStats, MAX_ORDER, MemoryHandoff};
 pub use boot::{BootAllocator, BootAllocatorError, BootMemoryStats};
