@@ -10,6 +10,10 @@
 extern crate alloc;
 
 #[cfg(test)]
+#[path = "cases/sharded_lock.rs"]
+mod sharded_lock;
+
+#[cfg(test)]
 #[path = "../../../src/arch/aarch64/guest_cpu_contract.rs"]
 mod aarch64_guest_cpu_contract_model;
 #[cfg(test)]
