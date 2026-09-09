@@ -67,6 +67,7 @@ fn process_builder_storage_policy_is_explicit_and_bounds_graph_authority() {
         ObjectKind::PENDING_VIRTUAL_MACHINE,
         ObjectKind::VIRTUAL_MACHINE,
         ObjectKind::VIRTUAL_CPU,
+        ObjectKind::VIRTUAL_SERIAL,
         TEST_KIND,
     ] {
         assert!(!builder_policy::BuilderStorable::permits_kind_id(

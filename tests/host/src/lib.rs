@@ -237,3 +237,7 @@ mod x86_svm_contract;
 #[cfg(test)]
 #[path = "cases/x86_virtual_cpu_contract.rs"]
 mod x86_virtual_cpu_contract;
+
+#[cfg(test)]
+#[path = "cases/serial_ring.rs"]
+mod serial_ring;
