@@ -1344,3 +1344,70 @@ fn copy_prevalidation_rejects_gaps_before_mutating_any_mapping() {
     );
     assert_eq!(last_byte, [0]);
 }
+
+#[test]
+fn atomic_word_pin_rejects_invalid_access_and_distinguishes_remapping() {
+    let (backend, account) = fixtures();
+    let usage = account.0.clone();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x4000, PAGE_SIZE),
+        backend.clone(),
+        account.clone(),
+    ));
+    let storage = crate::require_ok(WritableVmo::try_new(PAGE_SIZE, backend, account));
+    assert!(storage.populate(0, PAGE_SIZE).is_ok());
+    let map = crate::require_ok(space.prepare_map_writable(
+        space.root_vmar(),
+        slice(0x4000, PAGE_SIZE),
+        storage.clone(),
+        0,
+        Permissions::read_write(),
+        Permissions::read_write(),
+    ));
+    complete(crate::require_ok(map.commit_for_test()));
+    assert!(matches!(
+        space.pin_atomic_u32(UserAddress::new(0x4001)),
+        Err(AddressSpaceError::InvalidRange)
+    ));
+    assert!(matches!(
+        space.pin_atomic_u32(UserAddress::new(0x5000)),
+        Err(AddressSpaceError::NotMapped)
+    ));
+    let pin = crate::require_ok(space.pin_atomic_u32(UserAddress::new(0x4000)));
+    let unmap = crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x4000, PAGE_SIZE)));
+    complete(crate::require_ok(unmap.commit_for_test()));
+    let map = crate::require_ok(space.prepare_map_writable(
+        space.root_vmar(),
+        slice(0x4000, PAGE_SIZE),
+        storage.clone(),
+        0,
+        Permissions::read_only(),
+        Permissions::read_write(),
+    ));
+    complete(crate::require_ok(map.commit_for_test()));
+    assert!(matches!(
+        space.pin_atomic_u32(UserAddress::new(0x4000)),
+        Err(AddressSpaceError::WriteDenied)
+    ));
+    let unmap = crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x4000, PAGE_SIZE)));
+    complete(crate::require_ok(unmap.commit_for_test()));
+    let map = crate::require_ok(space.prepare_map_writable(
+        space.root_vmar(),
+        slice(0x4000, PAGE_SIZE),
+        storage.clone(),
+        0,
+        Permissions::read_write(),
+        Permissions::read_write(),
+    ));
+    complete(crate::require_ok(map.commit_for_test()));
+    let replacement = crate::require_ok(space.pin_atomic_u32(UserAddress::new(0x4000)));
+    assert_ne!(pin.token, replacement.token);
+    assert_eq!(pin.physical, replacement.physical);
+    drop(replacement);
+    drop(space);
+    drop(storage);
+    assert_eq!(usage.pages.load(Ordering::Relaxed), 1);
+    drop(pin);
+    assert_eq!(usage.pages.load(Ordering::Relaxed), 0);
+}
