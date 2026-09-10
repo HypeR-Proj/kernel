@@ -15,7 +15,7 @@ mod guest_memory_access;
 mod handle_pages;
 mod log_flush_barrier;
 mod native_syscall;
-#[cfg(CONFIG_ARCH_AARCH64)]
+#[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
 mod native_user_entry;
 mod object_directory;
 mod object_wait;
@@ -61,6 +61,8 @@ pub(crate) fn run() {
     );
     #[cfg(CONFIG_ARCH_AARCH64)]
     run_case("AArch64 native-user entry tests", native_user_entry::run);
+    #[cfg(CONFIG_ARCH_RISCV64)]
+    run_case("RISC-V native-user register tests", native_user_entry::run);
     run_case(
         "kernel empty-handle-page reclamation tests",
         handle_pages::run,

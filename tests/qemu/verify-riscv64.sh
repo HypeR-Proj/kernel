@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 roolrz
 # SPDX-License-Identifier: Apache-2.0
 
-# Boots the RISC-V host and requires Linux to hand control to /init.
+# Boots the RISC-V host and requires standalone kernel mechanism tests.
 set -eu
 
 if [ "$#" -ne 5 ]; then
@@ -88,6 +88,8 @@ while [ "$attempt" -lt "$attempt_limit" ]; do
     fi
     if grep -q 'HypeR: transition identity mappings retired' "$log" &&
         grep -q 'HypeR test: cross-CPU thread migration passed' "$log" &&
+        grep -q 'HypeR test: Native register isolation passed' "$log" &&
+        grep -q 'HypeR test: Native supervisor mapping and CSR faults contained' "$log" &&
         grep -q 'HypeR test: kernel self-tests completed' "$log"; then
         echo "verified RISC-V kernel startup and self-tests on QEMU CPU $cpu"
         exit 0

@@ -35,6 +35,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-changed=src/arch/riscv64/trap.S");
     println!("cargo:rerun-if-changed=src/arch/riscv64/context.S");
     println!("cargo:rerun-if-changed=src/arch/riscv64/guest.S");
+    println!("cargo:rerun-if-changed=src/arch/riscv64/user.S");
     println!("cargo:rerun-if-changed=src/arch/riscv64/cache.S");
     println!("cargo:rerun-if-changed=src/arch/riscv64/registers.rs");
     println!("cargo:rerun-if-changed=src/arch/riscv64/linker.ld");
@@ -77,6 +78,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ("src/arch/riscv64/trap.S", "riscv64_trap.o"),
                 ("src/arch/riscv64/context.S", "riscv64_context.o"),
                 ("src/arch/riscv64/guest.S", "riscv64_guest.o"),
+                ("src/arch/riscv64/user.S", "riscv64_user.o"),
                 ("src/arch/riscv64/cache.S", "riscv64_cache.o"),
             ],
         ),
