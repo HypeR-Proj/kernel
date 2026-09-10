@@ -458,6 +458,7 @@ fn pre_activation_allocation_survives_cache_activation() {
     let cached = crate::require_some(allocator.stats());
     assert_eq!(cached.live_allocations, 0);
     assert_eq!(cached.cache.cached_objects, 1);
+    assert_eq!(cached.cache.reclaimable_pages, Some(1));
 
     // SAFETY: The valid layout is paired with exact deallocation below.
     let reused = unsafe { GlobalAlloc::alloc(&*allocator, layout) };
@@ -483,6 +484,12 @@ fn local_cache_preserves_cross_cpu_ownership_and_releases_empty_slab() {
     // SAFETY: The valid layout is paired with exact deallocations below.
     let first = unsafe { GlobalAlloc::alloc(&*allocator, layout) };
     assert!(!first.is_null());
+    assert_eq!(
+        crate::require_some(allocator.stats())
+            .cache
+            .reclaimable_pages,
+        Some(0)
+    );
     select_test_cpu(1);
     // SAFETY: Cross-CPU deallocation relinquishes the exact live allocation.
     unsafe { GlobalAlloc::dealloc(&*allocator, first, layout) };
@@ -495,6 +502,7 @@ fn local_cache_preserves_cross_cpu_ownership_and_releases_empty_slab() {
     assert_eq!(cached.allocation_requests, 1);
     assert!(cached.cache.cached_objects > 0);
     assert_eq!(cached.slab_pages, 1);
+    assert_eq!(cached.cache.reclaimable_pages, Some(1));
 
     // SAFETY: The valid layout is paired with the exact deallocation below.
     let reused = unsafe { GlobalAlloc::alloc(&*allocator, layout) };
@@ -510,10 +518,12 @@ fn local_cache_preserves_cross_cpu_ownership_and_releases_empty_slab() {
     assert!(allocator.reclaim_local_caches() > 0);
     let drained = crate::require_some(allocator.stats());
     assert_eq!(drained.cache.cached_objects, 0);
+    assert_eq!(drained.cache.reclaimable_pages, Some(0));
     assert_eq!(drained.cache.pressure_reclaims, 0);
     assert!(drained.cache.reclaimed_objects > 0);
     assert_eq!(drained.slab_pages, 0);
     assert_eq!(drained.buddy.allocated_pages, 0);
+    assert_eq!(drained.buddy.free_pages - cached.buddy.free_pages, 1);
     select_test_cpu(0);
 }
 
@@ -710,4 +720,37 @@ fn allocator_invariant_handler_installation_is_process_wide_and_one_shot() {
         install_allocator_invariant_handler(unused_invariant_handler),
         Err(AllocatorInvariantInstallError::AlreadyInstalled)
     );
+}
+
+#[test]
+fn reclaimable_pages_cover_mixed_classes_and_cpus_without_draining() {
+    let (memory, handoff) = handoff(64);
+    let allocator = ManuallyDrop::new(KernelGlobalAllocator::<TestInterruptMask>::new());
+    // SAFETY: The aligned buffer outlives the allocator and every allocation.
+    crate::require_ok(unsafe { allocator.initialize(&handoff, memory.pointer as u64) });
+    let small = crate::require_ok(Layout::from_size_align(16, 16));
+    let large = crate::require_ok(Layout::from_size_align(128, 128));
+    // Allocate before activation to avoid prefilled magazines in this proof.
+    // SAFETY: Both layouts are valid and paired with exact deallocations below.
+    let first = unsafe { GlobalAlloc::alloc(&*allocator, small) };
+    // SAFETY: The valid large layout is paired with its exact deallocation.
+    let second = unsafe { GlobalAlloc::alloc(&*allocator, large) };
+    assert!(!first.is_null() && !second.is_null());
+    crate::require_ok(allocator.activate_local_caches(2));
+    select_test_cpu(0);
+    // SAFETY: The live first allocation is relinquished with its exact layout.
+    unsafe { GlobalAlloc::dealloc(&*allocator, first, small) };
+    select_test_cpu(1);
+    // SAFETY: The live second allocation is relinquished with its exact layout.
+    unsafe { GlobalAlloc::dealloc(&*allocator, second, large) };
+    let before = crate::require_some(allocator.stats());
+    let again = crate::require_some(allocator.stats());
+    assert_eq!(before.cache.cached_objects, 2);
+    assert_eq!(before.cache.reclaimable_pages, Some(2));
+    assert_eq!(before, again);
+    assert_eq!(allocator.reclaim_local_caches(), 2);
+    let drained = crate::require_some(allocator.stats());
+    assert_eq!(drained.cache.reclaimable_pages, Some(0));
+    assert_eq!(drained.buddy.allocated_pages, 0);
+    select_test_cpu(0);
 }

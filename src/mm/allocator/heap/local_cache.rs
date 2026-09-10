@@ -35,6 +35,12 @@ impl<T> Magazine<T> {
         self.length
     }
 
+    pub(super) fn iter(&self) -> impl Iterator<Item = &T> {
+        self.entries[..self.length]
+            .iter()
+            .filter_map(Option::as_ref)
+    }
+
     pub(super) const fn is_empty(&self) -> bool {
         self.length == 0
     }

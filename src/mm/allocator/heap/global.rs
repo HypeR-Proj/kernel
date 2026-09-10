@@ -17,6 +17,7 @@ use crate::mm::{BuddyError, MemoryHandoff, PhysicalAddress};
 use crate::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use crate::sync::{InterruptMaskGuard, InterruptSpinLock, SpinLock};
 
+use super::cache_snapshot::CacheSnapshot;
 use super::local_cache::{MAGAZINE_STORAGE, Magazine, PushError};
 use super::{
     AllocatorFault, CachedObject, HeapCacheStats, HeapSlabClass, HeapStats, InitError,
@@ -24,6 +25,16 @@ use super::{
 };
 
 const CACHED_CLASS_COUNT: usize = 6;
+const SNAPSHOT_OBJECTS: usize = {
+    let mut per_cpu = 0;
+    let mut class = 0;
+    while class < CACHE_LIMITS.len() {
+        per_cpu += CACHE_LIMITS[class];
+        class += 1;
+    }
+    per_cpu * crate::cpu::MAX_CPUS
+};
+type Snapshot = CacheSnapshot<SNAPSHOT_OBJECTS, { crate::cpu::MAX_CPUS }>;
 const CACHE_LIMITS: [usize; CACHED_CLASS_COUNT] = [16, 16, 12, 8, 4, 2];
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -76,20 +87,34 @@ impl AllocatorState {
 
 struct CpuCache {
     magazines: [Magazine<CachedObject>; CACHED_CLASS_COUNT],
+    epoch: u64,
 }
 
 impl CpuCache {
     const fn new() -> Self {
         Self {
             magazines: [const { Magazine::new() }; CACHED_CLASS_COUNT],
+            epoch: 0,
         }
     }
 
     fn pop(&mut self, class: HeapSlabClass) -> Option<CachedObject> {
         match self.magazines.get_mut(class.index())?.pop() {
-            Ok(object) => object,
+            Ok(object) => {
+                if object.is_some() {
+                    self.advance_epoch();
+                }
+                object
+            }
             Err(_) => allocator_fault(AllocatorFault::InvalidCacheState),
         }
+    }
+
+    fn advance_epoch(&mut self) {
+        self.epoch = match self.epoch.checked_add(1) {
+            Some(epoch) => epoch,
+            None => allocator_fault(AllocatorFault::InvalidCacheState),
+        };
     }
 
     fn push(&mut self, object: CachedObject) -> Result<(), PushError<CachedObject>> {
@@ -97,20 +122,34 @@ impl CpuCache {
         let Some(magazine) = self.magazines.get_mut(class) else {
             return Err(PushError::InvalidState(object));
         };
-        magazine.push(object, CACHE_LIMITS[class])
+        let result = magazine.push(object, CACHE_LIMITS[class]);
+        if result.is_ok() {
+            self.advance_epoch();
+        }
+        result
     }
 
     fn detach_drain(&mut self, class: HeapSlabClass) -> Magazine<CachedObject> {
         let index = class.index();
         match self.magazines[index].take(CACHE_LIMITS[index].div_ceil(2)) {
-            Ok(batch) => batch,
+            Ok(batch) => {
+                if !batch.is_empty() {
+                    self.advance_epoch();
+                }
+                batch
+            }
             Err(_) => allocator_fault(AllocatorFault::InvalidCacheState),
         }
     }
 
     fn detach_all(&mut self, class: usize) -> Magazine<CachedObject> {
         match self.magazines[class].take(MAGAZINE_STORAGE) {
-            Ok(batch) => batch,
+            Ok(batch) => {
+                if !batch.is_empty() {
+                    self.advance_epoch();
+                }
+                batch
+            }
             Err(_) => allocator_fault(AllocatorFault::InvalidCacheState),
         }
     }
@@ -223,6 +262,7 @@ impl CacheAccounting {
         HeapCacheStats {
             enabled_cpus,
             cached_objects: self.cached_objects.load(Ordering::Relaxed),
+            reclaimable_pages: None,
             hits: self.hits.load(Ordering::Relaxed),
             misses: self.misses.load(Ordering::Relaxed),
             refills: self.refills.load(Ordering::Relaxed),
@@ -241,6 +281,7 @@ pub struct KernelGlobalAllocator<P: CpuLocalCachePolicy> {
     participating_cpus: AtomicUsize,
     logical: LogicalAccounting,
     cache_accounting: CacheAccounting,
+    snapshot: SpinLock<Snapshot>,
 }
 
 impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
@@ -253,6 +294,7 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
             participating_cpus: AtomicUsize::new(0),
             logical: LogicalAccounting::new(),
             cache_accounting: CacheAccounting::new(),
+            snapshot: SpinLock::new(Snapshot::new()),
         }
     }
 
@@ -300,17 +342,84 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
     }
 
     pub fn stats(&self) -> Option<HeapStats> {
-        let mut stats = self
-            .state
-            .with(|state| state.heap.as_ref().map(SlabAllocator::stats))?;
-        self.logical.apply(&mut stats);
-        let enabled_cpus = if self.caches_enabled.load(Ordering::Acquire) {
+        let enabled = if self.caches_enabled.load(Ordering::Acquire) {
             self.participating_cpus.load(Ordering::Relaxed)
         } else {
             0
         };
-        stats.cache = self.cache_accounting.snapshot(enabled_cpus);
+        let captured = if enabled == 0 {
+            None
+        } else {
+            // A preempted observer never blocks another observer or allocates
+            // scratch storage under memory pressure. Ordinary allocators never
+            // acquire this diagnostic lock.
+            self.snapshot
+                .try_with(|scratch| self.capture_cache_pages(scratch, enabled))
+                .flatten()
+        };
+        let (mut stats, reclaimable) = match captured {
+            Some(pair) => pair,
+            None => (
+                self.state
+                    .with(|state| state.heap.as_ref().map(SlabAllocator::stats))?,
+                if enabled == 0 { Some(0) } else { None },
+            ),
+        };
+        self.logical.apply(&mut stats);
+        stats.cache = self.cache_accounting.snapshot(enabled);
+        stats.cache.reclaimable_pages = reclaimable;
         Some(stats)
+    }
+
+    fn capture_cache_pages(
+        &self,
+        scratch: &mut Snapshot,
+        cpus: usize,
+    ) -> Option<(HeapStats, Option<usize>)> {
+        for _ in 0..2 {
+            scratch.clear();
+            let pin = P::pin()?;
+            let stats = self.state.with(|state| {
+                let heap = state.heap.as_ref()?;
+                // Central -> one magazine is safe: allocation drops its local
+                // magazine before acquiring the central lock. Central ownership
+                // keeps headers and physical-page counts fixed during capture.
+                for index in 0..cpus {
+                    let cpu = CpuIndex::new(index)?;
+                    self.caches[cpu].cache.with(|cache| {
+                        scratch.epochs[index] = cache.epoch;
+                        for magazine in &cache.magazines {
+                            for object in magazine.iter() {
+                                let (page, reserved) = heap.cached_page_reservations(object)?;
+                                scratch.record(page, reserved)?;
+                            }
+                        }
+                        Some(())
+                    })?;
+                }
+                Some(heap.stats())
+            });
+            drop(pin);
+            let stats = stats?;
+            let mut unchanged = true;
+            for index in 0..cpus {
+                let cpu = CpuIndex::new(index)?;
+                let pin = P::pin()?;
+                // SAFETY: pinning and masking exclude migration and same-CPU
+                // allocator IRQ entry while reading one magazine epoch.
+                let mask = unsafe { InterruptMaskGuard::<P>::acquire() };
+                let epoch = self.caches[cpu].cache.with(|cache| cache.epoch);
+                drop(mask);
+                drop(pin);
+                unchanged &= epoch == scratch.epochs[index];
+            }
+            // Every unchanged interval overlaps the final capture instant. No
+            // raw pointer survives capture; grouping occurs outside heap locks.
+            if unchanged {
+                return Some((stats, scratch.reclaimable_pages()));
+            }
+        }
+        None
     }
 
     pub fn allocate_pages(&self, order: usize) -> Result<PhysicalAddress, BuddyError> {
