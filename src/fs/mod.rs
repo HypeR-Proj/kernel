@@ -7,6 +7,7 @@ mod name;
 mod node;
 mod path;
 
+pub mod file_data;
 pub mod ramfs;
 
 pub use name::{MAX_NAME_BYTES, Name, NameError};

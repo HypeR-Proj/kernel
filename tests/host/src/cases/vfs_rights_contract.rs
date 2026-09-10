@@ -10,6 +10,7 @@ fn every_file_right_is_derived_from_the_source_directory() {
     for requested in [
         0,
         native::HYPER_NATIVE_RIGHT_READ,
+        native::HYPER_NATIVE_RIGHT_WRITE,
         native::HYPER_NATIVE_RIGHT_EXECUTE,
         native::HYPER_NATIVE_RIGHT_DUPLICATE,
         native::HYPER_NATIVE_RIGHT_TRANSFER,
@@ -27,10 +28,6 @@ fn every_file_right_is_derived_from_the_source_directory() {
 #[test]
 fn non_file_rights_cannot_cross_the_directory_boundary() {
     assert_eq!(
-        directory_rights_for_file(native::HYPER_NATIVE_RIGHT_WRITE),
-        None
-    );
-    assert_eq!(
         directory_rights_for_file(native::HYPER_NATIVE_RIGHT_START),
         None
     );
@@ -45,6 +42,7 @@ fn child_directory_rights_are_monotonically_derived() {
     for requested in [
         0,
         native::HYPER_NATIVE_RIGHT_READ,
+        native::HYPER_NATIVE_RIGHT_WRITE,
         native::HYPER_NATIVE_RIGHT_EXECUTE,
         native::HYPER_NATIVE_RIGHT_DUPLICATE,
         native::HYPER_NATIVE_RIGHT_TRANSFER,
@@ -55,10 +53,6 @@ fn child_directory_rights_are_monotonically_derived() {
         assert_eq!(required & requested, requested);
     }
 
-    assert_eq!(
-        directory_rights_for_directory(native::HYPER_NATIVE_RIGHT_WRITE),
-        None
-    );
     assert_eq!(
         directory_rights_for_directory(native::HYPER_NATIVE_RIGHT_MAP),
         None
