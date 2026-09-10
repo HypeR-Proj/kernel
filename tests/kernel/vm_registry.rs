@@ -99,7 +99,7 @@ fn prepare_test_vm_in(
         .map_err(Error::Registry)?;
     let mut reservation = crate::kernel::vm::registry::reserve().map_err(Error::Registry)?;
     let identifier = reservation.take_hardware_vmid().map_err(Error::Registry)?;
-    let (ram_base, timer_interrupt) = crate::kernel::vm::linux::test_abi();
+    let (ram_base, timer_interrupt) = test_platform();
     let address_space = crate::kernel::vm::memory::GuestAddressSpace::new(
         identifier,
         ram_base,
@@ -137,7 +137,8 @@ fn prepare_test_vm_in(
     let prepared = builder
         .prepare_boot_vcpu(
             0,
-            crate::kernel::vm::linux::test_boot_context().ok_or(Error::InitialContext)?,
+            crate::hal::vm::prepare_initial_context(ram_base, &[])
+                .map_err(|_| Error::InitialContext)?,
         )
         .map_err(Error::VcpuPreparation)?;
     Ok(prepared)
@@ -176,7 +177,7 @@ fn verify_interrupt_resource_admission() -> Result<(), Error> {
         .map_err(Error::Resource)?;
     let lifecycle = crate::kernel::vm::registry::VmLifecycleResources::try_reserve(&domain, 1)
         .map_err(Error::Registry)?;
-    let (_, timer_interrupt) = crate::kernel::vm::linux::test_abi();
+    let (_, timer_interrupt) = test_platform();
     let plan = crate::hal::vm::prepare_interrupt_controller(1, timer_interrupt)
         .map_err(Error::Interrupts)?;
     let allocation = crate::hal::vm::prepared_interrupt_controller_allocation_size(&plan);
@@ -289,4 +290,12 @@ fn vm_usage_released(domain: &crate::kernel::accounting::ResourceDomain) -> bool
     ]
     .into_iter()
     .all(|kind| domain.usage().total(kind) == 0)
+}
+
+// Dormant lifecycle fixtures never execute a payload and require no Linux ABI.
+fn test_platform() -> (u64, hyper::vm::interrupt::VirtualInterruptId) {
+    (
+        0x4000_0000,
+        crate::kernel::vm::device::default_timer_interrupt(),
+    )
 }

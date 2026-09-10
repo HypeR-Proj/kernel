@@ -61,26 +61,9 @@ mkdir "$work/root"
 )
 mv "$output/initramfs.cpio.gz.tmp" "$output/initramfs.cpio.gz"
 
-mkdir -p "$work/vm/kernel" "$work/vm/initramfs"
-cp "$root/tools/guest/alpine-riscv64.manifest" "$work/vm/manifest"
-cp "$output/Image" "$work/vm/kernel/Image"
-cp "$output/initramfs.cpio.gz" "$work/vm/initramfs/initramfs.cpio.gz"
-(
-    cd "$work/vm"
-    find manifest kernel initramfs -print | LC_ALL=C sort |
-        cpio -o -H newc 2>/dev/null > "$output/alpine.cpio.tmp"
-)
-mv "$output/alpine.cpio.tmp" "$output/alpine.cpio"
 
-mkdir -p "$work/boot/hypervisor/vms"
-cp "$root/tools/guest/boot.conf" "$work/boot/hypervisor/boot.conf"
-cp "$output/alpine.cpio" "$work/boot/hypervisor/vms/alpine.cpio"
-(
-    cd "$work/boot"
-    find hypervisor -print | LC_ALL=C sort |
-        cpio -o -H newc 2>/dev/null > "$output/hypervisor-initrd.cpio.tmp"
-)
-mv "$output/hypervisor-initrd.cpio.tmp" "$output/hypervisor-initrd.cpio"
+
+
 
 magic=$(dd if="$output/Image" bs=1 skip=56 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')
 if [ "$magic" != "52534305" ]; then

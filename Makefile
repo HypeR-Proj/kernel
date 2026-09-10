@@ -91,7 +91,6 @@ else
 GUEST_FETCH := tools/guest/fetch-alpine-x86_64.sh
 GUEST_ASSET_STAMP := $(GUEST_OUTPUT)/.alpine-3.23.5.stamp
 endif
-HOST_INITRD := $(GUEST_OUTPUT)/hypervisor-initrd.cpio
 
 .PHONY: all prepare-config config defconfig olddefconfig guest-assets clean-guest-assets build image release check test test-image test-timer test-qemu verify verify-runtime verify-image verify-boot verify-smp run clean
 
@@ -116,18 +115,18 @@ olddefconfig:
 config:
 	$(CARGO) run --quiet --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET) -- config "$(CONFIG_FILE)" "$(CONFIG_FILE)"
 
-$(GUEST_ASSET_STAMP): $(GUEST_FETCH) tools/guest/init tools/guest/boot.conf tools/guest/alpine-$(ARCH).manifest
+$(GUEST_ASSET_STAMP): $(GUEST_FETCH) tools/guest/init
 	sh $(GUEST_FETCH)
 
 guest-assets: $(GUEST_ASSET_STAMP)
-	@if [ ! -s $(GUEST_OUTPUT)/Image ] || [ ! -s $(GUEST_OUTPUT)/initramfs.cpio.gz ] || [ ! -s $(HOST_INITRD) ]; then sh $(GUEST_FETCH); fi
+	@if [ ! -s $(GUEST_OUTPUT)/Image ] || [ ! -s $(GUEST_OUTPUT)/initramfs.cpio.gz ]; then sh $(GUEST_FETCH); fi
 
 $(X86_HOST_DTB): tests/qemu/x86_64-host.dts
 	mkdir -p $(KERNEL_OUTPUT)
 	$(DTC) -q -I dts -O dtb -o $@ $<
 
 clean-guest-assets:
-	rm -f $(GUEST_OUTPUT)/Image $(GUEST_OUTPUT)/initramfs.cpio.gz $(GUEST_OUTPUT)/alpine.cpio $(HOST_INITRD) $(GUEST_ASSET_STAMP)
+	rm -f $(GUEST_OUTPUT)/Image $(GUEST_OUTPUT)/initramfs.cpio.gz $(GUEST_ASSET_STAMP)
 
 # Keep the bare and embedded passes in separate Cargo caches. Their cfg and
 # environment inputs remain stable across invocations, including no-op builds.
@@ -194,13 +193,13 @@ endif
 test-image:
 	sh tests/image/verify-image.sh $(ARCH) $(READOBJ) $(NM) $(OBJDUMP) $(KERNEL_ELF) $(KERNEL_IMAGE) $(KALLSYMS_BLOB)
 
-test-timer: image guest-assets
-	sh $(QEMU_TIMER_SCRIPT) $(QEMU) $(KERNEL_IMAGE) $(HOST_INITRD) $(QEMU_CPU) $(QEMU_MEMORY) "$(QEMU_BOOTARGS)"
+test-timer: image
+	sh $(QEMU_TIMER_SCRIPT) $(QEMU) $(KERNEL_IMAGE) $(QEMU_CPU) $(QEMU_MEMORY) "$(QEMU_BOOTARGS)"
 
 test-timer: CARGO_FEATURES=--features kernel-self-test
 
-test-qemu: image guest-assets
-	QEMU_CPUS=$(QEMU_CPUS) sh $(QEMU_TEST_SCRIPT) $(QEMU) $(KERNEL_IMAGE) $(HOST_INITRD) $(QEMU_CPU) $(QEMU_MEMORY) "$(QEMU_BOOTARGS)"
+test-qemu: image
+	QEMU_CPUS=$(QEMU_CPUS) sh $(QEMU_TEST_SCRIPT) $(QEMU) $(KERNEL_IMAGE) $(QEMU_CPU) $(QEMU_MEMORY) "$(QEMU_BOOTARGS)"
 
 test-qemu: CARGO_FEATURES=--features kernel-self-test
 

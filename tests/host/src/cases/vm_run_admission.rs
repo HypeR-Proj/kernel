@@ -191,6 +191,6 @@ fn vm_retirement_retains_linear_authority_and_unique_tombstone() {
         .unwrap_or_else(|| panic!("missing generation advancement"));
     assert!(destroy < owner_drop && owner_drop < generation);
 
-    assert_eq!(device.matches("registry::is_installed(vm)").count(), 2);
-    assert!(device.contains("clear_console_route_for_vm"));
+    assert!(device.contains("fn disconnect_virtual_serial("));
+    assert!(control.contains("machine.disconnect_virtual_serial();"));
 }

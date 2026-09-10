@@ -13,7 +13,6 @@ publish = false
 
 [features]
 default = []
-host-vm-model-tests = []
 kernel-self-test = []
 
 [lib]

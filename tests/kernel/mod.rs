@@ -13,8 +13,6 @@ mod file_locks;
 mod guest_entry_irq;
 mod guest_memory_access;
 mod handle_pages;
-#[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
-mod irq_tail_preemption;
 mod log_flush_barrier;
 mod native_syscall;
 #[cfg(CONFIG_ARCH_AARCH64)]
@@ -57,11 +55,6 @@ pub(crate) fn run() {
     run_case("kernel stack-model tests", stack_model::run);
     run_case("kernel thread-sleep tests", thread_sleep::run);
     run_case("kernel thread-migration tests", thread_migration::run);
-    #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
-    run_case(
-        "guest IRQ-tail preemption setup",
-        irq_tail_preemption::install,
-    );
     run_case(
         "kernel Native syscall validation tests",
         native_syscall::run,

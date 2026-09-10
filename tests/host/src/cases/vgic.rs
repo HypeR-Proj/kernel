@@ -691,13 +691,6 @@ fn boot_prepares_validates_then_commits_interrupt_virtualization() {
     let constructor = &constructor[..constructor_end];
     assert!(constructor.contains("interrupt_virtualization_description()"));
     assert!(constructor.contains("InterruptError::MissingCapabilities"));
-
-    let linux = include_str!("../../../../src/kernel/vm/linux/mod.rs");
-    let prepare = crate::require_some(linux.find("fn prepare_boot_vcpu("));
-    let prepare = &linux[prepare..];
-    let prepare_end = crate::require_some(prepare.find("\n}\n"));
-    let prepare = &prepare[..prepare_end];
-    assert!(!prepare.contains("interrupt_virtualization_description"));
 }
 
 #[test]

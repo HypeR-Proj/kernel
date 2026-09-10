@@ -9,17 +9,16 @@ script_dir=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
 # shellcheck source=tests/qemu/aarch64-kaslr-geometry.sh
 . "$script_dir/aarch64-kaslr-geometry.sh"
 
-if [ "$#" -ne 6 ]; then
-    echo "usage: verify-smp.sh QEMU IMAGE INITRD CPU MEMORY BOOTARGS" >&2
+if [ "$#" -ne 5 ]; then
+    echo "usage: verify-smp.sh QEMU IMAGE CPU MEMORY BOOTARGS" >&2
     exit 2
 fi
 
 qemu=$1
 image=$2
-initrd=$3
-cpu=$4
-memory=$5
-bootargs=$6
+cpu=$3
+memory=$4
+bootargs=$5
 cpus=${QEMU_CPUS:-4}
 timeout_seconds=${QEMU_BOOT_TIMEOUT_SECONDS:-120}
 
@@ -70,13 +69,9 @@ if [ -n "${QEMU_TEST_LOG:-}" ]; then
 else
     log=$temp/output.log
 fi
-input=$temp/input
 pid=
-input_sent=false
 attempt_limit=$((timeout_seconds * 10))
 
-mkfifo "$input"
-exec 3<>"$input"
 
 cleanup() {
     if [ -n "$pid" ]; then
@@ -90,14 +85,6 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-
-demand_paging_is_lazy() {
-    values=$(sed -n 's/.*HypeR: guest demand paging: \([0-9][0-9]*\)\/\([0-9][0-9]*\) pages committed for boot.*/\1 \2/p' "$log" | tail -n 1)
-    [ -n "$values" ] || return 1
-    committed=${values% *}
-    addressable=${values#* }
-    [ "$committed" -gt 0 ] && [ "$committed" -lt "$addressable" ]
-}
 
 kaslr_geometry_is_valid() {
     kaslr_base=$(sed -n 's/.*randomized kernel base \(0x[0-9a-f][0-9a-f]*\),.*/\1/p' "$log" | tail -n 1)
@@ -160,25 +147,13 @@ runtime_contract_is_ready() {
         grep -q 'HypeR: transition identity mappings retired' "$log" &&
         grep -q "HypeR: AArch64 host execution mode: $host_mode" "$log" &&
         grep -Eq 'HypeR: AArch64 execution protection: (XN|PXN/UXN), WXN=on' "$log" &&
-        grep -q "HypeR: loaded VM 'alpine' from boot ramdisk: 128 MiB RAM, 1 vCPU(s)" "$log" &&
-        demand_paging_is_lazy &&
-        grep -q 'HypeR: memory (guest prepared): [1-9][0-9]* MiB RAM, [1-9][0-9]* reserved pages, [1-9][0-9]* managed pages' "$log" &&
-        grep -q 'HypeR: page owners: guest [1-9][0-9]* (peak [1-9][0-9]*), user [0-9][0-9]*, page tables [1-9][0-9]*, kernel [1-9][0-9]*, heap [1-9][0-9]*' "$log" &&
-        grep -q 'HypeR: kernel initialization complete; starting Linux guest' "$log" &&
-        grep -q 'HypeR: vCPU 0 running as scheduler thread [1-9][0-9]* on guarded stack 0x[0-9a-f][0-9a-f]*-0x[0-9a-f][0-9a-f]*' "$log" &&
         grep -q 'HypeR test: AArch64 guest-entry IRQ mask contract passed' "$log" &&
-        grep -q 'HypeR test: AArch64 IRQ-tail Fair vCPU preemption passed' "$log" &&
         grep -q "HypeR: periodic timer IRQs active on $cpus CPUs" "$log" &&
-        # Host records may preempt the byte-at-a-time guest UART in the middle
-        # of a line. `/init` and its userspace markers prove the stronger Linux
-        # milestone without assuming that the early banner is contiguous.
-        grep -q 'arch_timer: cp15 timer running at .* (virt).' "$log" &&
-        grep -q 'Run /init as init process' "$log" &&
-        grep -q 'HypeR guest: /init reached' "$log" &&
-        grep -q 'HypeR guest: Linux userspace is running' "$log" &&
-        grep -q 'HypeR guest: repeated timer wakeups passed' "$log" &&
-        grep -q '^RX_OK' "$log"
+        grep -q 'HypeR test: kernel self-tests completed' "$log"
 }
+
+initrd=$temp/empty.cpio
+sh "$(dirname "$0")/empty-initramfs.sh" "$initrd"
 
 "$qemu" \
     -machine virt,virtualization=on,gic-version=3,dtb-randomness=on \
@@ -192,7 +167,7 @@ runtime_contract_is_ready() {
     -no-reboot \
     -append "$bootargs" \
     -initrd "$initrd" \
-    -kernel "$image" <"$input" >"$log" 2>&1 &
+    -kernel "$image" </dev/null >"$log" 2>&1 &
 pid=$!
 
 attempt=0
@@ -202,19 +177,13 @@ while [ "$attempt" -lt "$attempt_limit" ]; do
         echo "HypeR reported a fatal failure during the AArch64 integration test" >&2
         exit 1
     fi
-    if [ "$input_sent" = false ] && grep -q 'HypeR guest: repeated timer wakeups passed' "$log"; then
-        # BusyBox ash asks the terminal for the cursor position before reading
-        # its first command. Answer that query, then exercise guest RX.
-        printf '\033[1;1Recho RX_OK\n' >&3
-        input_sent=true
-    fi
     if runtime_contract_is_ready; then
         if ! kaslr_geometry_is_valid; then
             cat "$log" >&2
             echo "invalid AArch64 KASLR geometry" >&2
             exit 1
         fi
-        echo "verified $cpus-CPU AArch64 $host_mode/$atomic_backend host and Linux guest on QEMU CPU $cpu"
+        echo "verified $cpus-CPU AArch64 $host_mode/$atomic_backend kernel self-tests on QEMU CPU $cpu"
         exit 0
     fi
     if ! kill -0 "$pid" 2>/dev/null; then

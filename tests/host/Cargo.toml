@@ -8,7 +8,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-hyper = { path = "../..", features = ["host-vm-model-tests"] }
+hyper = { path = "../.." }
 
 [lints.clippy]
 expect_used = "deny"

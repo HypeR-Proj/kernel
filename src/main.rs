@@ -35,8 +35,6 @@ enum KernelStartError {
     Scheduler(crate::kernel::task::scheduler::Error),
     Time(crate::kernel::time::InitializationError),
     VirtualMachineInitialization(crate::kernel::vm::InitializationError),
-    #[cfg(feature = "kernel-self-test")]
-    VirtualMachine(crate::kernel::vm::StartError),
 }
 
 macro_rules! impl_kernel_start_error {
@@ -68,13 +66,6 @@ impl_kernel_start_error! {
     VirtualMachineInitialization(crate::kernel::vm::InitializationError),
 }
 
-#[cfg(feature = "kernel-self-test")]
-impl From<crate::kernel::vm::StartError> for KernelStartError {
-    fn from(error: crate::kernel::vm::StartError) -> Self {
-        Self::VirtualMachine(error)
-    }
-}
-
 #[cfg(not(feature = "kernel-self-test"))]
 impl From<crate::kernel::init::Error> for KernelStartError {
     fn from(error: crate::kernel::init::Error) -> Self {
@@ -101,8 +92,6 @@ impl core::fmt::Debug for KernelStartError {
             Self::Scheduler(error) => ("scheduler", error),
             Self::Time(error) => ("time", error),
             Self::VirtualMachineInitialization(error) => ("virtual-machine-initialization", error),
-            #[cfg(feature = "kernel-self-test")]
-            Self::VirtualMachine(error) => ("virtual-machine", error),
         };
         formatter
             .debug_struct("KernelStartError")
@@ -149,10 +138,15 @@ extern "C" fn start_kernel() -> ! {
         crate::kernel::log::report_startup_state();
 
         #[cfg(feature = "kernel-self-test")]
-        let never = crate::kernel::vm::start_test_default(boot.initial_ramdisk())?;
+        {
+            crate::pr_info!("HypeR test: kernel self-tests completed");
+            crate::kernel::task::scheduler::exit_current()
+        }
         #[cfg(not(feature = "kernel-self-test"))]
-        let never = crate::kernel::init::start()?;
-        match never {}
+        {
+            let never = crate::kernel::init::start()?;
+            match never {}
+        }
     })();
 
     match result {

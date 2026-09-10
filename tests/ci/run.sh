@@ -23,20 +23,6 @@ copy_aarch64_artifacts() {
     cp "$output/hyper.kallsyms" "$destination/hyper.$kind.kallsyms"
 }
 
-prepare_aarch64_guest() {
-    stamp=target/guest/aarch64/.alpine-3.23.5.stamp
-    for input in \
-        tools/guest/fetch-alpine-aarch64.sh \
-        tools/guest/alpine-aarch64.manifest \
-        tools/guest/init \
-        tools/guest/boot.conf; do
-        if [ ! -f "$stamp" ] || find "$input" -newer "$stamp" -print | grep -q .; then
-            sh tools/guest/fetch-alpine-aarch64.sh
-            return
-        fi
-    done
-}
-
 case "${1:-}" in
     quality)
         command -v rg >/dev/null 2>&1 || {
@@ -141,13 +127,11 @@ case "${1:-}" in
             echo "missing AArch64 self-test image: $test_image" >&2
             exit 2
         }
-        prepare_aarch64_guest
         QEMU_CPUS=${QEMU_CPUS:-4} \
             QEMU_BOOT_TIMEOUT_SECONDS=${QEMU_BOOT_TIMEOUT_SECONDS:-120} \
             sh tests/qemu/verify-smp.sh \
             "${QEMU:-qemu-system-aarch64}" \
             "$test_image" \
-            target/guest/aarch64/hypervisor-initrd.cpio \
             "${QEMU_CPU:-cortex-a72}" \
             "${QEMU_MEMORY:-512M}" \
             "${QEMU_BOOTARGS:-earlycon=pl011,mmio32,0x09000000}"
