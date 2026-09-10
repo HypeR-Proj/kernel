@@ -535,3 +535,22 @@ fn hierarchy_depth_is_bounded_before_child_registration() {
     drop(leaf);
     drop(root);
 }
+
+#[test]
+fn detached_page_charge_remains_counted_until_backing_owner_is_released() {
+    let kind = ResourceKind::KernelMemoryBytes;
+    let domain = crate::require_ok(ResourceDomain::try_new_root(
+        ResourceLimits::UNLIMITED.with(kind, 12288),
+    ));
+    let mut total = crate::require_ok(domain.reserve(amount(kind, 12288))).commit();
+    let detached = total.split_off(amount(kind, 8192));
+    assert_eq!(total.amount().get(kind), 4096);
+    assert_eq!(domain.usage().committed(kind), 12288);
+    assert!(domain.reserve(amount(kind, 1)).is_err());
+    drop(detached);
+    assert_eq!(domain.usage().committed(kind), 4096);
+    let replacement = crate::require_ok(domain.reserve(amount(kind, 8192))).commit();
+    total.absorb_pre_admitted(replacement);
+    drop(total);
+    assert_eq!(domain.usage().committed(kind), 0);
+}

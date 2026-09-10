@@ -11,6 +11,7 @@ mod channel_service;
 #[cfg(CONFIG_ARCH_AARCH64)]
 mod guest_entry_irq;
 mod guest_memory_access;
+mod handle_pages;
 #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
 mod irq_tail_preemption;
 mod log_flush_barrier;
@@ -66,6 +67,10 @@ pub(crate) fn run() {
     );
     #[cfg(CONFIG_ARCH_AARCH64)]
     run_case("AArch64 native-user entry tests", native_user_entry::run);
+    run_case(
+        "kernel empty-handle-page reclamation tests",
+        handle_pages::run,
+    );
     run_case("kernel object-wait tests", object_wait::run);
     run_case("kernel object-directory tests", object_directory::run);
     run_case(
