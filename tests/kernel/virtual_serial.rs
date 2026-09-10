@@ -39,18 +39,12 @@ pub(super) fn run() -> Result<(), &'static str> {
             .get(),
     )
     .ok_or("producer alias")?;
-    let consumer_address = crate::kernel::mm::memory::linear_address(
-        storage
-            .resident_physical_page(4096)
-            .map_err(|_| "consumer page")?
-            .get(),
-    )
-    .ok_or("consumer alias")?;
-    // SAFETY: registration retains and pins both initialized, aligned pages
-    // through serial lifetime. Only atomic header access occurs in this test.
+    // SAFETY: registration pins initialized, aligned storage through serial
+    // lifetime. The test observes the same atomic header as a read-only client.
     let producer = unsafe { &*core::ptr::with_exposed_provenance::<AtomicU64>(producer_address) };
-    // SAFETY: the same retained backing covers the aligned consumer page.
-    let consumer = unsafe { &*core::ptr::with_exposed_provenance::<AtomicU64>(consumer_address) };
+    if storage.try_mapping_write_lease().is_ok() || storage.write(0, &[1]).is_ok() {
+        return Err("registered output admitted another writer");
+    }
     drop(buffer);
     if domain.usage().committed(ResourceKind::PinnedPages) != BYTES / 4096 {
         return Err("registration did not retain pinned charge");
@@ -58,26 +52,55 @@ pub(super) fn run() -> Result<(), &'static str> {
     for _ in 0..CAPACITY {
         serial.publish_guest_output(b'x');
     }
-    consumer.store(u64::MAX, Ordering::Release);
+    if serial.acknowledge_output(u64::MAX).is_ok() {
+        return Err("future cursor accepted");
+    }
     serial.publish_guest_output(b'y');
     if producer.load(Ordering::Acquire) != CAPACITY {
         return Err("untrusted cursor released full buffer");
     }
-    consumer.store(1, Ordering::Release);
+    serial
+        .acknowledge_output(1)
+        .map_err(|_| "valid acknowledgement")?;
     serial.publish_guest_output(b'z');
     if producer.load(Ordering::Acquire) != CAPACITY + 1 {
         return Err("consumed slot not reused");
     }
-    consumer.store(0, Ordering::Release);
+    if serial.acknowledge_output(0).is_ok() {
+        return Err("regressing cursor accepted");
+    }
     serial.publish_guest_output(b'w');
     if producer.load(Ordering::Acquire) != CAPACITY + 1 {
         return Err("regressed cursor accepted");
     }
+    let readable = hyper::abi::native::HYPER_NATIVE_SIGNAL_VIRTUAL_SERIAL_READABLE;
+    if serial.observed_signals() & readable == 0 {
+        return Err("missing readable level");
+    }
+    serial
+        .acknowledge_output(CAPACITY + 1)
+        .map_err(|_| "drain acknowledgement")?;
+    if serial.observed_signals() & readable != 0 {
+        return Err("readable after drain");
+    }
+    serial.publish_guest_output(b'n');
+    if serial.observed_signals() & readable == 0 {
+        return Err("lost rearmed notification");
+    }
+    // An old but valid acknowledgement must not clear newly published data.
+    serial
+        .acknowledge_output(CAPACITY + 1)
+        .map_err(|_| "old acknowledgement")?;
+    if serial.observed_signals() & readable == 0 {
+        return Err("acknowledgement lost new data");
+    }
     // Process handle-table retirement invokes this callback on runtime loss.
     serial.on_zero_active_handles(&mut ObjectRetirement::new());
-    consumer.store(CAPACITY + 1, Ordering::Release);
+    serial
+        .acknowledge_output(CAPACITY + 2)
+        .map_err(|_| "closed acknowledgement")?;
     serial.publish_guest_output(b'!');
-    if producer.load(Ordering::Acquire) != CAPACITY + 1 {
+    if producer.load(Ordering::Acquire) != CAPACITY + 2 {
         return Err("output after runtime ownership loss");
     }
     if domain.usage().committed(ResourceKind::PinnedPages) == 0 {

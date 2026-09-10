@@ -19,23 +19,3 @@ name = "rustc-demangle"
 version = "0.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b74b56ffa8bb2830709a538c2cbcae9aa062db0d2a42563bfb09bdaae44020eb"
-
-[[patch.unused]]
-name = "hyper-os"
-version = "0.0.0"
-
-[[patch.unused]]
-name = "hyper-rt"
-version = "0.0.0"
-
-[[patch.unused]]
-name = "hyper-service"
-version = "0.0.0"
-
-[[patch.unused]]
-name = "hyper-sys"
-version = "0.0.0"
-
-[[patch.unused]]
-name = "hyper-vm-image"
-version = "0.0.0"

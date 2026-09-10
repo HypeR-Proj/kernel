@@ -131,6 +131,7 @@ trap 'rm -f "$instructions_file"' EXIT HUP INT TERM
 $objdump --disassemble "$elf" > "$instructions_file"
 case "$arch" in
     aarch64)
+        python3 tests/image/check-process-stack.py "$instructions_file"
         printf '%s\n' "$symbols" | grep -q '__aarch64_have_lse_atomics'
         printf '%s\n' "$symbols" | grep -q '__aarch64_cas1_acq_rel'
         grep -Eq '[[:space:]]cas(al|a|l)?b[[:space:]]' "$instructions_file"

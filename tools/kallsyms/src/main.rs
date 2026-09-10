@@ -33,7 +33,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let symbols = read_symbols(Path::new(&nm), Path::new(&elf))?;
     let image = encode_symbols(&symbols)?;
-    fs::write(&output, image)?;
+    if fs::read(&output).ok().as_deref() != Some(image.as_slice()) {
+        fs::write(&output, image)?;
+    }
     println!(
         "generated exact kallsyms image for {} complete function symbols at {}",
         symbols.len(),

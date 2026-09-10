@@ -74,8 +74,10 @@ X86_PAYLOAD_IMAGE := $(KERNEL_OUTPUT)/hyper.payload
 X86_HOST_DTB := $(KERNEL_OUTPUT)/x86_64-host.dtb
 KCONFIG_MANIFEST := tools/kconfig/Cargo.toml
 KALLSYMS_MANIFEST := tools/kallsyms/Cargo.toml
+KALLSYMS_SEED_TARGET := $(abspath target/kallsyms-seed)
+KALLSYMS_SEED_ELF := $(KALLSYMS_SEED_TARGET)/$(TARGET)/$(KERNEL_PROFILE)/hyper
+KALLSYMS_SEED_BLOB := $(KERNEL_OUTPUT)/hyper.kallsyms.seed
 KALLSYMS_BLOB := $(KERNEL_OUTPUT)/hyper.kallsyms
-KALLSYMS_FINAL_BLOB := $(KERNEL_OUTPUT)/hyper.kallsyms.final
 KALLSYMS_ELF := $(KERNEL_OUTPUT)/hyper.with-kallsyms
 HOST_TEST_MANIFEST := tests/host/Cargo.toml
 GUEST_OUTPUT := target/guest/$(ARCH)
@@ -118,6 +120,7 @@ $(GUEST_ASSET_STAMP): $(GUEST_FETCH) tools/guest/init tools/guest/boot.conf tool
 	sh $(GUEST_FETCH)
 
 guest-assets: $(GUEST_ASSET_STAMP)
+	@if [ ! -s $(GUEST_OUTPUT)/Image ] || [ ! -s $(GUEST_OUTPUT)/initramfs.cpio.gz ] || [ ! -s $(HOST_INITRD) ]; then sh $(GUEST_FETCH); fi
 
 $(X86_HOST_DTB): tests/qemu/x86_64-host.dts
 	mkdir -p $(KERNEL_OUTPUT)
@@ -126,22 +129,25 @@ $(X86_HOST_DTB): tests/qemu/x86_64-host.dts
 clean-guest-assets:
 	rm -f $(GUEST_OUTPUT)/Image $(GUEST_OUTPUT)/initramfs.cpio.gz $(GUEST_OUTPUT)/alpine.cpio $(HOST_INITRD) $(GUEST_ASSET_STAMP)
 
+# Keep the bare and embedded passes in separate Cargo caches. Their cfg and
+# environment inputs remain stable across invocations, including no-op builds.
 build: prepare-config
-	HYPER_KALLSYMS_BLOB= $(CARGO_KERNEL)
+	HYPER_KALLSYMS_BLOB= $(CARGO_KERNEL) --target-dir "$(KALLSYMS_SEED_TARGET)"
+	mkdir -p $(KERNEL_OUTPUT)
+	$(CARGO) run --quiet --manifest-path $(KALLSYMS_MANIFEST) --target $(HOST_TARGET) -- $(NM) $(KALLSYMS_SEED_ELF) $(KALLSYMS_SEED_BLOB)
+	HYPER_KALLSYMS_BLOB=$(abspath $(KALLSYMS_SEED_BLOB)) $(CARGO_KERNEL)
+	$(CARGO) run --quiet --manifest-path $(KALLSYMS_MANIFEST) --target $(HOST_TARGET) -- $(NM) $(KERNEL_ELF) $(KALLSYMS_BLOB)
+	test "$$(wc -c < $(KALLSYMS_SEED_BLOB))" -eq "$$(wc -c < $(KALLSYMS_BLOB))"
+	$(OBJCOPY) --update-section=.kallsyms=$(KALLSYMS_BLOB) $(KERNEL_ELF) $(KALLSYMS_ELF)
+	@if cmp -s $(KALLSYMS_ELF) $(KERNEL_ELF); then rm $(KALLSYMS_ELF); else mv $(KALLSYMS_ELF) $(KERNEL_ELF); fi
 
 image: build
-	$(CARGO) run --quiet --manifest-path $(KALLSYMS_MANIFEST) --target $(HOST_TARGET) -- $(NM) $(KERNEL_ELF) $(KALLSYMS_BLOB)
-	HYPER_KALLSYMS_BLOB=$(abspath $(KALLSYMS_BLOB)) $(CARGO_KERNEL)
-	$(CARGO) run --quiet --manifest-path $(KALLSYMS_MANIFEST) --target $(HOST_TARGET) -- $(NM) $(KERNEL_ELF) $(KALLSYMS_FINAL_BLOB)
-	test "$$(wc -c < $(KALLSYMS_BLOB))" -eq "$$(wc -c < $(KALLSYMS_FINAL_BLOB))"
-	mv $(KALLSYMS_FINAL_BLOB) $(KALLSYMS_BLOB)
-	$(OBJCOPY) --update-section=.kallsyms=$(KALLSYMS_BLOB) $(KERNEL_ELF) $(KALLSYMS_ELF)
-	mv $(KALLSYMS_ELF) $(KERNEL_ELF)
-	$(if $(filter x86_64,$(ARCH)),$(OBJCOPY) --output-target=binary $(KERNEL_ELF) $(X86_PAYLOAD_IMAGE),$(OBJCOPY) --output-target=binary $(KERNEL_ELF) $(KERNEL_IMAGE))
+	$(if $(filter x86_64,$(ARCH)),$(OBJCOPY) --output-target=binary $(KERNEL_ELF) $(X86_PAYLOAD_IMAGE),$(OBJCOPY) --output-target=binary $(KERNEL_ELF) $(KERNEL_IMAGE).tmp)
 	$(if $(filter x86_64,$(ARCH)),$(CLANG) -target i386-none-elf -c src/arch/x86_64/setup.S -o $(X86_SETUP_OBJECT),true)
 	$(if $(filter x86_64,$(ARCH)),$(OBJCOPY) --only-section=.setup --output-target=binary $(X86_SETUP_OBJECT) $(X86_SETUP_IMAGE),true)
-	$(if $(filter x86_64,$(ARCH)),cp $(X86_SETUP_IMAGE) $(KERNEL_IMAGE),true)
-	$(if $(filter x86_64,$(ARCH)),dd if=$(X86_PAYLOAD_IMAGE) of=$(KERNEL_IMAGE) bs=2560 seek=1 conv=notrunc status=none,true)
+	$(if $(filter x86_64,$(ARCH)),cp $(X86_SETUP_IMAGE) $(KERNEL_IMAGE).tmp,true)
+	$(if $(filter x86_64,$(ARCH)),dd if=$(X86_PAYLOAD_IMAGE) of=$(KERNEL_IMAGE).tmp bs=2560 seek=1 conv=notrunc status=none,true)
+	@if cmp -s $(KERNEL_IMAGE).tmp $(KERNEL_IMAGE); then rm $(KERNEL_IMAGE).tmp; else mv $(KERNEL_IMAGE).tmp $(KERNEL_IMAGE); fi
 
 # The distributable ELF is a debug-section-stripped copy of the canonical ELF.
 # No separate release compilation or link exists, and allocated bytes must

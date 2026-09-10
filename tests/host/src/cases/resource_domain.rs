@@ -25,6 +25,31 @@ fn charge_owners_retain_a_bounded_inline_accounting_delta() {
     assert!(core::mem::size_of::<CommittedCharge>() <= 64);
 }
 
+#[test]
+fn coalesced_storage_charge_preserves_admission_rollback_and_final_release() {
+    let kind = ResourceKind::KernelMemoryBytes;
+    let domain = crate::require_ok(ResourceDomain::try_new_root(
+        ResourceLimits::UNLIMITED.with(kind, 64),
+    ));
+    let mut total = crate::require_ok(domain.reserve(amount(kind, 16))).commit();
+    let extension = crate::require_ok(domain.reserve(amount(kind, 32))).commit();
+    // Model a competing prepared expansion that lost the publication race.
+    let abandoned = crate::require_ok(domain.reserve(amount(kind, 8))).commit();
+    drop(abandoned);
+    assert_eq!(domain.usage().committed(kind), 48);
+    total.absorb_pre_admitted(extension);
+    assert_eq!(total.amount().get(kind), 48);
+    assert_eq!(domain.usage().committed(kind), 48);
+    assert_eq!(domain.usage().pending(kind), 0);
+    assert!(domain.reserve(amount(kind, 17)).is_err());
+    // Merging at the quota limit must not perform a second admission.
+    let extension = crate::require_ok(domain.reserve(amount(kind, 16))).commit();
+    total.absorb_pre_admitted(extension);
+    assert_eq!(domain.usage().committed(kind), 64);
+    drop(total);
+    assert_eq!(domain.usage().total(kind), 0);
+}
+
 fn all_kinds() -> [ResourceKind; 19] {
     [
         ResourceKind::KernelMemoryBytes,
