@@ -199,6 +199,9 @@ mod stage2_mapping;
 #[path = "cases/synchronization.rs"]
 mod synchronization;
 #[cfg(test)]
+#[path = "cases/timestamps.rs"]
+mod timestamps;
+#[cfg(test)]
 #[path = "cases/translation_id.rs"]
 mod translation_id;
 #[cfg(test)]
@@ -207,12 +210,19 @@ mod user_memory;
 #[cfg(test)]
 #[path = "cases/vfs_core.rs"]
 mod vfs_core;
+
+#[cfg(test)]
+#[path = "cases/file_locks.rs"]
+mod file_locks;
 #[cfg(test)]
 #[path = "cases/vfs_read_contract.rs"]
 mod vfs_read_contract_cases;
 #[cfg(test)]
 #[path = "cases/vfs_rights_contract.rs"]
 mod vfs_rights_contract_cases;
+#[cfg(test)]
+#[path = "cases/vfs_scratch.rs"]
+mod vfs_scratch;
 #[cfg(test)]
 #[path = "cases/vgic.rs"]
 mod vgic;

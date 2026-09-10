@@ -5,6 +5,9 @@
 
 mod owned_queue;
 mod queue;
+mod timestamp;
+
+pub use timestamp::Timestamp;
 
 pub use owned_queue::{
     ExpiredTimer, OwnedDeadlineQueue, PendingReservedTimer, PendingTimer, ReservedTimerCallbacks,

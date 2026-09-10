@@ -252,3 +252,13 @@ fn bounds_archive_expansion_work_before_normalization() {
         Err(RamFsError::BuildWorkBudgetExceeded)
     );
 }
+
+#[test]
+fn archive_file_modification_time_survives_namespace_import() {
+    let mut bytes = archive(&[("file", 0o100_644, b"contents")]);
+    bytes[46..54].copy_from_slice(b"65a1b2c3");
+    let fs = crate::require_ok(RamFs::from_newc(&bytes));
+    let node = crate::require_some(crate::require_ok(fs.lookup("/file")));
+    assert_eq!(node.modified_seconds(), Some(0x65a1b2c3));
+    assert_eq!(fs.root().modified_seconds(), None);
+}

@@ -8,6 +8,7 @@ mod capability_objects;
 mod channel;
 #[cfg(CONFIG_ARCH_AARCH64)]
 mod channel_service;
+mod file_locks;
 #[cfg(CONFIG_ARCH_AARCH64)]
 mod guest_entry_irq;
 mod guest_memory_access;
@@ -72,6 +73,11 @@ pub(crate) fn run() {
         handle_pages::run,
     );
     run_case("kernel object-wait tests", object_wait::run);
+    run_case("kernel advisory file-lock tests", file_locks::run);
+    run_case(
+        "VFS namespace and file transactions",
+        crate::kernel::vfs::namespace_test::run,
+    );
     run_case("kernel object-directory tests", object_directory::run);
     run_case(
         "kernel CapabilityChannel core tests",

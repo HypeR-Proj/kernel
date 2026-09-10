@@ -9,6 +9,7 @@ mod path;
 
 pub mod file_data;
 pub mod ramfs;
+pub mod scratch;
 
 pub use name::{MAX_NAME_BYTES, Name, NameError};
 pub use node::{NodeAttributes, NodeId, NodeKind};
