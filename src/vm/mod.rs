@@ -5,7 +5,9 @@
 
 pub mod aarch64;
 pub mod arm;
+pub mod device;
 pub mod exit;
 pub mod interrupt;
+pub mod riscv64;
 pub mod translation;
 pub mod x86;

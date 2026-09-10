@@ -21,6 +21,7 @@ mod object_directory;
 mod object_wait;
 #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_X86_64))]
 mod reschedule_ipi;
+mod reserved_timer;
 mod scheduler_parallel;
 mod scheduler_sync;
 mod stack_model;
@@ -54,6 +55,7 @@ pub(crate) fn run() {
     );
     run_case("kernel stack-model tests", stack_model::run);
     run_case("kernel thread-sleep tests", thread_sleep::run);
+    run_case("owned reserved timer lifetime tests", reserved_timer::run);
     run_case("kernel thread-migration tests", thread_migration::run);
     run_case(
         "kernel Native syscall validation tests",

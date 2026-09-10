@@ -53,7 +53,7 @@ pub(super) fn run() -> Result<(), Error> {
         || domain
             .usage()
             .committed(crate::kernel::accounting::ResourceKind::Timers)
-            != 1
+            != 1 + crate::kernel::vm::device::timer_count()
         || domain
             .usage()
             .committed(crate::kernel::accounting::ResourceKind::KernelObjects)
@@ -67,6 +67,7 @@ pub(super) fn run() -> Result<(), Error> {
     if after.threads != before.threads {
         return Err(Error::SchedulerThreadLeaked);
     }
+    verify_timer_resource_admission()?;
     verify_vcpu_resource_admission()?;
     verify_interrupt_resource_admission()?;
 
@@ -99,7 +100,7 @@ fn prepare_test_vm_in(
         .map_err(Error::Registry)?;
     let mut reservation = crate::kernel::vm::registry::reserve().map_err(Error::Registry)?;
     let identifier = reservation.take_hardware_vmid().map_err(Error::Registry)?;
-    let (ram_base, timer_interrupt) = test_platform();
+    let (ram_base, timer_interrupt, platform_profile) = test_platform();
     let address_space = crate::kernel::vm::memory::GuestAddressSpace::new(
         identifier,
         ram_base,
@@ -125,8 +126,7 @@ fn prepare_test_vm_in(
             memory_size: 2 * hyper::mm::PAGE_SIZE,
             vcpu_count: 1,
             architecture: crate::hal::vm::guest_architecture_abi(),
-            platform_profile: hyper::abi::native::HYPER_NATIVE_VIRTUAL_PLATFORM_AARCH64_REFERENCE
-                as u32,
+            platform_profile,
         },
         address_space,
         interrupts,
@@ -142,6 +142,33 @@ fn prepare_test_vm_in(
         )
         .map_err(Error::VcpuPreparation)?;
     Ok(prepared)
+}
+
+fn verify_timer_resource_admission() -> Result<(), Error> {
+    use crate::kernel::accounting::{ResourceKind, ResourceLimits};
+
+    // One endpoint timer plus the selected platform's reserved device timers
+    // must be admitted before any backing or scheduler object is allocated.
+    let required = 1 + crate::kernel::vm::device::timer_count();
+    let domain = crate::kernel::accounting::ResourceDomain::try_new_root(
+        ResourceLimits::UNLIMITED.with(ResourceKind::Timers, required - 1),
+    )
+    .map_err(Error::Resource)?;
+    if !matches!(
+        prepare_test_vm_in(&domain),
+        Err(Error::Registry(
+            crate::kernel::vm::registry::Error::Resource(
+                crate::kernel::accounting::ResourceError::LimitExceeded {
+                    resource: ResourceKind::Timers,
+                    ..
+                }
+            )
+        ))
+    ) || !vm_usage_released(&domain)
+    {
+        return Err(Error::Accounting);
+    }
+    Ok(())
 }
 
 fn verify_vcpu_resource_admission() -> Result<(), Error> {
@@ -177,7 +204,7 @@ fn verify_interrupt_resource_admission() -> Result<(), Error> {
         .map_err(Error::Resource)?;
     let lifecycle = crate::kernel::vm::registry::VmLifecycleResources::try_reserve(&domain, 1)
         .map_err(Error::Registry)?;
-    let (_, timer_interrupt) = test_platform();
+    let (_, timer_interrupt, _) = test_platform();
     let plan = crate::hal::vm::prepare_interrupt_controller(1, timer_interrupt)
         .map_err(Error::Interrupts)?;
     let allocation = crate::hal::vm::prepared_interrupt_controller_allocation_size(&plan);
@@ -293,9 +320,20 @@ fn vm_usage_released(domain: &crate::kernel::accounting::ResourceDomain) -> bool
 }
 
 // Dormant lifecycle fixtures never execute a payload and require no Linux ABI.
-fn test_platform() -> (u64, hyper::vm::interrupt::VirtualInterruptId) {
+fn test_platform() -> (u64, hyper::vm::interrupt::VirtualInterruptId, u32) {
+    #[cfg(CONFIG_ARCH_RISCV64)]
+    let (ram_base, profile) = (
+        hyper::abi::native::HYPER_NATIVE_VIRTUAL_PLATFORM_RISCV64_REFERENCE_GUEST_RAM_BASE,
+        hyper::abi::native::HYPER_NATIVE_VIRTUAL_PLATFORM_RISCV64_REFERENCE,
+    );
+    #[cfg(not(CONFIG_ARCH_RISCV64))]
+    let (ram_base, profile) = (
+        hyper::abi::native::HYPER_NATIVE_VIRTUAL_PLATFORM_AARCH64_REFERENCE_GUEST_RAM_BASE,
+        hyper::abi::native::HYPER_NATIVE_VIRTUAL_PLATFORM_AARCH64_REFERENCE,
+    );
     (
-        0x4000_0000,
+        ram_base,
         crate::kernel::vm::device::default_timer_interrupt(),
+        profile as u32,
     )
 }

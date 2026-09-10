@@ -10,6 +10,10 @@
 extern crate alloc;
 
 #[cfg(test)]
+#[path = "cases/riscv_devices.rs"]
+mod riscv_devices;
+
+#[cfg(test)]
 #[path = "cases/sharded_lock.rs"]
 mod sharded_lock;
 
@@ -255,3 +259,7 @@ mod serial_ring;
 #[cfg(test)]
 #[path = "cases/file_data.rs"]
 mod file_data;
+
+#[cfg(test)]
+#[path = "cases/riscv_guest_mechanisms.rs"]
+mod riscv_guest_mechanisms;
