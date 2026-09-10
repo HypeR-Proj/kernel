@@ -263,3 +263,7 @@ mod file_data;
 #[cfg(test)]
 #[path = "cases/riscv_guest_mechanisms.rs"]
 mod riscv_guest_mechanisms;
+
+#[cfg(test)]
+#[path = "../../../src/arch/riscv64/isa.rs"]
+mod riscv_isa_contract;
