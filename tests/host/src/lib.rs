@@ -270,3 +270,14 @@ mod riscv_guest_mechanisms;
 #[cfg(test)]
 #[path = "../../../src/arch/riscv64/isa.rs"]
 mod riscv_isa_contract;
+
+#[cfg(test)]
+#[path = "cases/gicv2.rs"]
+mod gicv2;
+
+#[cfg(test)]
+#[path = "../../../src/arch/aarch64/bootstrap_map.rs"]
+mod bootstrap_map;
+#[cfg(test)]
+#[path = "cases/bootstrap_map.rs"]
+mod bootstrap_map_tests;

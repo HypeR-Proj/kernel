@@ -55,6 +55,14 @@ fn cells(values: &[u32]) -> Vec<u8> {
 }
 
 fn qemu_like_dtb() -> Vec<u8> {
+    qemu_like_dtb_with_gic(b"arm,gic-v3\0")
+}
+
+fn qemu_like_dtb_with_gic(compatible: &[u8]) -> Vec<u8> {
+    qemu_like_dtb_with_windows(compatible, false)
+}
+
+fn qemu_like_dtb_with_windows(compatible: &[u8], many_windows: bool) -> Vec<u8> {
     const ADDRESS_CELLS: u32 = 0;
     const SIZE_CELLS: u32 = 15;
     const REG: u32 = 27;
@@ -146,7 +154,7 @@ fn qemu_like_dtb() -> Vec<u8> {
             0x00f6_0000,
         ]),
     );
-    property(&mut structure, COMPATIBLE, b"arm,gic-v3\0");
+    property(&mut structure, COMPATIBLE, compatible);
     push_u32(&mut structure, FDT_END_NODE);
     begin_node(&mut structure, b"timer");
     property(
@@ -176,6 +184,15 @@ fn qemu_like_dtb() -> Vec<u8> {
     );
     property(&mut structure, ADDRESS_CELLS, &1u32.to_be_bytes());
     property(&mut structure, SIZE_CELLS, &1u32.to_be_bytes());
+    if many_windows {
+        begin_node(&mut structure, b"display@10000");
+        let mut registers = Vec::new();
+        for n in 0..9 {
+            registers.extend(cells(&[0x10000 + n * 0x1000, 0x100]));
+        }
+        property(&mut structure, REG, &registers);
+        push_u32(&mut structure, FDT_END_NODE);
+    }
     begin_node(&mut structure, b"pl011@0");
     property(&mut structure, REG, &[0, 0, 0, 0, 0, 0, 0x10, 0]);
     property(&mut structure, COMPATIBLE, b"arm,pl011\0arm,primecell\0");
@@ -706,4 +723,63 @@ fn owns_driver_before_activation_and_retires_it_before_manager_drop() {
 
     assert!(!LIFECYCLE_ACTIVE.load(Ordering::Acquire));
     assert_eq!(LIFECYCLE_REMOVALS.load(Ordering::Relaxed), 1);
+}
+
+#[path = "../../../../src/arch/aarch64/platform.rs"]
+mod aarch64_platform;
+
+#[test]
+fn discovers_gicv2_and_preserves_gicv3_selection() {
+    for compatible in [
+        b"arm,gic-400\0".as_slice(),
+        b"arm,cortex-a15-gic\0".as_slice(),
+        b"arm,gic-v3\0".as_slice(),
+    ] {
+        let blob = qemu_like_dtb_with_gic(compatible);
+        let mut visitor = aarch64_platform::EssentialDeviceDiscovery::new();
+        crate::require_ok(fdt::discover_from_bytes_with(&blob, &mut visitor));
+        let result = crate::require_ok(visitor.finish());
+        assert_eq!(result.claims().iter().flatten().count(), 3);
+        assert!(result.cpu_power.is_some());
+        assert!(result.timer.is_some());
+        assert_eq!(
+            crate::require_ok(aarch64_platform::decode_platform_interrupt(&[0, 121, 4])).interrupt,
+            153
+        );
+        match crate::require_some(result.interrupt_controller) {
+            hyper::platform::InterruptControllerInfo::GicV2(info) => {
+                assert_ne!(compatible, b"arm,gic-v3\0");
+                assert_eq!(info.distributor.start(), 0x08000000);
+                assert_eq!(info.cpu_interface.start(), 0x080a0000);
+            }
+            hyper::platform::InterruptControllerInfo::GicV3(_) => {
+                assert_eq!(compatible, b"arm,gic-v3\0")
+            }
+            _ => panic!("unexpected controller"),
+        }
+    }
+}
+
+#[test]
+fn raspberry_pi5_debug_uart_address_is_not_truncated() {
+    let command = crate::require_ok(chosen::CommandLine::parse(
+        "earlycon=pl011,0x107d001000,115200n8",
+    ));
+    let console = crate::require_some(crate::require_ok(console::early_console(Some(&command))));
+    assert_eq!(console.kind, hyper::platform::ConsoleKind::Pl011);
+    assert_eq!(console.base, 0x107d001000);
+}
+
+#[test]
+fn device_with_nine_register_windows_does_not_block_discovery() {
+    let bytes = qemu_like_dtb_with_windows(b"arm,gic-400\0", true);
+    let info = crate::require_ok(fdt::discover_from_bytes(&bytes));
+    for n in 0..9 {
+        assert!(
+            info.mmio
+                .as_slice()
+                .iter()
+                .any(|r| r.start() == 0x09010000 + n * 0x1000)
+        );
+    }
 }

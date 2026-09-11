@@ -69,3 +69,21 @@ fn rejects_a_virtual_interval_that_wraps_usize() {
     };
     assert_eq!(result, Err(MmioMappingError::AddressOverflow));
 }
+
+#[test]
+fn pl011_accepts_axi_window_without_reading_missing_identification_registers() {
+    use hyper::drivers::serial::Pl011;
+    let registers = Box::leak(vec![0u32; 0x200 / 4].into_boxed_slice());
+    // SAFETY: Leaked aligned storage backs the entire declared register window.
+    let mapping = crate::require_ok(unsafe {
+        PermanentMmioMapping::new(
+            resource(0x107d001000, 0x200),
+            VirtualAddress::new(registers.as_mut_ptr() as u64),
+        )
+    });
+    let uart = crate::require_ok(Pl011::from_mapped_mmio(mapping));
+    assert_eq!(uart.peripheral_id(), None);
+    uart.disable_interrupts();
+    assert!(uart.try_write(b'x'));
+    assert_eq!(registers[0], u32::from(b'x'));
+}
