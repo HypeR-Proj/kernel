@@ -19,6 +19,7 @@ pub(super) enum Error {
     ProgressTimeout,
     InitialContext,
     SchedulerThreadLeaked,
+    UnsupportedAdmission,
 }
 
 impl From<crate::kernel::task::SleepError> for Error {
@@ -33,7 +34,7 @@ pub(super) fn run() -> Result<(), Error> {
         return Err(Error::Accounting);
     }
     if !crate::hal::vm::guest_execution_available() {
-        return Ok(());
+        return verify_unavailable_backend_admission();
     }
 
     let before = crate::kernel::task::scheduler::statistics().map_err(Error::Scheduler)?;
@@ -74,6 +75,37 @@ pub(super) fn run() -> Result<(), Error> {
     if crate::hal::vm::try_administrative_stop().is_ok() {
         verify_dormant_vcpu_stop()?;
         verify_thread_object_charge_lifetime()?;
+    }
+    Ok(())
+}
+
+fn verify_unavailable_backend_admission() -> Result<(), Error> {
+    let domain = crate::kernel::accounting::ResourceDomain::try_new_root(
+        crate::kernel::accounting::ResourceLimits::UNLIMITED,
+    )
+    .map_err(Error::Resource)?;
+    let before = domain.usage();
+    let (ram_base, _, platform_profile) = test_platform();
+    for _ in 0..2 {
+        let pending = crate::kernel::vm::objects::PendingVirtualMachine::try_new(
+            crate::kernel::vm::objects::VirtualMachineConfiguration {
+                guest_physical_base: ram_base,
+                memory_size: 2 * hyper::mm::PAGE_SIZE,
+                vcpu_count: 1,
+                architecture: crate::hal::vm::guest_architecture_abi(),
+                platform_profile,
+            },
+            &domain,
+        );
+        if !matches!(
+            pending,
+            Err(crate::kernel::vm::objects::Error::UnsupportedArchitecture)
+        ) {
+            return Err(Error::UnsupportedAdmission);
+        }
+        if domain.usage() != before {
+            return Err(Error::Accounting);
+        }
     }
     Ok(())
 }
