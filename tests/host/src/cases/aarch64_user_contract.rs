@@ -368,3 +368,30 @@ fn stage2_user_descriptors_reject_writable_execute_aliases() {
     assert_ne!(read_only & registers::STAGE2_DESC_READ_ONLY, 0);
     assert_ne!(read_only & registers::STAGE2_DESC_XN, 0);
 }
+
+#[test]
+fn cow_fault_classification_requires_a_user_store_permission_fault() {
+    use crate::aarch64_user_contract_model::is_user_write_page_fault;
+    let class = registers::ESR_EC_DATA_ABORT_LOWER << registers::ESR_EC_SHIFT;
+    for level in 0..4 {
+        let fault = class | registers::ESR_DATA_ABORT_WNR | (0b001100 + level);
+        assert!(is_user_write_page_fault(fault));
+        assert!(!is_user_write_page_fault(
+            fault & !registers::ESR_DATA_ABORT_WNR
+        ));
+        for excluded in [registers::ESR_DATA_ABORT_S1PTW, 1 << 8, 1 << 10] {
+            assert!(!is_user_write_page_fault(fault | excluded));
+        }
+    }
+    for status in 0..64 {
+        if !(12..=15).contains(&status) {
+            assert!(!is_user_write_page_fault(
+                class | registers::ESR_DATA_ABORT_WNR | status
+            ));
+        }
+    }
+    let instruction = registers::ESR_EC_INSTRUCTION_ABORT_LOWER << registers::ESR_EC_SHIFT;
+    assert!(!is_user_write_page_fault(
+        instruction | registers::ESR_DATA_ABORT_WNR | 15
+    ));
+}

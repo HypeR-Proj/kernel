@@ -1411,3 +1411,711 @@ fn atomic_word_pin_rejects_invalid_access_and_distinguishes_remapping() {
     drop(pin);
     assert_eq!(usage.pages.load(Ordering::Relaxed), 0);
 }
+
+fn private_mapping(
+    space: &UserAddressSpace<Backend, Account>,
+    source: user::SnapshotVmo<Backend, Account>,
+    address: u64,
+    size: u64,
+    data_offset: u64,
+    length: u64,
+    mode: user::PrivateMappingMode,
+) -> user::MappingToken {
+    let change = crate::require_ok(space.prepare_map_private(
+        space.root_vmar(),
+        slice(address, size),
+        source,
+        0,
+        length,
+        data_offset,
+        Permissions::read_write(),
+        Permissions::read_write(),
+        mode,
+    ));
+    let token = crate::require_some(
+        change
+            .snapshots()
+            .find(|mapping| mapping.range.base().get() == address),
+    )
+    .token;
+    complete(crate::require_ok(change.commit_for_test()));
+    token
+}
+
+fn materialize(space: &UserAddressSpace<Backend, Account>, range: UserSlice) {
+    if let Some(change) = crate::require_ok(space.prepare_private_write(range)) {
+        complete(crate::require_ok(change.commit_for_test()));
+    }
+}
+
+#[test]
+fn private_cow_shares_then_isolates_and_preserves_mapping_identity() {
+    let (backend, source_account) = fixtures();
+    let (_, destination_account) = fixtures();
+    let source = crate::require_ok(user::SnapshotVmo::try_from_bytes(
+        &vec![0x51; PAGE_SIZE as usize * 2],
+        backend.clone(),
+        source_account.clone(),
+    ));
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE * 4),
+        backend,
+        destination_account.clone(),
+    ));
+    let token = private_mapping(
+        &space,
+        source.clone(),
+        0x1000,
+        PAGE_SIZE * 2,
+        0,
+        PAGE_SIZE * 2,
+        user::PrivateMappingMode::CopyOnWrite,
+    );
+    private_mapping(
+        &space,
+        source.clone(),
+        0x3000,
+        PAGE_SIZE * 2,
+        0,
+        PAGE_SIZE * 2,
+        user::PrivateMappingMode::CopyOnWrite,
+    );
+    assert_eq!(source_account.0.pages.load(Ordering::Relaxed), 2);
+    assert_eq!(destination_account.0.pages.load(Ordering::Relaxed), 0);
+    assert!(matches!(
+        space.copy_to_user(slice(0x1000, 1), &[0x99]),
+        Err(AddressSpaceError::CowRequired)
+    ));
+    assert!(matches!(
+        space.pin_atomic_u32(UserAddress::new(0x1000)),
+        Err(AddressSpaceError::CowRequired)
+    ));
+    materialize(&space, slice(0x1000, 1));
+    assert_eq!(destination_account.0.pages.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        crate::require_ok(space.mapping_snapshot(token)).token,
+        token
+    );
+    let pin = crate::require_ok(space.pin_atomic_u32(UserAddress::new(0x1000)));
+    assert_ne!(
+        pin.physical,
+        crate::require_ok(source.resident_physical_page(0)).get()
+    );
+    crate::require_ok(space.copy_to_user(slice(0x1000, 1), &[0x99]));
+    let mut byte = [0];
+    crate::require_ok(space.copy_from_user(slice(0x3000, 1), &mut byte));
+    assert_eq!(byte, [0x51]);
+    crate::require_ok(source.read(0, &mut byte));
+    assert_eq!(byte, [0x51]);
+    materialize(&space, slice(0x2000, 1));
+    let pin_after = crate::require_ok(space.pin_atomic_u32(UserAddress::new(0x1000)));
+    assert_eq!(pin.token, pin_after.token);
+    assert_eq!(pin.physical, pin_after.physical);
+    drop(pin_after);
+    drop(pin);
+    drop(space);
+    assert_eq!(destination_account.0.pages.load(Ordering::Relaxed), 0);
+    drop(source);
+    assert_eq!(source_account.0.pages.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn private_boundary_bytes_and_bss_are_zero_without_source_disclosure() {
+    let (backend, account) = fixtures();
+    let source = crate::require_ok(user::SnapshotVmo::try_from_bytes(
+        &vec![0x78; PAGE_SIZE as usize * 3],
+        backend.clone(),
+        account.clone(),
+    ));
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE * 4),
+        backend,
+        account,
+    ));
+    let token = private_mapping(
+        &space,
+        source,
+        0x1000,
+        PAGE_SIZE * 4,
+        17,
+        PAGE_SIZE + 32,
+        user::PrivateMappingMode::CopyOnWrite,
+    );
+    let mut bytes = vec![0xff; PAGE_SIZE as usize * 4];
+    crate::require_ok(space.copy_from_user(slice(0x1000, PAGE_SIZE * 4), &mut bytes));
+    assert!(bytes[..17].iter().all(|byte| *byte == 0));
+    assert!(
+        bytes[17..PAGE_SIZE as usize + 49]
+            .iter()
+            .all(|byte| *byte == 0x78)
+    );
+    assert!(
+        bytes[PAGE_SIZE as usize + 49..]
+            .iter()
+            .all(|byte| *byte == 0)
+    );
+    materialize(&space, slice(0x3000, 1));
+    crate::require_ok(space.copy_to_user(slice(0x3000, 1), &[0x42]));
+    crate::require_ok(space.copy_from_user(slice(0x4000, 1), &mut bytes[..1]));
+    assert_eq!(bytes[0], 0);
+    assert!(space.mapping_snapshot(token).is_ok());
+}
+
+#[test]
+fn private_materialization_failure_and_stale_commit_leave_backing_intact() {
+    let (backend, account) = fixtures();
+    let source = crate::require_ok(user::SnapshotVmo::try_from_bytes(
+        &vec![0x61; PAGE_SIZE as usize * 2],
+        backend.clone(),
+        account.clone(),
+    ));
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE * 2),
+        backend.clone(),
+        account.clone(),
+    ));
+    private_mapping(
+        &space,
+        source,
+        0x1000,
+        PAGE_SIZE * 2,
+        0,
+        PAGE_SIZE * 2,
+        user::PrivateMappingMode::CopyOnWrite,
+    );
+    let baseline = account.0.pages.load(Ordering::Relaxed);
+    let epoch = space.mapping_epoch();
+    backend.0.fail_allocation_at.store(
+        backend.0.allocation_calls.load(Ordering::Relaxed) + 2,
+        Ordering::Relaxed,
+    );
+    assert!(matches!(
+        space.prepare_private_write(slice(0x1000, PAGE_SIZE * 2)),
+        Err(AddressSpaceError::Backend(PageError))
+    ));
+    assert_eq!(space.mapping_epoch(), epoch);
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), baseline);
+    backend.0.fail_allocation_at.store(0, Ordering::Relaxed);
+    let first = crate::require_some(crate::require_ok(
+        space.prepare_private_write(slice(0x1000, 1)),
+    ));
+    let second = crate::require_some(crate::require_ok(
+        space.prepare_private_write(slice(0x1000, 1)),
+    ));
+    complete(crate::require_ok(first.commit_for_test()));
+    assert!(matches!(
+        second.commit_for_test(),
+        Err(AddressSpaceError::StaleTransaction)
+    ));
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), baseline + 1);
+    let mut byte = [0];
+    crate::require_ok(space.copy_from_user(slice(0x1000, 1), &mut byte));
+    assert_eq!(byte, [0x61]);
+}
+
+#[test]
+fn private_eager_pages_never_fault_and_allocation_failure_publishes_nothing() {
+    let (backend, account) = fixtures();
+    let source = crate::require_ok(user::SnapshotVmo::try_from_bytes(
+        &vec![0x62; PAGE_SIZE as usize * 2],
+        backend.clone(),
+        account.clone(),
+    ));
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE * 4),
+        backend.clone(),
+        account.clone(),
+    ));
+    private_mapping(
+        &space,
+        source.clone(),
+        0x1000,
+        PAGE_SIZE * 2,
+        0,
+        PAGE_SIZE * 2,
+        user::PrivateMappingMode::Eager,
+    );
+    assert!(crate::require_ok(space.prepare_private_write(slice(0x1000, PAGE_SIZE * 2))).is_none());
+    let pin = crate::require_ok(space.pin_atomic_u32(UserAddress::new(0x1000)));
+    assert_ne!(
+        pin.physical,
+        crate::require_ok(source.resident_physical_page(0)).get()
+    );
+    let epoch = space.mapping_epoch();
+    let pages = account.0.pages.load(Ordering::Relaxed);
+    backend.0.fail_allocation_at.store(
+        backend.0.allocation_calls.load(Ordering::Relaxed) + 2,
+        Ordering::Relaxed,
+    );
+    assert!(
+        space
+            .prepare_map_private(
+                space.root_vmar(),
+                slice(0x3000, PAGE_SIZE * 2),
+                source,
+                0,
+                PAGE_SIZE * 2,
+                0,
+                Permissions::read_write(),
+                Permissions::read_write(),
+                user::PrivateMappingMode::Eager
+            )
+            .is_err()
+    );
+    assert_eq!(space.mapping_epoch(), epoch);
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), pages);
+}
+
+#[test]
+fn fragmented_private_view_preserves_other_pages_and_futex_identity() {
+    let (backend, account) = fixtures();
+    let source = crate::require_ok(user::SnapshotVmo::try_from_bytes(
+        &vec![0x62; PAGE_SIZE as usize * 3],
+        backend.clone(),
+        account.clone(),
+    ));
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE * 3),
+        backend,
+        account,
+    ));
+    private_mapping(
+        &space,
+        source,
+        0x1000,
+        PAGE_SIZE * 3,
+        0,
+        PAGE_SIZE * 3,
+        user::PrivateMappingMode::CopyOnWrite,
+    );
+    materialize(&space, slice(0x1000, 1));
+    crate::require_ok(space.copy_to_user(slice(0x1000, 1), &[0x77]));
+    let protect = crate::require_ok(space.prepare_protect(
+        space.root_vmar(),
+        slice(0x2000, PAGE_SIZE),
+        Permissions::read_only(),
+    ));
+    complete(crate::require_ok(protect.commit_for_test()));
+    let pin = crate::require_ok(space.pin_atomic_u32(UserAddress::new(0x1000)));
+    materialize(&space, slice(0x3000, 1));
+    let after = crate::require_ok(space.pin_atomic_u32(UserAddress::new(0x1000)));
+    assert_eq!(after.token, pin.token);
+    assert_eq!(after.physical, pin.physical);
+    let mut byte = [0];
+    crate::require_ok(space.copy_from_user(slice(0x1000, 1), &mut byte));
+    assert_eq!(byte, [0x77]);
+    assert!(matches!(
+        space.prepare_private_write(slice(0x2000, 1)),
+        Err(AddressSpaceError::WriteDenied)
+    ));
+}
+
+#[test]
+fn immutable_snapshot_has_independent_budget_and_weak_lifetime() {
+    let (backend, source_account) = fixtures();
+    let (_, snapshot_account) = fixtures();
+    let writable = crate::require_ok(WritableVmo::try_new(
+        PAGE_SIZE,
+        backend,
+        source_account.clone(),
+    ));
+    crate::require_ok(writable.write(0, &[0x11]));
+    let snapshot = crate::require_ok(writable.try_snapshot(snapshot_account.clone()));
+    let weak = snapshot.downgrade();
+    crate::require_ok(writable.write(0, &[0x22]));
+    let mut byte = [0];
+    crate::require_ok(snapshot.read(0, &mut byte));
+    assert_eq!(byte, [0x11]);
+    assert_eq!(source_account.0.pages.load(Ordering::Relaxed), 1);
+    assert_eq!(snapshot_account.0.pages.load(Ordering::Relaxed), 1);
+    let executable =
+        crate::require_ok(snapshot.try_executable(&ExecutableProvenance::for_test(), &()));
+    assert_eq!(
+        crate::require_ok(snapshot.resident_physical_page(0)),
+        crate::require_ok(executable.snapshot().resident_physical_page(0))
+    );
+    drop(snapshot);
+    assert!(weak.upgrade().is_some());
+    drop(executable);
+    assert!(weak.upgrade().is_none());
+    assert_eq!(snapshot_account.0.pages.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn private_partial_unmap_releases_removed_pages_after_retirement_and_exact_pins() {
+    let (backend, source_account) = fixtures();
+    let (_, account) = fixtures();
+    let source = crate::require_ok(user::SnapshotVmo::try_from_bytes(
+        &vec![0x62; PAGE_SIZE as usize * 4],
+        backend.clone(),
+        source_account,
+    ));
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE * 4),
+        backend,
+        account.clone(),
+    ));
+    private_mapping(
+        &space,
+        source,
+        0x1000,
+        PAGE_SIZE * 4,
+        0,
+        PAGE_SIZE * 4,
+        user::PrivateMappingMode::Eager,
+    );
+    let pin = crate::require_ok(space.pin_atomic_u32(UserAddress::new(0x1000)));
+    let change =
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x2000, PAGE_SIZE * 2)));
+    let retired = crate::require_ok(change.commit_for_test());
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), 4);
+    complete(retired);
+    // The atomic pin on page zero must not retain the removed middle pages.
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), 2);
+    assert!(matches!(
+        space.copy_from_user(slice(0x2000, 1), &mut [0]),
+        Err(AddressSpaceError::NotMapped)
+    ));
+    crate::require_ok(space.copy_to_user(slice(0x4000, 1), &[0x77]));
+    let mut byte = [0];
+    crate::require_ok(space.copy_from_user(slice(0x4000, 1), &mut byte));
+    assert_eq!(byte, [0x77]);
+    drop(space);
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), 1);
+    drop(pin);
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn prepared_private_page_permissions_follow_materialization_without_mutating_old_snapshot() {
+    let (backend, account) = fixtures();
+    let source = crate::require_ok(user::SnapshotVmo::try_from_bytes(
+        &vec![0x71; PAGE_SIZE as usize * 2],
+        backend.clone(),
+        account.clone(),
+    ));
+    let source_page = crate::require_ok(source.resident_physical_page(0));
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE * 2),
+        backend,
+        account,
+    ));
+    let map = crate::require_ok(space.prepare_map_private(
+        space.root_vmar(),
+        slice(0x1000, PAGE_SIZE * 2),
+        source,
+        0,
+        PAGE_SIZE * 2,
+        0,
+        Permissions::read_write(),
+        Permissions::read_write(),
+        user::PrivateMappingMode::CopyOnWrite,
+    ));
+    let token = crate::require_some(map.snapshots().next()).token;
+    let before = crate::require_ok(map.resident_pages(token));
+    assert_eq!(before.pages()[0], source_page);
+    assert!(!before.page_is_writable(0));
+    assert!(!before.page_is_writable(1));
+    complete(crate::require_ok(map.commit_for_test()));
+    let copy = crate::require_some(crate::require_ok(
+        space.prepare_private_write(slice(0x1000, 1)),
+    ));
+    let after = crate::require_ok(copy.resident_pages(token));
+    assert!(after.page_is_writable(0));
+    assert!(!after.page_is_writable(1));
+    assert_ne!(after.pages()[0], before.pages()[0]);
+    assert_eq!(after.pages()[1], before.pages()[1]);
+    complete(crate::require_ok(copy.commit_for_test()));
+    assert!(!before.page_is_writable(0));
+}
+
+#[test]
+fn reserved_output_allows_unrelated_cow_but_still_excludes_authority_changes() {
+    let (backend, source_account) = fixtures();
+    let (_, destination_account) = fixtures();
+    let source = crate::require_ok(user::SnapshotVmo::try_from_bytes(
+        &vec![0x51; PAGE_SIZE as usize * 2],
+        backend.clone(),
+        source_account,
+    ));
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE * 2),
+        backend,
+        destination_account,
+    ));
+    let token = private_mapping(
+        &space,
+        source.clone(),
+        0x1000,
+        PAGE_SIZE * 2,
+        0,
+        PAGE_SIZE * 2,
+        user::PrivateMappingMode::CopyOnWrite,
+    );
+    materialize(&space, slice(0x1000, 1));
+    let old_pin = crate::require_ok(space.pin_atomic_u32(UserAddress::new(0x1000)));
+    // Model a blocked capability receive retaining its output indefinitely.
+    let output = crate::require_ok(space.prepare_user_write_for_test(slice(0x1000, 1)));
+    let other_write = match crate::require_ok(space.prepare_private_write(slice(0x2000, 1))) {
+        Some(change) => change,
+        None => panic!("untouched private page did not require materialization"),
+    };
+    complete(crate::require_ok(other_write.commit_for_test()));
+    let new_pin = crate::require_ok(space.pin_atomic_u32(UserAddress::new(0x1000)));
+    assert_eq!(old_pin.physical, new_pin.physical);
+    assert_eq!(new_pin.token, token);
+    crate::require_ok(space.copy_to_user(slice(0x2000, 1), &[0x77]));
+    crate::require_ok(space.write_user_reservation_for_test(&output, &[0xa5]));
+    for change in [
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x1000, PAGE_SIZE))),
+        crate::require_ok(space.prepare_protect(
+            space.root_vmar(),
+            slice(0x1000, PAGE_SIZE),
+            Permissions::read_only(),
+        )),
+    ] {
+        assert!(matches!(
+            change.commit_for_test(),
+            Err(AddressSpaceError::Busy)
+        ));
+    }
+    let mut byte = [0];
+    crate::require_ok(space.copy_from_user(slice(0x1000, 1), &mut byte));
+    assert_eq!(byte, [0xa5]);
+    crate::require_ok(source.read(0, &mut byte));
+    assert_eq!(byte, [0x51]);
+    space.release_user_write_for_test(output);
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x1000, PAGE_SIZE)))
+            .commit_for_test(),
+    ));
+}
+
+#[test]
+fn optimistic_mapping_retry_reprepares_stale_but_returns_reserved_output_busy() {
+    use core::cell::Cell;
+    let (backend, account) = fixtures();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE * 4),
+        backend.clone(),
+        account.clone(),
+    ));
+    let source = crate::require_ok(WritableVmo::try_new(PAGE_SIZE, backend, account));
+    crate::require_ok(source.populate(0, PAGE_SIZE));
+    let attempts = Cell::new(0);
+    let boundaries = Cell::new(0);
+    let mapped = crate::require_ok(user::retry_stale(
+        || {
+            attempts.set(attempts.get() + 1);
+            let prepared = space.prepare_map_writable(
+                space.root_vmar(),
+                slice(0x1000, PAGE_SIZE),
+                source.clone(),
+                0,
+                Permissions::read_write(),
+                Permissions::read_write(),
+            )?;
+            if attempts.get() == 1 {
+                // A peer publishes another authority after our snapshot.
+                space.try_create_vmar(space.root_vmar(), slice(0x3000, PAGE_SIZE))?;
+            }
+            prepared.commit_for_test()
+        },
+        AddressSpaceError::is_stale_transaction,
+        || {
+            boundaries.set(boundaries.get() + 1);
+            Ok(())
+        },
+    ));
+    complete(mapped);
+    assert_eq!(attempts.get(), 2);
+    assert_eq!(boundaries.get(), 1);
+    let output = crate::require_ok(space.prepare_user_write_for_test(slice(0x1000, 1)));
+    attempts.set(0);
+    boundaries.set(0);
+    let result = user::retry_stale(
+        || {
+            attempts.set(attempts.get() + 1);
+            space
+                .prepare_unmap(space.root_vmar(), slice(0x1000, PAGE_SIZE))?
+                .commit_for_test()
+        },
+        AddressSpaceError::is_stale_transaction,
+        || {
+            boundaries.set(boundaries.get() + 1);
+            Ok(())
+        },
+    );
+    assert!(matches!(result, Err(AddressSpaceError::Busy)));
+    assert_eq!(attempts.get(), 1);
+    assert_eq!(boundaries.get(), 0);
+    space.release_user_write_for_test(output);
+}
+
+#[test]
+fn optimistic_mapping_retry_honors_cancellation_before_repreparing() {
+    use core::cell::Cell;
+    let attempts = Cell::new(0);
+    let result: Result<(), AddressSpaceError<(), ()>> = user::retry_stale(
+        || {
+            attempts.set(attempts.get() + 1);
+            Err(AddressSpaceError::StaleTransaction)
+        },
+        AddressSpaceError::is_stale_transaction,
+        || Err(AddressSpaceError::WriteDenied),
+    );
+    assert!(matches!(result, Err(AddressSpaceError::WriteDenied)));
+    assert_eq!(attempts.get(), 1);
+}
+
+#[test]
+fn reserved_outputs_exclude_only_their_ranges_and_pin_only_selected_private_pages() {
+    let (backend, source_account) = fixtures();
+    let (_, account) = fixtures();
+    let source = crate::require_ok(user::SnapshotVmo::try_from_bytes(
+        &vec![0x62; PAGE_SIZE as usize * 4],
+        backend.clone(),
+        source_account,
+    ));
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE * 6),
+        backend,
+        account.clone(),
+    ));
+    private_mapping(
+        &space,
+        source.clone(),
+        0x1000,
+        PAGE_SIZE * 4,
+        0,
+        PAGE_SIZE * 4,
+        user::PrivateMappingMode::Eager,
+    );
+    let first = crate::require_ok(space.prepare_user_write_for_test(slice(0x100b, 2)));
+    let second = crate::require_ok(space.prepare_user_write_for_test(slice(0x3011, 3)));
+    // Model two indefinitely parked IPC receivers. Unrelated heap protection,
+    // arena destruction, and new mappings must still make forward progress.
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_protect(
+            space.root_vmar(),
+            slice(0x4000, PAGE_SIZE),
+            Permissions::read_only(),
+        ))
+        .commit_for_test(),
+    ));
+    let removed = crate::require_ok(
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x2000, PAGE_SIZE)))
+            .commit_for_test(),
+    );
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), 4);
+    complete(removed);
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), 3);
+    private_mapping(
+        &space,
+        source,
+        0x5000,
+        PAGE_SIZE,
+        0,
+        PAGE_SIZE,
+        user::PrivateMappingMode::Eager,
+    );
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x5000, PAGE_SIZE)))
+            .commit_for_test(),
+    ));
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), 3);
+    assert!(matches!(
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x1000, PAGE_SIZE)))
+            .commit_for_test(),
+        Err(AddressSpaceError::Busy)
+    ));
+    assert!(matches!(
+        crate::require_ok(space.prepare_protect(
+            space.root_vmar(),
+            slice(0x3000, PAGE_SIZE),
+            Permissions::read_only()
+        ))
+        .commit_for_test(),
+        Err(AddressSpaceError::Busy)
+    ));
+    crate::require_ok(space.write_user_reservation_for_test(&first, &[0xa1, 0xa2]));
+    crate::require_ok(space.write_user_reservation_prefix_for_test(&second, &[0xb1]));
+    let mut bytes = [0; 3];
+    crate::require_ok(space.copy_from_user(slice(0x3011, 3), &mut bytes));
+    assert_eq!(bytes, [0xb1, 0x62, 0x62]);
+    space.release_user_write_for_test(first);
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x1000, PAGE_SIZE)))
+            .commit_for_test(),
+    ));
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), 2);
+    crate::require_ok(space.write_user_reservation_for_test(&second, &[0xc1, 0xc2, 0xc3]));
+    crate::require_ok(space.copy_from_user(slice(0x3011, 3), &mut bytes));
+    assert_eq!(bytes, [0xc1, 0xc2, 0xc3]);
+    space.release_user_write_for_test(second);
+    drop(space);
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn output_reservation_registry_releases_capacity_and_rolls_back_failed_admission() {
+    let (backend, account) = fixtures();
+    let source = crate::require_ok(user::SnapshotVmo::try_from_bytes(
+        &vec![0x62; PAGE_SIZE as usize],
+        backend.clone(),
+        account.clone(),
+    ));
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE),
+        backend,
+        account.clone(),
+    ));
+    private_mapping(
+        &space,
+        source,
+        0x1000,
+        PAGE_SIZE,
+        0,
+        PAGE_SIZE,
+        user::PrivateMappingMode::Eager,
+    );
+    let baseline = account.0.bytes.load(Ordering::Relaxed);
+    let first = crate::require_ok(space.prepare_user_write_for_test(slice(0x1001, 3)));
+    let with_first = account.0.bytes.load(Ordering::Relaxed);
+    // Copy-plan metadata and the exact private page pin succeed; admission's
+    // registry allocation charge fails before any new reservation is visible.
+    account.0.fail_at_call.store(
+        account.0.charge_calls.load(Ordering::Relaxed) + 3,
+        Ordering::Relaxed,
+    );
+    assert!(matches!(
+        space.prepare_user_write_for_test(slice(0x1011, 3)),
+        Err(AddressSpaceError::Account(AccountError))
+    ));
+    assert_eq!(account.0.bytes.load(Ordering::Relaxed), with_first);
+    account.0.fail_at_call.store(0, Ordering::Relaxed);
+    let second = crate::require_ok(space.prepare_user_write_for_test(slice(0x1021, 3)));
+    space.release_user_write_for_test(first);
+    crate::require_ok(space.write_user_reservation_for_test(&second, &[1, 2, 3]));
+    space.release_user_write_for_test(second);
+    assert_eq!(account.0.bytes.load(Ordering::Relaxed), baseline);
+    // A reservation at an interior empty interval excludes no authority.
+    let empty = crate::require_ok(space.prepare_user_write_for_test(slice(0x1050, 0)));
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x1000, PAGE_SIZE)))
+            .commit_for_test(),
+    ));
+    crate::require_ok(space.write_user_reservation_for_test(&empty, &[]));
+    space.release_user_write_for_test(empty);
+}
