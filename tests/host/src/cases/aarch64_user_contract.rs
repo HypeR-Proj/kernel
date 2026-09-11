@@ -5,44 +5,30 @@
 
 use crate::aarch64_user_contract_model::{
     LowerElReturnRegime, UserExecutionCapabilities, UserMachineContractError, UserPagePermissions,
-    UserTranslationRegime, UserTranslationRegisters,
+    UserTranslationRegisters,
 };
 use crate::registers;
 
-fn nvhe_capabilities() -> UserExecutionCapabilities {
-    UserExecutionCapabilities::new(UserTranslationRegime::NvheStage2Only, 39, 40, 8)
-        .unwrap_or_else(|error| panic!("valid nVHE contract rejected: {error:?}"))
+fn capabilities() -> UserExecutionCapabilities {
+    UserExecutionCapabilities::new(39, 40, 8)
+        .unwrap_or_else(|error| panic!("valid user contract rejected: {error:?}"))
 }
 
 #[test]
-fn absence_of_vhe_selects_a_supported_stage2_contract() {
-    let capabilities = nvhe_capabilities();
-
-    assert_eq!(capabilities.regime(), UserTranslationRegime::NvheStage2Only);
-    assert_eq!(capabilities.address_bits(), 39);
-    assert_eq!(capabilities.physical_address_bits(), 40);
-    assert_eq!(capabilities.translation_identifier_bits(), 8);
-}
-
-#[test]
-fn native_user_limit_respects_only_the_active_translation_regime() {
-    let vhe = UserExecutionCapabilities::new(UserTranslationRegime::VheHostStage1, 48, 40, 8)
+fn native_user_limit_respects_configured_address_width() {
+    let vhe = UserExecutionCapabilities::new(48, 40, 8)
         .unwrap_or_else(|error| panic!("valid VHE contract rejected: {error:?}"));
 
     assert_eq!(vhe.user_address_limit(), 1 << 48);
-    assert_eq!(nvhe_capabilities().user_address_limit(), 1 << 39);
+    let compact = capabilities();
+    assert_eq!(compact.user_address_limit(), 1 << 39);
 }
 
 #[test]
-fn final_tcr_uses_the_host_mode_specific_physical_size_field() {
+fn final_tcr_uses_the_vhe_physical_size_field() {
     let parange = registers::ID_AA64MMFR0_PARANGE_48BIT as u8;
-    let nvhe = registers::tcr_el2_nvhe_stage1(48, parange);
     let vhe = registers::tcr_el2_vhe_stage1(48, parange);
 
-    assert_eq!(
-        (nvhe & registers::TCR_EL2_NVHE_PS_MASK) >> registers::TCR_EL2_NVHE_PS_SHIFT,
-        u64::from(parange)
-    );
     assert_eq!(
         (vhe & registers::TCR_EL2_VHE_IPS_MASK) >> registers::TCR_EL2_VHE_IPS_SHIFT,
         u64::from(parange)
@@ -68,15 +54,15 @@ fn compact_upper_addresses_discard_sign_extension_at_the_root() {
 #[test]
 fn capability_limits_reject_unimplemented_register_formats() {
     assert_eq!(
-        UserExecutionCapabilities::new(UserTranslationRegime::VheHostStage1, 49, 40, 8),
+        UserExecutionCapabilities::new(49, 40, 8),
         Err(UserMachineContractError::UnsupportedAddressWidth)
     );
     assert_eq!(
-        UserExecutionCapabilities::new(UserTranslationRegime::NvheStage2Only, 39, 52, 8),
+        UserExecutionCapabilities::new(39, 52, 8),
         Err(UserMachineContractError::UnsupportedPhysicalAddressWidth)
     );
     assert_eq!(
-        UserExecutionCapabilities::new(UserTranslationRegime::NvheStage2Only, 39, 40, 12),
+        UserExecutionCapabilities::new(39, 40, 12),
         Err(UserMachineContractError::UnsupportedIdentifierWidth)
     );
 }
@@ -90,97 +76,45 @@ fn privileged_access_protection_has_a_distinct_admission_failure() {
 }
 
 #[test]
-fn translation_registers_reject_a_regime_mismatch() {
-    assert_eq!(
-        UserTranslationRegisters::new(
-            nvhe_capabilities(),
-            UserTranslationRegime::VheHostStage1,
-            0x2000,
-            1,
-            1,
-        ),
-        Err(UserMachineContractError::TranslationRegimeMismatch)
-    );
-}
-
-#[test]
 fn translation_registers_validate_root_identity_and_generation() {
-    let capabilities = nvhe_capabilities();
+    let capabilities = capabilities();
 
     assert_eq!(
-        UserTranslationRegisters::new(
-            capabilities,
-            UserTranslationRegime::NvheStage2Only,
-            0x2100,
-            1,
-            1,
-        ),
+        UserTranslationRegisters::new(capabilities, 0x2100, 1, 1,),
         Err(UserMachineContractError::InvalidRootAlignment)
     );
     assert_eq!(
-        UserTranslationRegisters::new(
-            capabilities,
-            UserTranslationRegime::NvheStage2Only,
-            0x2000,
-            0,
-            1,
-        ),
+        UserTranslationRegisters::new(capabilities, 0x2000, 0, 1,),
         Err(UserMachineContractError::InvalidTranslationIdentifier)
     );
     assert_eq!(
-        UserTranslationRegisters::new(
-            capabilities,
-            UserTranslationRegime::NvheStage2Only,
-            0x2000,
-            1,
-            0,
-        ),
+        UserTranslationRegisters::new(capabilities, 0x2000, 1, 0,),
         Err(UserMachineContractError::InvalidGeneration)
     );
     assert_eq!(
-        UserTranslationRegisters::new(
-            capabilities,
-            UserTranslationRegime::NvheStage2Only,
-            1 << 40,
-            1,
-            1,
-        ),
+        UserTranslationRegisters::new(capabilities, 1 << 40, 1, 1,),
         Err(UserMachineContractError::RootOutsidePhysicalAddressSpace)
     );
 }
 
 #[test]
 fn translation_register_encoding_retains_software_generation_separately() {
-    let registers = UserTranslationRegisters::new(
-        nvhe_capabilities(),
-        UserTranslationRegime::NvheStage2Only,
-        0x4000,
-        7,
-        19,
-    )
-    .unwrap_or_else(|error| panic!("valid translation registers rejected: {error:?}"));
+    let registers = UserTranslationRegisters::new(capabilities(), 0x4000, 7, 19)
+        .unwrap_or_else(|error| panic!("valid translation registers rejected: {error:?}"));
 
     assert_eq!(
         registers.root_register(),
-        (7 << registers::VTTBR_EL2_VMID_SHIFT) | 0x4000
+        (7 << registers::TTBR_ASID_SHIFT) | 0x4000
     );
     assert_eq!(registers.generation(), 19);
-    assert_eq!(registers.regime(), UserTranslationRegime::NvheStage2Only);
 }
 
 #[test]
 fn vhe_register_encoding_uses_the_stage1_asid_field() {
-    let capabilities =
-        UserExecutionCapabilities::new(UserTranslationRegime::VheHostStage1, 48, 40, 8)
-            .unwrap_or_else(|error| panic!("valid VHE contract rejected: {error:?}"));
-    let registers = UserTranslationRegisters::new(
-        capabilities,
-        UserTranslationRegime::VheHostStage1,
-        0x8000,
-        3,
-        5,
-    )
-    .unwrap_or_else(|error| panic!("valid VHE registers rejected: {error:?}"));
+    let capabilities = UserExecutionCapabilities::new(48, 40, 8)
+        .unwrap_or_else(|error| panic!("valid VHE contract rejected: {error:?}"));
+    let registers = UserTranslationRegisters::new(capabilities, 0x8000, 3, 5)
+        .unwrap_or_else(|error| panic!("valid VHE registers rejected: {error:?}"));
 
     assert_eq!(
         registers.root_register(),
@@ -208,7 +142,7 @@ fn lower_el_vector_does_not_determine_the_vhe_return_world() {
         | registers::HCR_EL2_TPU
         | registers::HCR_EL2_TTLB
         | HCR_EL2_RES0_11;
-    let native = LowerElReturnRegime::Native(UserTranslationRegime::VheHostStage1)
+    let native = LowerElReturnRegime::Native
         .transition_hcr(host_hcr)
         .unwrap_or_else(|error| panic!("valid native return rejected: {error:?}"));
     let guest = LowerElReturnRegime::Guest
@@ -297,41 +231,9 @@ fn lower_el_vector_does_not_determine_the_vhe_return_world() {
 }
 
 #[test]
-fn nvhe_native_entry_forces_el1_stage1_translation_off() {
-    assert_eq!(
-        registers::SCTLR_EL1_GUEST_RESET_VALUE & registers::SCTLR_M,
-        0
-    );
-}
-
-#[test]
-fn nvhe_native_and_guest_returns_have_different_cache_regimes() {
-    let host_hcr = registers::HCR_EL2_BOOT_VALUE;
-    let native = LowerElReturnRegime::Native(UserTranslationRegime::NvheStage2Only)
-        .transition_hcr(host_hcr)
-        .unwrap_or_else(|error| panic!("valid native return rejected: {error:?}"));
-    let guest = LowerElReturnRegime::Guest
-        .transition_hcr(native)
-        .unwrap_or_else(|error| panic!("valid guest return rejected: {error:?}"));
-
-    assert_ne!(native & registers::HCR_EL2_TGE, 0);
-    assert_ne!(native & registers::HCR_EL2_DC, 0);
-    assert_eq!(guest & registers::HCR_EL2_TGE, 0);
-    assert_eq!(guest & registers::HCR_EL2_DC, 0);
-    assert_eq!(guest & registers::HCR_EL2_E2H, 0);
-    assert_ne!(guest & registers::HCR_EL2_VM, 0);
-}
-
-#[test]
 fn native_return_rejects_the_wrong_host_mode() {
     assert_eq!(
-        LowerElReturnRegime::Native(UserTranslationRegime::VheHostStage1)
-            .transition_hcr(registers::HCR_EL2_BOOT_VALUE),
-        Err(UserMachineContractError::HostModeMismatch)
-    );
-    assert_eq!(
-        LowerElReturnRegime::Native(UserTranslationRegime::NvheStage2Only)
-            .transition_hcr(registers::HCR_EL2_VHE_HOST_VALUE),
+        LowerElReturnRegime::Native.transition_hcr(registers::HCR_EL2_BOOT_VALUE),
         Err(UserMachineContractError::HostModeMismatch)
     );
 }
@@ -340,7 +242,7 @@ fn native_return_rejects_the_wrong_host_mode() {
 fn vhe_user_descriptors_enforce_el0_wx_and_privileged_execute_never() {
     let rw = UserPagePermissions::new(true, true, false)
         .unwrap_or_else(|error| panic!("valid RW permissions rejected: {error:?}"))
-        .vhe_stage1_descriptor(0x1234_5000);
+        .stage1_descriptor(0x1234_5000);
     assert_ne!(rw & registers::STAGE1_DESC_AP_EL0, 0);
     assert_ne!(rw & registers::STAGE1_DESC_NOT_GLOBAL, 0);
     assert_ne!(rw & registers::STAGE1_DESC_PXN, 0);
@@ -349,7 +251,7 @@ fn vhe_user_descriptors_enforce_el0_wx_and_privileged_execute_never() {
 
     let rx = UserPagePermissions::new(true, false, true)
         .unwrap_or_else(|error| panic!("valid RX permissions rejected: {error:?}"))
-        .vhe_stage1_descriptor(0x1234_5000);
+        .stage1_descriptor(0x1234_5000);
     assert_ne!(rx & registers::STAGE1_DESC_AP_EL0, 0);
     assert_ne!(rx & registers::STAGE1_DESC_AP_READ_ONLY, 0);
     assert_ne!(rx & registers::STAGE1_DESC_PXN, 0);
@@ -357,16 +259,16 @@ fn vhe_user_descriptors_enforce_el0_wx_and_privileged_execute_never() {
 }
 
 #[test]
-fn stage2_user_descriptors_reject_writable_execute_aliases() {
+fn user_descriptors_reject_writable_execute_aliases() {
     assert_eq!(
         UserPagePermissions::new(true, true, true),
         Err(UserMachineContractError::InvalidPermissions)
     );
     let read_only = UserPagePermissions::new(true, false, false)
         .unwrap_or_else(|error| panic!("valid RO permissions rejected: {error:?}"))
-        .nvhe_stage2_descriptor(0x8000);
-    assert_ne!(read_only & registers::STAGE2_DESC_READ_ONLY, 0);
-    assert_ne!(read_only & registers::STAGE2_DESC_XN, 0);
+        .stage1_descriptor(0x8000);
+    assert_ne!(read_only & registers::STAGE1_DESC_AP_READ_ONLY, 0);
+    assert_ne!(read_only & registers::STAGE1_DESC_UXN, 0);
 }
 
 #[test]

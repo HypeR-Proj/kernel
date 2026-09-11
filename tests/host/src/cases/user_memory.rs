@@ -2119,3 +2119,100 @@ fn output_reservation_registry_releases_capacity_and_rolls_back_failed_admission
     crate::require_ok(space.write_user_reservation_for_test(&empty, &[]));
     space.release_user_write_for_test(empty);
 }
+
+#[test]
+fn application_vmar_cannot_control_system_reserved_pages() {
+    // ARM64 VA48, RISC-V Sv39, compact ARM64, and a possible enlarged
+    // application region: authority validation must not assume a half split.
+    for (limit, boundary) in [
+        (1 << 48, 1 << 47),
+        (1 << 38, 1 << 37),
+        (1 << 42, 1 << 41),
+        (1 << 38, 3 << 36),
+    ] {
+        check_application_boundary(limit, boundary);
+    }
+}
+
+fn check_application_boundary(limit: u64, boundary: u64) {
+    let (backend, account) = fixtures();
+    let vmo = crate::require_ok(WritableVmo::try_new(
+        PAGE_SIZE,
+        backend.clone(),
+        account.clone(),
+    ));
+    crate::require_ok(vmo.populate(0, PAGE_SIZE));
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        crate::require_ok(UserAddressWindow::with_application_limit_for_test(
+            limit, boundary,
+        )),
+        slice(0, limit),
+        backend,
+        account,
+    ));
+    let internal = space.root_vmar();
+    assert!(space.application_vmar(internal).is_none());
+    let low = crate::require_ok(space.try_create_vmar(internal, slice(0, boundary)));
+    let app = crate::require_some(space.application_vmar(low)).token();
+    // The last application page is usable; neither a reserved page nor a
+    // range straddling the boundary may be delegated or modified by it.
+    let last = slice(boundary - PAGE_SIZE, PAGE_SIZE);
+    assert!(
+        space
+            .prepare_map_writable(
+                app,
+                last,
+                vmo.clone(),
+                0,
+                Permissions::read_write(),
+                Permissions::read_write(),
+            )
+            .is_ok()
+    );
+    for range in [
+        slice(boundary, PAGE_SIZE),
+        slice(boundary - PAGE_SIZE, PAGE_SIZE * 2),
+    ] {
+        assert!(space.try_create_vmar(app, range).is_err());
+        assert!(
+            space
+                .prepare_map_writable(
+                    app,
+                    range,
+                    vmo.clone(),
+                    0,
+                    Permissions::read_write(),
+                    Permissions::read_write(),
+                )
+                .is_err()
+        );
+        assert!(space.prepare_unmap(app, range).is_err());
+        assert!(
+            space
+                .prepare_protect(app, range, Permissions::read_only())
+                .is_err()
+        );
+    }
+    // Kernel-owned VMARs can still install system mappings in the same root.
+    let high = crate::require_ok(space.try_create_vmar(internal, slice(boundary, PAGE_SIZE)));
+    assert!(space.application_vmar(high).is_none());
+    let map = crate::require_ok(space.prepare_map_writable(
+        high,
+        slice(boundary, PAGE_SIZE),
+        vmo,
+        0,
+        Permissions::read_write(),
+        Permissions::read_write(),
+    ));
+    complete(crate::require_ok(map.commit_for_test()));
+    assert!(
+        space
+            .prepare_unmap(app, slice(boundary, PAGE_SIZE))
+            .is_err()
+    );
+    assert!(
+        space
+            .prepare_protect(app, slice(boundary, PAGE_SIZE), Permissions::read_only())
+            .is_err()
+    );
+}

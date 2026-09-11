@@ -132,7 +132,7 @@ case "${1:-}" in
             sh tests/qemu/verify-smp.sh \
             "${QEMU:-qemu-system-aarch64}" \
             "$test_image" \
-            "${QEMU_CPU:-cortex-a72}" \
+            "${QEMU_CPU:-max}" \
             "${QEMU_MEMORY:-512M}" \
             "${QEMU_BOOTARGS:-earlycon=pl011,mmio32,0x09000000}"
         ;;

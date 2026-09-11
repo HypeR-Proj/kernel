@@ -23,20 +23,10 @@ cpus=${QEMU_CPUS:-4}
 timeout_seconds=${QEMU_BOOT_TIMEOUT_SECONDS:-120}
 
 case "$cpu" in
-    cortex-a57|cortex-a72)
-        default_host_mode=nVHE
-        default_atomic_backend=LL/SC
-        ;;
-    max)
-        default_host_mode=VHE
-        default_atomic_backend=LSE
-        ;;
-    *)
-        default_host_mode='\(nVHE\|VHE\)'
-        default_atomic_backend='\(LL/SC\|LSE\)'
-        ;;
+    max) default_atomic_backend=LSE ;;
+    *) default_atomic_backend='\(LL/SC\|LSE\)' ;;
 esac
-host_mode=${QEMU_EXPECT_HOST_MODE:-$default_host_mode}
+host_mode=VHE
 atomic_backend=${QEMU_EXPECT_ATOMIC_BACKEND:-$default_atomic_backend}
 va_bits=${QEMU_EXPECT_VA_BITS:-48}
 pa_bits=${QEMU_EXPECT_PA_BITS:-'[0-9][0-9]'}

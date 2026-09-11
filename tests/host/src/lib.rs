@@ -18,6 +18,9 @@ mod riscv_devices;
 mod sharded_lock;
 
 #[cfg(test)]
+#[path = "../../../src/arch/aarch64/address_layout.rs"]
+mod aarch64_address_layout_model;
+#[cfg(test)]
 #[path = "../../../src/arch/aarch64/guest_cpu_contract.rs"]
 mod aarch64_guest_cpu_contract_model;
 #[cfg(test)]

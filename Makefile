@@ -5,7 +5,7 @@ ARCH ?= aarch64
 ifeq ($(ARCH),aarch64)
 TARGET := aarch64-unknown-none
 QEMU ?= qemu-system-aarch64
-QEMU_CPU ?= cortex-a72
+QEMU_CPU ?= max
 QEMU_MACHINE := virt,virtualization=on,gic-version=3,dtb-randomness=on
 DEFCONFIG := configs/qemu_aarch64_defconfig
 QEMU_BOOTARGS ?= earlycon=pl011,mmio32,0x09000000
@@ -92,7 +92,7 @@ GUEST_FETCH := tools/guest/fetch-alpine-x86_64.sh
 GUEST_ASSET_STAMP := $(GUEST_OUTPUT)/.alpine-3.23.5.stamp
 endif
 
-.PHONY: all prepare-config config defconfig olddefconfig guest-assets clean-guest-assets build image release check test test-image test-timer test-qemu verify verify-runtime verify-image verify-boot verify-smp run clean
+.PHONY: all prepare-config config defconfig olddefconfig guest-assets clean-guest-assets build image release check test test-image test-timer test-qemu test-vhe-required verify verify-runtime verify-image verify-boot verify-smp run clean
 
 all: image
 
@@ -182,7 +182,6 @@ verify: check test
 
 verify-runtime:
 ifeq ($(ARCH),aarch64)
-	$(MAKE) test-qemu ARCH=aarch64 QEMU_CPU=cortex-a72
 	$(MAKE) test-qemu ARCH=aarch64 QEMU_CPU=max
 else ifeq ($(ARCH),riscv64)
 	$(MAKE) test-qemu ARCH=riscv64
@@ -202,6 +201,15 @@ test-qemu: image
 	QEMU_CPUS=$(QEMU_CPUS) sh $(QEMU_TEST_SCRIPT) $(QEMU) $(KERNEL_IMAGE) $(QEMU_CPU) $(QEMU_MEMORY) "$(QEMU_BOOTARGS)"
 
 test-qemu: CARGO_FEATURES=--features kernel-self-test
+
+# Unsupported CPUs must stop before VHE register setup or Native admission.
+ifeq ($(ARCH),aarch64)
+test-vhe-required: image
+	python3 tests/qemu/verify-vhe-required.py $(QEMU) $(KERNEL_IMAGE) $(KERNEL_ELF) $(NM)
+else
+test-vhe-required:
+	@echo "test-vhe-required requires ARCH=aarch64" >&2; exit 2
+endif
 
 # Compatibility targets build the image before running the corresponding test.
 verify-image: image

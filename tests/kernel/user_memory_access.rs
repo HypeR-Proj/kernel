@@ -23,10 +23,8 @@ pub(super) fn run() -> Result<(), Error> {
         ResourceDomain::try_new_root(ResourceLimits::UNLIMITED).map_err(|_| Error::Contract)?;
     let account = DomainAccount::new(domain);
     let backend = KernelPageBackend;
-    let limit = crate::hal::user::address_space_plan()
-        .map_err(|_| Error::Contract)?
-        .address_limit();
-    let window = address_window(limit).map_err(|_| Error::Contract)?;
+    let plan = crate::hal::user::address_space_plan().map_err(|_| Error::Contract)?;
+    let window = address_window(&plan).map_err(|_| Error::Contract)?;
     let range =
         UserSlice::new(UserAddress::new(0x20_0000), PAGE_SIZE).map_err(|_| Error::Contract)?;
     let address_space = UserAddressSpace::try_new(window, range, backend, account.clone())

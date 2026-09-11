@@ -38,16 +38,6 @@ aarch64_kaslr_geometry_is_valid() {
             kaslr_base_value=$((0x$kaslr_base_digits))
             kaslr_expected_value=$kaslr_offset_value
             ;;
-        nVHE)
-            kaslr_base_digits=${kaslr_kernel_base#0x}
-            [ "$kaslr_base_digits" != "$kaslr_kernel_base" ] || return 1
-            [ "${#kaslr_base_digits}" -le 12 ] || return 1
-            case "$kaslr_base_digits" in
-                ''|*[!0-9a-f]*) return 1 ;;
-            esac
-            kaslr_base_value=$((0x$kaslr_base_digits))
-            kaslr_expected_value=$(((1 << kaslr_va_bits) - (1 << 40) + kaslr_offset_value))
-            ;;
         *)
             return 1
             ;;
