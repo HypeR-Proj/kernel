@@ -20,7 +20,14 @@ cpu=$3
 memory=$4
 bootargs=$5
 cpus=${QEMU_CPUS:-4}
+gic_version=${QEMU_GIC_VERSION:-3}
 timeout_seconds=${QEMU_BOOT_TIMEOUT_SECONDS:-120}
+
+case "$gic_version" in
+    2) gic_capabilities='5 priority bits, 5 preemption bits, 10 INTID bits' ;;
+    3) gic_capabilities='[5-8] priority bits, [5-7] preemption bits, \(16\|24\) INTID bits' ;;
+    *) echo "QEMU_GIC_VERSION must be 2 or 3" >&2; exit 2 ;;
+esac
 
 case "$cpu" in
     max) default_atomic_backend=LSE ;;
@@ -124,7 +131,7 @@ runtime_contract_is_ready() {
         grep -q 'HypeR: kallsyms resolved hyper_kallsyms_lookup at 0x[0-9a-f][0-9a-f]*' "$log" &&
         grep -q 'HypeR: kernel log ring: 65536 bytes' "$log" &&
         grep -q 'HypeR: CPU power interface version .*: on=true, off=true, suspend=true, reset=true' "$log" &&
-        grep -q 'HypeR: vGICv3 active with [1-9][0-9]* LRs, [5-8] priority bits, [5-7] preemption bits, \(16\|24\) INTID bits, maintenance VIRQ [0-9][0-9]*' "$log" &&
+        grep -q "HypeR: vGICv$gic_version active with [1-9][0-9]* LRs, $gic_capabilities, maintenance VIRQ [0-9][0-9]*" "$log" &&
         grep -q 'HypeR: architectural timer: host INTID 26, guest INTID 27, [1-9][0-9]* Hz tick from a [1-9][0-9]* Hz counter' "$log" &&
         grep -q 'HypeR: guest architectural timer mapped to host VIRQ [0-9][0-9]*' "$log" &&
         grep -q 'HypeR: monotonic clocksource active at [1-9][0-9]* Hz' "$log" &&
@@ -146,7 +153,7 @@ initrd=$temp/empty.cpio
 sh "$(dirname "$0")/empty-initramfs.sh" "$initrd"
 
 "$qemu" \
-    -machine virt,virtualization=on,gic-version=3,dtb-randomness=on \
+    -machine "virt,virtualization=on,gic-version=$gic_version,dtb-randomness=on" \
     -cpu "$cpu" \
     -smp "$cpus" \
     -m "$memory" \

@@ -24,6 +24,9 @@ fn banked_targets_and_sgi_sender_survive_acknowledgement() {
     let d = distributor.as_mut_ptr() as usize;
     let c = cpu.as_mut_ptr() as usize;
     let info = GicV2Info {
+        hypervisor_interface: None,
+        virtual_cpu_interface: None,
+        maintenance_interrupt: None,
         distributor: crate::require_some(PhysicalRange::new(0x10000, 4096)),
         cpu_interface: crate::require_some(PhysicalRange::new(0x20000, 4096)),
     };

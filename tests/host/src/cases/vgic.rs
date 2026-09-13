@@ -711,3 +711,60 @@ fn live_gic_access_detaches_hardware_around_one_saved_bank_transaction() {
     let refill = crate::require_some(body.find(".refill(vcpu, slots)"));
     assert!(synchronize < operation && operation < refill);
 }
+
+#[test]
+fn v2_list_registers_preserve_states_and_quantize_priority() {
+    use hyper::vm::arm::gic::lr_v2;
+    for state in [
+        ListState::Pending,
+        ListState::Active,
+        ListState::PendingActive,
+    ] {
+        for group in [InterruptGroup::Group0, InterruptGroup::Group1] {
+            let entry = ListEntry {
+                interrupt: interrupt(63),
+                priority: 0xa7,
+                group,
+                state,
+                request_eoi_maintenance: true,
+            };
+            let decoded =
+                crate::require_some(crate::require_ok(lr_v2::decode(lr_v2::encode(Some(entry)))));
+            assert_eq!(
+                decoded,
+                ListEntry {
+                    priority: 0xa0,
+                    ..entry
+                }
+            );
+        }
+    }
+    assert_eq!(lr_v2::decode(0), Ok(None));
+    assert!(lr_v2::decode((1 << 31) | (1 << 28)).is_err());
+}
+
+#[test]
+fn distributor_disable_preserves_pending_until_reenabled() {
+    let cpu = VirtualCpuId::new(0);
+    let mut builder = crate::require_ok(VirtualGicBuilder::new(1));
+    crate::require_ok(builder.configure(
+        interrupt(32),
+        cpu,
+        0x80,
+        InterruptGroup::Group0,
+        InterruptTrigger::Edge,
+    ));
+    let mut controller = crate::require_ok(builder.finish(64));
+    crate::require_ok(controller.set_enabled(interrupt(32), cpu, true));
+    crate::require_ok(controller.inject(interrupt(32), cpu));
+    let mut slots = [None; 64];
+    crate::require_ok(controller.refill(cpu, &mut slots));
+    assert!(slots[0].is_some());
+    controller.set_distributor_enabled(false);
+    crate::require_ok(controller.refill(cpu, &mut slots));
+    assert!(slots.iter().all(Option::is_none));
+    assert!(!crate::require_ok(controller.may_wake_wfi(cpu)));
+    controller.set_distributor_enabled(true);
+    crate::require_ok(controller.refill(cpu, &mut slots));
+    assert!(slots[0].is_some());
+}

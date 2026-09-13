@@ -140,20 +140,46 @@ fn qemu_like_dtb_with_windows(compatible: &[u8], many_windows: bool) -> Vec<u8> 
     push_u32(&mut structure, FDT_END_NODE);
     push_u32(&mut structure, FDT_END_NODE);
     begin_node(&mut structure, b"intc@8000000");
-    property(
-        &mut structure,
-        REG,
-        &cells(&[
-            0,
-            0x0800_0000,
-            0,
-            0x0001_0000,
-            0,
-            0x080a_0000,
-            0,
-            0x00f6_0000,
-        ]),
-    );
+    if compatible == b"arm,gic-v3\0" {
+        property(
+            &mut structure,
+            REG,
+            &cells(&[
+                0,
+                0x0800_0000,
+                0,
+                0x0001_0000,
+                0,
+                0x080a_0000,
+                0,
+                0x00f6_0000,
+            ]),
+        );
+    } else {
+        property(
+            &mut structure,
+            REG,
+            &cells(&[
+                0,
+                0x0800_0000,
+                0,
+                0x1000,
+                0,
+                0x0801_0000,
+                0,
+                0x2000,
+                0,
+                0x0803_0000,
+                0,
+                0x1000,
+                0,
+                0x0804_0000,
+                0,
+                0x2000,
+            ]),
+        );
+        property(&mut structure, INTERRUPTS, &cells(&[1, 9, 4]));
+    }
     property(&mut structure, COMPATIBLE, compatible);
     push_u32(&mut structure, FDT_END_NODE);
     begin_node(&mut structure, b"timer");
@@ -750,7 +776,19 @@ fn discovers_gicv2_and_preserves_gicv3_selection() {
             hyper::platform::InterruptControllerInfo::GicV2(info) => {
                 assert_ne!(compatible, b"arm,gic-v3\0");
                 assert_eq!(info.distributor.start(), 0x08000000);
-                assert_eq!(info.cpu_interface.start(), 0x080a0000);
+                assert_eq!(info.cpu_interface.start(), 0x0801_0000);
+                assert_eq!(
+                    crate::require_some(info.hypervisor_interface).start(),
+                    0x0803_0000
+                );
+                assert_eq!(
+                    crate::require_some(info.virtual_cpu_interface).start(),
+                    0x0804_0000
+                );
+                assert_eq!(
+                    crate::require_some(info.maintenance_interrupt).interrupt,
+                    25
+                );
             }
             hyper::platform::InterruptControllerInfo::GicV3(_) => {
                 assert_eq!(compatible, b"arm,gic-v3\0")

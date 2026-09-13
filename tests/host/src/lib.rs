@@ -143,8 +143,8 @@ mod generic_timer;
 #[path = "cases/gicv3.rs"]
 mod gicv3;
 #[cfg(test)]
-#[path = "cases/guest_gicv3.rs"]
-mod guest_gicv3;
+#[path = "cases/guest_gic.rs"]
+mod guest_gic;
 #[cfg(test)]
 #[path = "cases/kallsyms.rs"]
 mod kallsyms;
