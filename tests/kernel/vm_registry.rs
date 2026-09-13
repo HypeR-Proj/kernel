@@ -17,7 +17,6 @@ pub(super) enum Error {
     Accounting,
     ObjectNotFound,
     ProgressTimeout,
-    InitialContext,
     SchedulerThreadLeaked,
     UnsupportedAdmission,
 }
@@ -169,8 +168,11 @@ fn prepare_test_vm_in(
     let prepared = builder
         .prepare_boot_vcpu(
             0,
-            crate::hal::vm::prepare_initial_context(ram_base, &[])
-                .map_err(|_| Error::InitialContext)?,
+            crate::kernel::vm::objects::VirtualCpuBootstrap {
+                entry: ram_base,
+                stack: 0,
+                arguments: [0; 4],
+            },
         )
         .map_err(Error::VcpuPreparation)?;
     Ok(prepared)

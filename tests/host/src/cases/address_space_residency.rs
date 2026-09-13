@@ -191,3 +191,41 @@ fn stale_finish_returns_the_update_cut_for_retry_or_abort() {
     crate::require_ok(state.abort_update(failure.into_cut()));
     crate::require_ok(state.check_admission(0, 12));
 }
+
+#[test]
+fn shared_epoch_keeps_all_active_and_inactive_retirement_targets() {
+    let mut state = crate::require_ok(AddressSpaceResidency::<4>::try_new(10));
+    for cpu in 0..3 {
+        crate::require_ok(state.check_admission(cpu, 10));
+        crate::require_ok(state.publish_admission(cpu));
+    }
+    crate::require_ok(state.leave(2, 10));
+    assert_eq!(state.check_single_active(0, 10), Err(ResidencyError::Busy));
+    crate::require_ok(state.advance_shared_active(0, 10, 11));
+    assert_eq!(state.check_active(1, 10), Err(ResidencyError::StaleEpoch));
+    crate::require_ok(state.check_active(1, 11));
+    assert_eq!(
+        state.advance_shared_active(2, 11, 12),
+        Err(ResidencyError::NotActive)
+    );
+    assert_eq!(
+        state.advance_shared_active(0, 11, 11),
+        Err(ResidencyError::StaleEpoch)
+    );
+    assert_eq!(state.check_active(4, 11), Err(ResidencyError::InvalidCpu));
+    assert!(matches!(
+        state.begin_retirement(11),
+        Err(ResidencyError::Busy)
+    ));
+    crate::require_ok(state.leave(0, 11));
+    crate::require_ok(state.advance_shared_active(1, 11, 12));
+    crate::require_ok(state.leave(1, 12));
+    let cut = crate::require_ok(state.begin_retirement(12));
+    assert_eq!(cut.targets(), &[true, true, true, false]);
+    assert_eq!(
+        state.advance_shared_active(1, 12, 13),
+        Err(ResidencyError::Busy)
+    );
+    crate::require_ok(state.finish_retirement(cut));
+    assert_eq!(state.check_active(0, 12), Err(ResidencyError::Retired));
+}

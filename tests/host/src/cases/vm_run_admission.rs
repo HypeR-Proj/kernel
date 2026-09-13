@@ -131,9 +131,14 @@ fn registry_vm_ownership_contains_no_exposed_raw_machine_pointer() {
     assert!(installed.contains("endpoints: Vec<FallibleArc<VcpuEndpoint>>"));
     assert!(installed.contains("try_reserve_exact(count)"));
     assert!(!installed.contains("FallibleArc<VirtualMachine>"));
-    assert!(installed.contains(
-        "RuntimeState::Running { .. } => self.endpoint(id)?.start().map_err(|_| Error::BadState)"
-    ));
+    // Native start is the one-shot boot operation; secondary off/on goes through
+    // the guest power state machine, never a second direct endpoint start.
+    assert!(installed.contains("if id != 0"));
+    assert!(installed.contains(".with(|power| power.boot())"));
+    assert!(installed.contains("RuntimeState::Running { .. } => Err(Error::BadState)"));
+    assert!(execution.contains("execution: ConcurrentExecution"));
+    assert!(execution.contains("self.machine.execution.claim(cpu)"));
+    assert!(execution.contains("if claim.residency.is_some()"));
 }
 
 #[test]
@@ -193,4 +198,34 @@ fn vm_retirement_retains_linear_authority_and_unique_tombstone() {
 
     assert!(device.contains("fn disconnect_virtual_serial("));
     assert!(control.contains("machine.disconnect_virtual_serial();"));
+}
+
+#[test]
+fn all_configured_cpus_are_bound_before_vm_publication() {
+    let construction = include_str!("../../../../src/kernel/vm/registry/construction.rs");
+    let preparation = construction
+        .split("pub(crate) fn prepare_boot_vcpu(")
+        .nth(1)
+        .and_then(|source| source.split("/// Fully allocated VM aggregate").next())
+        .unwrap_or_else(|| panic!("missing aggregate CPU preparation"));
+    assert!(preparation.contains("for id in 0..count"));
+    assert!(preparation.contains("reserve_vcpu_runtime()"));
+    assert!(preparation.contains("endpoint.bind_thread(thread)"));
+    assert!(preparation.contains("dormant.push(prepared)"));
+    assert!(!preparation.contains("install_prevalidated"));
+    assert!(!preparation.contains("commit_after_vm_install"));
+    let install = construction
+        .split("pub(crate) fn install(self)")
+        .nth(1)
+        .unwrap_or_else(|| panic!("missing VM installation"));
+    let publication = install
+        .find("registry.install_prevalidated")
+        .unwrap_or_else(|| panic!("missing registry publication"));
+    let threads = install
+        .find("for thread in dormant")
+        .unwrap_or_else(|| panic!("missing dormant Thread publication"));
+    let commit = install
+        .find("thread.commit_after_vm_install()")
+        .unwrap_or_else(|| panic!("missing Thread rollback commitment"));
+    assert!(publication < threads && threads < commit);
 }

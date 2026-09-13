@@ -274,7 +274,7 @@ fn route_decoder_maps_exact_modeled_spi_registers() {
 }
 
 #[test]
-fn single_vcpu_routes_read_zero_and_reject_unsupported_values() {
+fn nonexistent_affinity_route_reads_back_and_disables_delivery() {
     let distributor = u64::from(DISTRIBUTOR_BASE);
     let route = model_register(distributor + 0x6100, AccessWidth::DoubleWord);
     let mut controller = controller();
@@ -293,10 +293,21 @@ fn single_vcpu_routes_read_zero_and_reject_unsupported_values() {
         )),
         0
     );
+    crate::require_ok(write_model_register(
+        &mut controller,
+        VirtualCpuId::new(0),
+        route,
+        1,
+    ));
     assert_eq!(
-        write_model_register(&mut controller, VirtualCpuId::new(0), route, 1),
-        Err(hyper::vm::arm::gic::mmio::ModelError::UnsupportedRouteValue(1))
+        crate::require_ok(read_model_register(
+            &controller,
+            VirtualCpuId::new(0),
+            route
+        )),
+        1
     );
+    assert!(!crate::require_ok(controller.snapshot(interrupt(32), VirtualCpuId::new(0))).routed);
     assert_eq!(
         crate::require_ok(controller.snapshot(interrupt(32), VirtualCpuId::new(0)),).target,
         VirtualCpuId::new(0)
@@ -569,4 +580,103 @@ fn gicv2_target_mask_and_priority_precision_preserve_pending() {
     crate::require_ok(write_model_register(&mut controller, cpu, decode(0x820), 1));
     crate::require_ok(controller.refill(cpu, &mut slots));
     assert!(slots[0].is_some());
+}
+
+#[test]
+fn gicv3_banks_are_addressed_by_redistributor_not_accessing_cpu() {
+    use hyper::vm::arm::gic::mmio::decode_v3_cpus;
+    let state = RegisterState::new();
+    for cpu in 0..8u32 {
+        let base = u64::from(REDISTRIBUTOR_BASE) + u64::from(cpu) * 0x20000;
+        let decoded = crate::require_some(crate::require_ok(decode_v3_cpus(
+            GuestPhysicalAddress::new(base + 8),
+            AccessWidth::DoubleWord,
+            8,
+        )));
+        assert_eq!(decoded.redistributor(), Some(cpu));
+        assert_eq!(
+            decoded.register(),
+            DecodedRegister::Service(ServiceRegister::RedistributorType)
+        );
+        let value = state.read_for_cpu(ServiceRegister::RedistributorType, cpu, 8);
+        assert_eq!(value >> 32, u64::from(cpu));
+        assert_eq!(value & (1 << 4) != 0, cpu == 7);
+        let private = crate::require_some(crate::require_ok(decode_v3_cpus(
+            GuestPhysicalAddress::new(base + 0x10100),
+            AccessWidth::Word,
+            8,
+        )));
+        assert_eq!(private.redistributor(), Some(cpu));
+        assert_eq!(private.frame(), Frame::RedistributorSgi);
+    }
+    assert!(
+        crate::require_ok(decode_v3_cpus(
+            GuestPhysicalAddress::new(u64::from(REDISTRIBUTOR_BASE) + 8 * 0x20000),
+            AccessWidth::Word,
+            8,
+        ))
+        .is_none()
+    );
+}
+
+#[test]
+fn gicv2_sgi_filter_targets_and_banked_source_registers() {
+    use hyper::vm::arm::gic::mmio::decode_v2;
+    let mut builder = crate::require_ok(VirtualGicBuilder::new(4));
+    for cpu in 0..4 {
+        for id in 0..16 {
+            crate::require_ok(builder.configure(
+                interrupt(id),
+                VirtualCpuId::new(cpu),
+                0x80,
+                InterruptGroup::Group0,
+                InterruptTrigger::Edge,
+            ));
+        }
+    }
+    let mut gic = crate::require_ok(builder.finish(1));
+    let decode = |offset| match crate::require_some(crate::require_ok(decode_v2(
+        GuestPhysicalAddress::new(u64::from(DISTRIBUTOR_BASE) + offset),
+        AccessWidth::Word,
+    )))
+    .register()
+    {
+        DecodedRegister::Model(register) => register,
+        other => panic!("unexpected {other:?}"),
+    };
+    let sgi = decode(0xf00);
+    crate::require_ok(write_model_register(
+        &mut gic,
+        VirtualCpuId::new(2),
+        sgi,
+        3 | (1 << 24),
+    ));
+    for cpu in 0..4 {
+        assert_eq!(
+            crate::require_ok(gic.snapshot(interrupt(3), VirtualCpuId::new(cpu))).pending,
+            cpu != 2
+        );
+        assert_eq!(
+            crate::require_ok(gic.sgi_sources(interrupt(3), VirtualCpuId::new(cpu))),
+            if cpu != 2 { 4 } else { 0 }
+        );
+    }
+    // SGI3 is byte 3 in CPENDSGIR0; writes clear only the indicated source.
+    let sources = decode(0xf10);
+    assert_eq!(
+        crate::require_ok(read_model_register(&gic, VirtualCpuId::new(1), sources)),
+        4 << 24
+    );
+    crate::require_ok(write_model_register(
+        &mut gic,
+        VirtualCpuId::new(1),
+        sources,
+        4 << 24,
+    ));
+    assert!(!crate::require_ok(gic.snapshot(interrupt(3), VirtualCpuId::new(1))).pending);
+    assert!(crate::require_ok(gic.snapshot(interrupt(3), VirtualCpuId::new(0))).pending);
+    assert_eq!(
+        RegisterState::new().read_for_cpu(ServiceRegister::DistributorTypeV2, 0, 4),
+        1 | (3 << 5)
+    );
 }

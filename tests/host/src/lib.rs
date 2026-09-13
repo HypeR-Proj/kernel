@@ -146,6 +146,9 @@ mod gicv3;
 #[path = "cases/guest_gic.rs"]
 mod guest_gic;
 #[cfg(test)]
+#[path = "cases/guest_psci.rs"]
+mod guest_psci;
+#[cfg(test)]
 #[path = "cases/kallsyms.rs"]
 mod kallsyms;
 #[cfg(test)]

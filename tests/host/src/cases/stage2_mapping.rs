@@ -8,9 +8,10 @@ use core::cell::Cell;
 use hyper::cpu::CpuIndex;
 use hyper::vm::exit::MemoryAccess;
 use hyper::vm::translation::{
-    ActiveMappingError, ExclusiveExecution, ExecutionError, ExecutionReleaseFailure,
-    GuestInstructionContext, GuestInstructionContextTransition, Stage2FaultResolution,
-    Stage2PagePermissions, publish_active_mapping, residency_is_current, resolve_stage2_fault,
+    ActiveMappingError, ConcurrentExecution, ExclusiveExecution, ExecutionError,
+    ExecutionReleaseFailure, GuestInstructionContext, GuestInstructionContextTransition,
+    Stage2FaultResolution, Stage2PagePermissions, publish_active_mapping, residency_is_current,
+    resolve_stage2_fault,
 };
 
 fn release_error(result: Result<(), ExecutionReleaseFailure>) -> Option<ExecutionError> {
@@ -218,4 +219,40 @@ fn guest_instruction_context_synchronizes_only_real_migration() {
         context.enter(cpu0),
         GuestInstructionContextTransition::Migrated
     );
+}
+
+#[test]
+fn concurrent_execution_allows_distinct_cpus_and_preserves_failed_claims() {
+    let execution = ConcurrentExecution::new(41);
+    let other = ConcurrentExecution::new(42);
+    let cpu0 = CpuIndex::BOOT;
+    let cpu1 = CpuIndex::new(1).unwrap_or_else(|| panic!("CPU 1 unavailable"));
+    let first = crate::require_ok(execution.claim(cpu0));
+    let second = crate::require_ok(execution.claim(cpu1));
+    assert!(matches!(
+        execution.claim(cpu0),
+        Err(ExecutionError::AlreadyActive)
+    ));
+    let wrong_cpu = execution
+        .release(first, cpu1)
+        .err()
+        .unwrap_or_else(|| panic!("wrong CPU accepted"));
+    assert_eq!(wrong_cpu.error(), ExecutionError::WrongCpu);
+    let wrong_owner = other
+        .release(wrong_cpu.into_claim(), cpu0)
+        .err()
+        .unwrap_or_else(|| panic!("wrong VM accepted"));
+    assert_eq!(wrong_owner.error(), ExecutionError::WrongAddressSpace);
+    assert_eq!(
+        release_error(execution.release(wrong_owner.into_claim(), cpu0)),
+        None
+    );
+    // Releasing one physical CPU must not clear the other CPU's claim.
+    assert!(matches!(
+        execution.claim(cpu1),
+        Err(ExecutionError::AlreadyActive)
+    ));
+    let replacement = crate::require_ok(execution.claim(cpu0));
+    assert_eq!(release_error(execution.release(replacement, cpu0)), None);
+    assert_eq!(release_error(execution.release(second, cpu1)), None);
 }

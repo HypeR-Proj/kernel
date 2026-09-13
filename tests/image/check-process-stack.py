@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 roolrz
 # SPDX-License-Identifier: Apache-2.0
 
-"""Bound AArch64 Process entry frames in the final optimized ELF disassembly.
+"""Bound AArch64 Process and guest-construction frames in the final optimized ELF disassembly.
 
 This guards the large by-value construction/retirement regression. It is not
 a whole-call-graph stack bound; IRQ-tail headroom also needs runtime testing.
@@ -17,6 +17,13 @@ def check(disassembly):
     budgets = {
         '15PreparedProcess7try_new': 2048,
         '7Process17finish_retirement': 2048,
+        # Guest SMP previously kept two full architectural contexts plus
+        # execution temporaries in nested seal/preparation frames (>13 KiB).
+        '32sys_pending_virtual_machine_seal': 3072,
+        # Preparation retains bounded accounting reservations and scheduler
+        # rollback owners (2224 B), not architectural register-bank copies.
+        '9VmBuilder17prepare_boot_vcpu': 3072,
+        '13VcpuExecution13try_installed': 2048,
     }
     functions = re.split(r'^\s*[0-9a-f]+ <([^\n]+)>:\s*$', disassembly,
                          flags=re.MULTILINE)
