@@ -95,6 +95,9 @@ mod allocation;
 #[path = "cases/allocator_local_cache.rs"]
 mod allocator_local_cache;
 #[cfg(test)]
+#[path = "cases/assigned_device.rs"]
+mod assigned_device;
+#[cfg(test)]
 #[path = "cases/boot_allocator.rs"]
 mod boot_allocator;
 #[cfg(test)]
@@ -218,6 +221,9 @@ mod translation_id;
 #[path = "cases/user_memory.rs"]
 mod user_memory;
 #[cfg(test)]
+#[path = "cases/user_mmio.rs"]
+mod user_mmio;
+#[cfg(test)]
 #[path = "cases/vfs_core.rs"]
 mod vfs_core;
 
@@ -284,3 +290,7 @@ mod bootstrap_map;
 #[cfg(test)]
 #[path = "cases/bootstrap_map.rs"]
 mod bootstrap_map_tests;
+
+#[cfg(test)]
+#[path = "cases/guest_io.rs"]
+mod guest_io;

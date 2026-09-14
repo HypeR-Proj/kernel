@@ -49,6 +49,7 @@ fn process_builder_storage_policy_is_explicit_and_bounds_graph_authority() {
         ObjectKind::TASK_FACTORY,
         ObjectKind::EXECUTABLE_AUTHORITY,
         ObjectKind::VMO,
+        ObjectKind::GUEST_MEMORY,
         ObjectKind::CONSOLE,
         ObjectKind::DIRECTORY,
         ObjectKind::FILE,

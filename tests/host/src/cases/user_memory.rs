@@ -195,6 +195,18 @@ impl PageBackend for Backend {
         Ok(())
     }
 
+    fn copy_owned(
+        &self,
+        source: &Self::Page,
+        destination: &mut Self::Page,
+    ) -> Result<(), Self::Error> {
+        // Preserve the model's read/write failure injection for page copies.
+        // Production copies directly between physical pages without scratch.
+        let mut bytes = [0u8; PAGE_SIZE as usize];
+        self.read_owned(source, 0, &mut bytes)?;
+        self.write_owned(destination, 0, &bytes)
+    }
+
     fn read_exposed(
         &self,
         page: &Self::Page,
@@ -652,6 +664,55 @@ fn retired_mapping_pins_backing_until_quiescence_acknowledgement() {
     assert_eq!(usage.pages.load(Ordering::Relaxed), 0);
     assert_eq!(usage.mappings.load(Ordering::Relaxed), 0);
     assert!(usage.bytes.load(Ordering::Relaxed) < before_acknowledgement);
+}
+
+#[test]
+fn hardware_admission_waits_for_native_unmap_retirement() {
+    let (backend, account) = fixtures();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x60_000, PAGE_SIZE),
+        backend.clone(),
+        account.clone(),
+    ));
+    let vmo = crate::require_ok(WritableVmo::try_new(PAGE_SIZE, backend, account.clone()));
+    assert!(vmo.populate(0, PAGE_SIZE).is_ok());
+    let map = crate::require_ok(space.prepare_map_writable(
+        space.root_vmar(),
+        slice(0x60_000, PAGE_SIZE),
+        vmo.clone(),
+        0,
+        Permissions::read_write(),
+        Permissions::read_write(),
+    ));
+    complete(crate::require_ok(map.commit_for_test()));
+    assert!(matches!(
+        vmo.try_exclusive_hardware_write_lease(),
+        Err(VmoError::Busy)
+    ));
+    let unmap =
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x60_000, PAGE_SIZE)));
+    let retired = crate::require_ok(unmap.commit_for_test());
+    // Logical removal cannot authorize DMA while another CPU can still write
+    // through an old Native translation.
+    assert!(matches!(
+        vmo.try_exclusive_hardware_write_lease(),
+        Err(VmoError::Busy)
+    ));
+    complete(retired);
+    let hardware = crate::require_ok(vmo.try_exclusive_hardware_write_lease());
+    assert!(matches!(
+        vmo.try_snapshot(account.clone()),
+        Err(VmoError::Busy)
+    ));
+    let imported = hardware.clone();
+    drop(hardware);
+    assert!(matches!(
+        vmo.try_snapshot(account.clone()),
+        Err(VmoError::Busy)
+    ));
+    drop(imported);
+    assert!(vmo.try_snapshot(account).is_ok());
 }
 
 #[test]
@@ -1193,7 +1254,10 @@ fn exclusive_hardware_write_lease_closes_native_access_until_release() {
         Err(VmoError::Busy)
     ));
 
+    let shared_hardware = hardware.clone();
     drop(hardware);
+    assert!(matches!(retained.write(0, &[0xa5]), Err(VmoError::Busy)));
+    drop(shared_hardware);
     assert!(retained.read(0, &mut observed).is_ok());
     assert_eq!(observed, [0x5a]);
     assert!(retained.write(0, &[0xa5]).is_ok());
@@ -1599,6 +1663,26 @@ fn private_materialization_failure_and_stale_commit_leave_backing_intact() {
     assert_eq!(space.mapping_epoch(), epoch);
     assert_eq!(account.0.pages.load(Ordering::Relaxed), baseline);
     backend.0.fail_allocation_at.store(0, Ordering::Relaxed);
+    let baseline_bytes = account.0.bytes.load(Ordering::Relaxed);
+    for (calls, failure) in [
+        (&backend.0.read_calls, &backend.0.fail_read_at),
+        (&backend.0.write_calls, &backend.0.fail_write_at),
+    ] {
+        // Fail the second page copy after the first destination was filled.
+        // Neither destination nor its metadata may survive an aborted view.
+        failure.store(calls.load(Ordering::Relaxed) + 2, Ordering::Relaxed);
+        assert!(matches!(
+            space.prepare_private_write(slice(0x1000, PAGE_SIZE * 2)),
+            Err(AddressSpaceError::Backend(PageError))
+        ));
+        failure.store(0, Ordering::Relaxed);
+        assert_eq!(space.mapping_epoch(), epoch);
+        assert_eq!(account.0.pages.load(Ordering::Relaxed), baseline);
+        assert_eq!(account.0.bytes.load(Ordering::Relaxed), baseline_bytes);
+        let mut bytes = vec![0; PAGE_SIZE as usize * 2];
+        crate::require_ok(space.copy_from_user(slice(0x1000, PAGE_SIZE * 2), &mut bytes));
+        assert!(bytes.iter().all(|byte| *byte == 0x61));
+    }
     let first = crate::require_some(crate::require_ok(
         space.prepare_private_write(slice(0x1000, 1)),
     ));
@@ -2215,4 +2299,42 @@ fn check_application_boundary(limit: u64, boundary: u64) {
             .prepare_protect(app, slice(boundary, PAGE_SIZE), Permissions::read_only())
             .is_err()
     );
+}
+
+#[test]
+fn importing_owned_pages_preserves_frames_and_rolls_back_metadata_failures() {
+    for fail in [false, true] {
+        let (backend, account) = fixtures();
+        let mut first = crate::require_ok(backend.allocate_zeroed());
+        crate::require_ok(backend.write_owned(&mut first, 0, &[0x5a]));
+        let physical = backend.physical_address(&first);
+        let second = crate::require_ok(backend.allocate_zeroed());
+        if fail {
+            // VMO metadata succeeds; failure while wrapping the first page
+            // must release the local VMO and all remaining owned input pages.
+            let next = account.0.charge_calls.load(Ordering::Relaxed) + 2;
+            account.0.fail_at_call.store(next, Ordering::Relaxed);
+        }
+        let result = WritableVmo::try_from_owned_pages(
+            PAGE_SIZE * 2,
+            backend,
+            account.clone(),
+            vec![first, second],
+        );
+        if fail {
+            assert!(matches!(result, Err(VmoError::Account(_))));
+        } else {
+            let memory = crate::require_ok(result);
+            assert_eq!(
+                crate::require_ok(memory.resident_physical_page(0)),
+                physical
+            );
+            let mut bytes = [0];
+            crate::require_ok(memory.read(0, &mut bytes));
+            assert_eq!(bytes, [0x5a]);
+            drop(memory);
+        }
+        assert_eq!(account.0.bytes.load(Ordering::Relaxed), 0);
+        assert_eq!(account.0.objects.load(Ordering::Relaxed), 0);
+    }
 }
