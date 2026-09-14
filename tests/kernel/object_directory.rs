@@ -55,8 +55,9 @@ pub(super) fn run() -> Result<(), Error> {
 fn verify_system_inspectors(domain: &ResourceDomain) -> Result<(), Error> {
     let tasks = crate::kernel::inspect::TaskInspector::try_system(domain)
         .map_err(|_| Error::Construction)?;
-    let threads = tasks
-        .scan_threads(0)
+    let mut threads = crate::kernel::inspect::Page::empty();
+    tasks
+        .scan_threads(0, &mut threads)
         .map_err(|_| Error::MissingInspectorObservation)?;
     if threads.len() == 0 {
         return Err(Error::MissingInspectorObservation);
@@ -110,7 +111,8 @@ fn verify_current_thread_object() -> Result<(), Error> {
 
     let mut cursor = Some(ThreadObjectScanCursor::start());
     while let Some(position) = cursor {
-        let page = crate::kernel::task::scheduler::scan_thread_objects(position)
+        let mut page = crate::kernel::task::ThreadObjectSnapshotPage::empty();
+        crate::kernel::task::scheduler::scan_thread_objects(position, &mut page)
             .map_err(|_| Error::MissingSchedulerRelation)?;
         if page.entries().any(|entry| {
             entry.thread == thread

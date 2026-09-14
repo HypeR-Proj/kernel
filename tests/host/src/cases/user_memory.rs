@@ -198,13 +198,24 @@ impl PageBackend for Backend {
     fn copy_owned(
         &self,
         source: &Self::Page,
+        source_offset: usize,
         destination: &mut Self::Page,
+        destination_offset: usize,
+        length: usize,
     ) -> Result<(), Self::Error> {
-        // Preserve the model's read/write failure injection for page copies.
-        // Production copies directly between physical pages without scratch.
+        // Keep the model's read/write failure and concurrency injection for
+        // direct copies. Production uses one memcpy and no temporary buffer.
+        let source_end = source_offset.checked_add(length).ok_or(PageError)?;
+        let destination_end = destination_offset.checked_add(length).ok_or(PageError)?;
+        if source_end > PAGE_SIZE as usize
+            || destination_end > PAGE_SIZE as usize
+            || source.physical == destination.physical
+        {
+            return Err(PageError);
+        }
         let mut bytes = [0u8; PAGE_SIZE as usize];
-        self.read_owned(source, 0, &mut bytes)?;
-        self.write_owned(destination, 0, &bytes)
+        self.read_owned(source, source_offset, &mut bytes[..length])?;
+        self.write_owned(destination, destination_offset, &bytes[..length])
     }
 
     fn read_exposed(
@@ -2336,5 +2347,130 @@ fn importing_owned_pages_preserves_frames_and_rolls_back_metadata_failures() {
         }
         assert_eq!(account.0.bytes.load(Ordering::Relaxed), 0);
         assert_eq!(account.0.objects.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[test]
+fn snapshots_copy_sparse_pages_and_release_failed_destinations() {
+    let (backend, source_account) = fixtures();
+    let (_, snapshot_account) = fixtures();
+    let writable = crate::require_ok(WritableVmo::try_new(
+        PAGE_SIZE * 3,
+        backend.clone(),
+        source_account.clone(),
+    ));
+    crate::require_ok(writable.write(7, &[0x31]));
+    crate::require_ok(writable.write(PAGE_SIZE * 2 + 19, &[0x73]));
+    let baseline_pages = source_account.0.pages.load(Ordering::Relaxed);
+    let baseline_bytes = source_account.0.bytes.load(Ordering::Relaxed);
+    for executable in [false, true] {
+        for (calls, failure) in [
+            (&backend.0.read_calls, &backend.0.fail_read_at),
+            (&backend.0.write_calls, &backend.0.fail_write_at),
+        ] {
+            failure.store(calls.load(Ordering::Relaxed) + 2, Ordering::Relaxed);
+            if executable {
+                assert!(
+                    writable
+                        .try_executable_snapshot(&ExecutableProvenance::for_test(), &())
+                        .is_err()
+                );
+            } else {
+                assert!(writable.try_snapshot(snapshot_account.clone()).is_err());
+            }
+            failure.store(0, Ordering::Relaxed);
+            assert_eq!(
+                source_account.0.pages.load(Ordering::Relaxed),
+                baseline_pages
+            );
+            assert_eq!(
+                source_account.0.bytes.load(Ordering::Relaxed),
+                baseline_bytes
+            );
+            assert_eq!(snapshot_account.0.pages.load(Ordering::Relaxed), 0);
+            assert_eq!(snapshot_account.0.bytes.load(Ordering::Relaxed), 0);
+            // A failed freeze/copy releases snapshot admission as well.
+            crate::require_ok(writable.write(7, &[0x31]));
+        }
+    }
+    let snapshot = crate::require_ok(writable.try_snapshot(snapshot_account));
+    let executable =
+        crate::require_ok(writable.try_executable_snapshot(&ExecutableProvenance::for_test(), &()));
+    let mut expected = vec![0; PAGE_SIZE as usize * 3];
+    expected[7] = 0x31;
+    expected[PAGE_SIZE as usize * 2 + 19] = 0x73;
+    let mut bytes = vec![0xff; expected.len()];
+    crate::require_ok(snapshot.read(0, &mut bytes));
+    assert_eq!(bytes, expected);
+    bytes.fill(0xff);
+    crate::require_ok(executable.read(0, &mut bytes));
+    assert_eq!(bytes, expected);
+}
+
+#[test]
+fn private_boundary_copy_uses_source_offset_and_rolls_back_partial_failure() {
+    for mode in [
+        user::PrivateMappingMode::CopyOnWrite,
+        user::PrivateMappingMode::Eager,
+    ] {
+        let (backend, account) = fixtures();
+        let data: Vec<_> = (0..PAGE_SIZE as usize * 4)
+            .map(|index| ((index / PAGE_SIZE as usize) * 37 + index % 29) as u8)
+            .collect();
+        let source = crate::require_ok(user::SnapshotVmo::try_from_bytes(
+            &data,
+            backend.clone(),
+            account.clone(),
+        ));
+        let space = crate::require_ok(UserAddressSpace::try_new(
+            window(),
+            slice(0x1000, PAGE_SIZE * 3),
+            backend.clone(),
+            account.clone(),
+        ));
+        let baseline_pages = account.0.pages.load(Ordering::Relaxed);
+        let baseline_bytes = account.0.bytes.load(Ordering::Relaxed);
+        for (calls, failure) in [
+            (&backend.0.read_calls, &backend.0.fail_read_at),
+            (&backend.0.write_calls, &backend.0.fail_write_at),
+        ] {
+            failure.store(calls.load(Ordering::Relaxed) + 2, Ordering::Relaxed);
+            assert!(
+                space
+                    .prepare_map_private(
+                        space.root_vmar(),
+                        slice(0x1000, PAGE_SIZE * 3),
+                        source.clone(),
+                        PAGE_SIZE,
+                        PAGE_SIZE + 32,
+                        17,
+                        Permissions::read_write(),
+                        Permissions::read_write(),
+                        mode,
+                    )
+                    .is_err()
+            );
+            failure.store(0, Ordering::Relaxed);
+            assert_eq!(account.0.pages.load(Ordering::Relaxed), baseline_pages);
+            assert_eq!(account.0.bytes.load(Ordering::Relaxed), baseline_bytes);
+        }
+        let change = crate::require_ok(space.prepare_map_private(
+            space.root_vmar(),
+            slice(0x1000, PAGE_SIZE * 3),
+            source,
+            PAGE_SIZE,
+            PAGE_SIZE + 32,
+            17,
+            Permissions::read_write(),
+            Permissions::read_write(),
+            mode,
+        ));
+        complete(crate::require_ok(change.commit_for_test()));
+        let mut bytes = vec![0xff; PAGE_SIZE as usize * 3];
+        crate::require_ok(space.copy_from_user(slice(0x1000, PAGE_SIZE * 3), &mut bytes));
+        let mut expected = vec![0; bytes.len()];
+        let end = PAGE_SIZE as usize + 49;
+        expected[17..end].copy_from_slice(&data[PAGE_SIZE as usize + 17..PAGE_SIZE as usize + end]);
+        assert_eq!(bytes, expected);
     }
 }
