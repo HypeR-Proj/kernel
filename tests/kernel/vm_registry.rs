@@ -74,6 +74,7 @@ pub(super) fn run() -> Result<(), Error> {
     if crate::hal::vm::try_administrative_stop().is_ok() {
         verify_dormant_vcpu_stop()?;
         verify_thread_object_charge_lifetime()?;
+        verify_observed_vm_retirement()?;
     }
     Ok(())
 }
@@ -370,4 +371,33 @@ fn test_platform() -> (u64, hyper::vm::interrupt::VirtualInterruptId, u32) {
         crate::kernel::vm::device::default_timer_interrupt(),
         profile as u32,
     )
+}
+
+fn verify_observed_vm_retirement() -> Result<(), Error> {
+    use crate::kernel::accounting::ResourceKind;
+
+    for _ in 0..4 {
+        let (prepared, domain) = prepare_test_vm()?;
+        let installed = prepared.install().map_err(Error::Registry)?;
+        let observer = crate::kernel::vm::registry::verify_observed_vm_quiesce(installed)
+            .map_err(Error::DormantVcpuQuiesce)?;
+        // The observer owns endpoint/tombstone metadata, but no guest RAM or
+        // scheduler stacks. Their charges must drain before identity reuse.
+        if [
+            ResourceKind::Threads,
+            ResourceKind::CommittedPages,
+            ResourceKind::GuestPages,
+        ]
+        .into_iter()
+        .any(|kind| domain.usage().total(kind) != 0)
+        {
+            return Err(Error::Accounting);
+        }
+        drop(observer);
+        wait_for_vm_usage_release(&domain)?;
+    }
+    crate::pr_info!(
+        "HypeR test: retained VM observers permit retirement and slot reuse (4 cycles)"
+    );
+    Ok(())
 }

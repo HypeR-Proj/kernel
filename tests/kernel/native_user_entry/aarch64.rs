@@ -270,6 +270,8 @@ pub(crate) fn run() -> Result<(), Error> {
         return Err(Error::Terminal);
     }
 
+    verify_pending_creation_exit()?;
+
     group.request_stop().map_err(|_| Error::Group)?;
     group.finish_retirement().map_err(|_| Error::Group)?;
     Ok(())
@@ -431,4 +433,64 @@ fn wait_for_event_registration(process: &Process) -> Result<(), Error> {
     } else {
         Err(Error::Lifecycle)
     }
+}
+
+// Hold the actual prepared-thread RAII owner while the last EL0 Thread exits.
+// Its rollback must publish Process termination and let kreaper free the roots,
+// even while the controller retains the Thread's diagnostic identity.
+fn verify_pending_creation_exit() -> Result<(), Error> {
+    // A private domain makes the baseline independent of asynchronous cleanup
+    // from preceding probes. Only this test can change its accounting.
+    let domain =
+        ResourceDomain::try_new_root(ResourceLimits::UNLIMITED).map_err(|_| Error::Construction)?;
+    let group = TaskGroup::try_new(&domain).map_err(|_| Error::Group)?;
+    let baseline = domain.usage();
+    for _ in 0..8 {
+        let process = prepare_process(&domain, &group, &THREAD_EXIT_PROGRAM, MachineAbi::Aarch64)?;
+        let result = (|| {
+            let thread = process
+                .create_initial_user_thread("selftest/pending-exit", CpuMask::ALL)
+                .map_err(|_| Error::Construction)?;
+            let pending = process
+                .prepare_thread_rollback_for_test()
+                .map_err(|_| Error::Construction)?;
+            thread.ready().map_err(|_| Error::Scheduler)?;
+            let detached = crate::kernel::task::wait_for_test_progress(
+                crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
+                || {
+                    let snapshot = process.snapshot();
+                    Ok::<_, Error>(snapshot.active_threads == 0 && snapshot.pending_threads == 1)
+                },
+            )?;
+            if !detached {
+                return Err(Error::Lifecycle);
+            }
+            drop(pending);
+            retire_process(&process)?;
+            if process.snapshot().terminal != Some(TerminalReason::LastThreadExited { status: -17 })
+                || thread.snapshot().terminal != Some(TerminalReason::ThreadExited { status: -17 })
+            {
+                return Err(Error::Terminal);
+            }
+            Ok(())
+        })();
+        // Also clean up if the regression fails: no admitted test work escapes.
+        process.request_stop(TerminalReason::Requested);
+        retire_process(&process)?;
+        drop(process);
+        let reclaimed = crate::kernel::task::wait_for_test_progress(
+            crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
+            || Ok::<_, Error>(domain.usage() == baseline),
+        )?;
+        result?;
+        if !reclaimed {
+            return Err(Error::Lifecycle);
+        }
+    }
+    group.request_stop().map_err(|_| Error::Group)?;
+    group.finish_retirement().map_err(|_| Error::Group)?;
+    crate::pr_info!(
+        "HypeR test: last-thread exit with creation rollback reclaimed resources (8 cycles)"
+    );
+    Ok(())
 }

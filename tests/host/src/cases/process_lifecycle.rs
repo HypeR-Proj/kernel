@@ -235,3 +235,119 @@ fn detached_record_retains_successor_for_concurrent_stop_scan() {
         Some(2)
     );
 }
+
+#[test]
+fn last_thread_exit_then_failed_creation_finishes_process() {
+    let mut process = ProcessLifecycle::prepared();
+    crate::require_ok(process.publish());
+    crate::require_ok(process.start());
+    crate::require_ok(process.reserve_thread());
+    crate::require_ok(process.publish_thread());
+    crate::require_ok(process.reserve_thread());
+
+    crate::require_ok(process.detach_thread(37));
+    assert_eq!(process.phase(), ProcessPhase::Running);
+    assert_eq!(process.active_threads(), 0);
+    assert_eq!(process.pending_threads(), 1);
+    assert!(crate::require_ok(process.abort_thread()));
+    assert_eq!(process.phase(), ProcessPhase::Stopped);
+    assert_eq!(
+        process.terminal(),
+        Some(TerminalReason::LastThreadExited { status: 37 })
+    );
+    crate::require_ok(process.begin_retirement());
+    crate::require_ok(process.finish_retirement());
+}
+
+#[test]
+fn final_exit_and_creation_rollbacks_converge_in_every_order() {
+    // Event 0 detaches the sole active Thread; 1 and 2 roll back independent
+    // admitted creations. Process locking serializes any concurrent history
+    // into one of these six orders.
+    for events in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        let mut process = ProcessLifecycle::prepared();
+        crate::require_ok(process.publish());
+        crate::require_ok(process.start());
+        crate::require_ok(process.reserve_thread());
+        crate::require_ok(process.publish_thread());
+        crate::require_ok(process.reserve_thread());
+        crate::require_ok(process.reserve_thread());
+        for (index, event) in events.into_iter().enumerate() {
+            if event == 0 {
+                crate::require_ok(process.detach_thread(19));
+            } else {
+                assert_eq!(crate::require_ok(process.abort_thread()), index == 2);
+            }
+            assert_eq!(process.phase() == ProcessPhase::Stopped, index == 2);
+        }
+        assert_eq!(
+            process.terminal(),
+            Some(TerminalReason::LastThreadExited { status: 19 })
+        );
+        assert_eq!(
+            process.reserve_thread(),
+            Err(LifecycleError::AdmissionClosed)
+        );
+        assert!(!process.request_stop(TerminalReason::Requested));
+        crate::require_ok(process.begin_retirement());
+        crate::require_ok(process.finish_retirement());
+    }
+}
+
+#[test]
+fn successful_creation_supersedes_an_earlier_last_thread_exit() {
+    let mut process = ProcessLifecycle::prepared();
+    crate::require_ok(process.publish());
+    crate::require_ok(process.start());
+    crate::require_ok(process.reserve_thread());
+    crate::require_ok(process.publish_thread());
+    crate::require_ok(process.reserve_thread());
+    crate::require_ok(process.detach_thread(19));
+    crate::require_ok(process.publish_thread());
+    assert_eq!(process.terminal(), None);
+    crate::require_ok(process.reserve_thread());
+    assert!(!crate::require_ok(process.abort_thread()));
+    assert_eq!(process.phase(), ProcessPhase::Running);
+    crate::require_ok(process.detach_thread(42));
+    assert_eq!(
+        process.terminal(),
+        Some(TerminalReason::LastThreadExited { status: 42 })
+    );
+}
+
+#[test]
+fn explicit_stop_wins_while_last_exit_waits_for_creation_rollback() {
+    let mut process = ProcessLifecycle::prepared();
+    crate::require_ok(process.publish());
+    crate::require_ok(process.start());
+    crate::require_ok(process.reserve_thread());
+    crate::require_ok(process.publish_thread());
+    crate::require_ok(process.reserve_thread());
+    crate::require_ok(process.detach_thread(19));
+    assert!(process.request_stop(TerminalReason::Requested));
+    assert!(crate::require_ok(process.abort_thread()));
+    assert_eq!(process.phase(), ProcessPhase::Stopped);
+    assert_eq!(process.terminal(), Some(TerminalReason::Requested));
+}
+
+#[test]
+fn failed_creation_without_any_active_thread_does_not_synthesize_exit() {
+    let mut process = ProcessLifecycle::prepared();
+    crate::require_ok(process.publish());
+    crate::require_ok(process.start());
+    crate::require_ok(process.reserve_thread());
+    assert!(!crate::require_ok(process.abort_thread()));
+    assert_eq!(process.phase(), ProcessPhase::Running);
+    assert_eq!(process.terminal(), None);
+    crate::require_ok(process.reserve_thread());
+    crate::require_ok(process.publish_thread());
+    crate::require_ok(process.detach_thread(0));
+    assert_eq!(process.phase(), ProcessPhase::Stopped);
+}

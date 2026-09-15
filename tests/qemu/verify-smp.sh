@@ -124,6 +124,8 @@ runtime_contract_is_ready() {
         grep -q 'HypeR test: fatal-path readiness contract passed' "$log" &&
         grep -q 'HypeR test: Native syscall validation passed' "$log" &&
         grep -q 'HypeR test: Channel Process and user-copy transactions passed' "$log" &&
+        grep -q 'HypeR test: last-thread exit with creation rollback reclaimed resources (8 cycles)' "$log" &&
+        grep -q 'HypeR test: retained VM observers permit retirement and slot reuse (4 cycles)' "$log" &&
         grep -q 'HypeR test: AArch64 EL0 syscall and fault containment passed' "$log" &&
         reschedule_ipi_proof_is_valid &&
         grep -q 'HypeR test: checked stage-2 guest-memory copies passed' "$log" &&
