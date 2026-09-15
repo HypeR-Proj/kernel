@@ -6,6 +6,23 @@
 mod model;
 
 #[test]
+fn guest_io_coalesces_all_request_queues_and_rejects_out_of_range_kicks() {
+    let mut state = model::NotificationState::new();
+    crate::require_ok(state.control(1));
+    for queue in 2..6 {
+        state.kick(queue);
+        state.kick(queue);
+    }
+    state.kick(6);
+    state.kick(u64::MAX);
+    assert_eq!(state.take_kicks(), 0b111100);
+    assert!(!state.back_irq());
+    state.kick(5);
+    crate::require_ok(state.control(0));
+    assert_eq!(state.take_kicks(), 0);
+}
+
+#[test]
 fn guest_io_receive_fault_keeps_original_record_and_backpressure() {
     let mut state = model::MailboxState::new();
     state.staging[..3].copy_from_slice(b"abc");
