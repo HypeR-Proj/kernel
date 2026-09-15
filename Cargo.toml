@@ -30,6 +30,7 @@ bench = false
 [dependencies]
 hyper-abi = { path = "../sdk/abi" }
 rustc-demangle = { version = "0.1.28", default-features = false }
+fatfs = { path = "../third_party/rust-fatfs", default-features = false, features = ["lfn", "unicode"] }
 
 [lints.clippy]
 doc_markdown = "deny"

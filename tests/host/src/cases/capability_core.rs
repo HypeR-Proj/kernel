@@ -1854,3 +1854,56 @@ fn sparse_directory_growth_reuses_holes_without_changing_live_handles() {
     remove_all(&mut table);
     assert_eq!(transitions.load(Ordering::Relaxed), 6144);
 }
+
+#[path = "../../../../src/kernel/device/assigned/transaction.rs"]
+mod physical_claim_transaction;
+
+#[test]
+fn every_physical_claim_preparation_failure_aborts_its_real_handle_reservation() {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Failure {
+        NotFound,
+        Ambiguous,
+        Busy,
+        ObjectAllocation,
+        PublicationAllocation,
+        PreparedHandleAllocation,
+    }
+    let mut table = HandleTable::new();
+    crate::require_ok(table.reserve::<1>()).abort(&mut table);
+    let baseline_growth = crate::require_ok(table.reservation_growth_for(8));
+    for failure in [
+        Failure::NotFound,
+        Failure::Ambiguous,
+        Failure::Busy,
+        Failure::ObjectAllocation,
+        Failure::PublicationAllocation,
+        Failure::PreparedHandleAllocation,
+    ] {
+        let reservation = crate::require_ok(table.reserve::<1>());
+        let [future] = reservation.values();
+        let result = physical_claim_transaction::prepare(
+            reservation,
+            || Err::<(), _>(failure),
+            |reservation| reservation.abort(&mut table),
+        );
+        assert!(matches!(result, Err(error) if error == failure));
+        assert_eq!(table.get_info(future), Err(HandleError::InvalidHandle));
+        assert!(table.free_list_is_consistent_for_test());
+        assert_eq!(
+            crate::require_ok(table.reservation_growth_for(8)),
+            baseline_growth
+        );
+        // Reserving and aborting again proves the slot remains reusable and no
+        // armed linear token or unpublished handle survived the failed claim.
+        crate::require_ok(table.reserve::<1>()).abort(&mut table);
+    }
+    let reservation = crate::require_ok(table.reserve::<1>());
+    let (reservation, value) = crate::require_ok(physical_claim_transaction::prepare(
+        reservation,
+        || Ok::<_, Failure>(17),
+        |_| panic!("success must retain its reservation"),
+    ));
+    assert_eq!(value, 17);
+    reservation.abort(&mut table);
+}

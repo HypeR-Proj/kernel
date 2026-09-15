@@ -7,6 +7,10 @@ mod name;
 mod node;
 mod path;
 
+pub mod block;
+pub mod fat;
+mod fat_time;
+mod fat_validate;
 pub mod file_data;
 pub mod ramfs;
 pub mod scratch;

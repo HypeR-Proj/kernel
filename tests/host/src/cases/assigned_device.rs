@@ -92,3 +92,113 @@ fn dma_extent_rejects_holes_discontiguity_and_overflow() {
         Err(ExtentError::Range)
     );
 }
+
+#[test]
+fn firmware_selection_requires_exactly_one_match() {
+    assert_eq!(model::unique_match([false, true, false]), Ok(1));
+    assert_eq!(
+        model::unique_match([false, false]),
+        Err(model::SelectionError::Missing)
+    );
+    assert_eq!(
+        model::unique_match([true, true]),
+        Err(model::SelectionError::Ambiguous)
+    );
+    assert_eq!(model::unique_match([]), Err(model::SelectionError::Missing));
+}
+
+#[test]
+fn physical_register_windows_reject_gaps_and_crossing_accesses() {
+    assert_eq!(model::register_offset(0x3c00, 1, 0x3c00, 0x40), Some(0));
+    assert_eq!(model::register_offset(0x3c3e, 2, 0x3c00, 0x40), Some(0x3e));
+    assert_eq!(model::register_offset(0x3c3c, 4, 0x3c00, 0x40), Some(0x3c));
+    for (address, width) in [
+        (0x3000, 4),
+        (0x3bfc, 4),
+        (0x3c40, 1),
+        (0x3c3f, 2),
+        (0x3c00, 8),
+        (usize::MAX, 4),
+    ] {
+        assert!(model::register_offset(address, width, 0x3c00, 0x40).is_none());
+    }
+    assert!(model::assignment_aperture(0x0b00_0000));
+    assert!(model::assignment_aperture(0x0bff_0000));
+    assert!(!model::assignment_aperture(0x0bff_f000));
+    assert!(!model::assignment_aperture(u64::MAX));
+}
+
+#[test]
+fn level_irq_observation_consumes_readiness_without_rearming_an_asserted_device() {
+    use model::{LevelInterrupt, RearmDecision};
+    let mut irq = LevelInterrupt::new();
+    assert_eq!(irq.complete(0, true), Ok(RearmDecision::NoRearm));
+    assert!(!irq.readable());
+    assert_eq!(irq.deliver(), Ok(()));
+    let token = irq.pending();
+    assert_ne!(token, 0);
+    assert!(irq.readable());
+    assert_eq!(irq.complete(token, true), Ok(RearmDecision::NoRearm));
+    assert_eq!(irq.pending(), token);
+    assert!(!irq.readable());
+    assert!(!irq.can_rearm());
+    assert_eq!(irq.complete(token, false), Ok(RearmDecision::Rearm));
+    assert_eq!(irq.pending(), 0);
+    assert!(!irq.readable());
+    assert!(irq.can_rearm());
+}
+
+#[test]
+fn new_level_irq_between_ack_and_rearm_prevents_late_unmask_or_stale_ack() {
+    use model::{LevelInterrupt, RearmDecision, StaleSequence};
+    let mut irq = LevelInterrupt::new();
+    assert_eq!(irq.deliver(), Ok(()));
+    let old = irq.pending();
+    assert_eq!(irq.complete(old, false), Ok(RearmDecision::Rearm));
+    // A delayed physical callback wins before the rearm predicate gets the
+    // registry lock. Its pending token must survive the older syscall.
+    assert_eq!(irq.deliver(), Ok(()));
+    let new = irq.pending();
+    assert!(new > old);
+    assert!(!irq.can_rearm());
+    let before = irq;
+    assert_eq!(irq.complete(old, false), Err(StaleSequence));
+    assert_eq!(irq.complete(0, true), Err(StaleSequence));
+    assert_eq!(irq, before);
+    assert_eq!(irq.complete(new, false), Ok(RearmDecision::Rearm));
+}
+
+#[test]
+fn repeated_physical_delivery_coalesces_without_reusing_a_retired_token() {
+    use model::{LevelInterrupt, RearmDecision};
+    let mut irq = LevelInterrupt::new();
+    assert_eq!(irq.complete(0, false), Ok(RearmDecision::Rearm));
+    assert_eq!(irq.deliver(), Ok(()));
+    let first = irq.pending();
+    assert_eq!(irq.complete(first, true), Ok(RearmDecision::NoRearm));
+    assert_eq!(irq.deliver(), Ok(()));
+    assert_eq!(irq.pending(), first);
+    assert!(irq.readable());
+    assert_eq!(irq.complete(first, false), Ok(RearmDecision::Rearm));
+    assert_eq!(irq.deliver(), Ok(()));
+    assert!(irq.pending() > first);
+}
+
+#[test]
+fn userspace_physical_mmio_requires_exact_owned_aperture_and_generic_profile() {
+    use model::owns_userspace_aperture;
+    let base = 0x0b00_0000;
+    assert!(owns_userspace_aperture(true, base, base, 65536));
+    assert!(!owns_userspace_aperture(false, base, base, 65536));
+    assert!(!owns_userspace_aperture(true, base, base + 65536, 65536));
+    assert!(!owns_userspace_aperture(true, base, base + 4096, 4096));
+    assert!(!owns_userspace_aperture(true, base, base, 0));
+    assert!(!owns_userspace_aperture(true, base, base, 4096));
+    assert!(!owns_userspace_aperture(true, base, base, 131072));
+    assert!(!owns_userspace_aperture(
+        true,
+        u64::MAX - 65535,
+        u64::MAX - 65535,
+        65536
+    ));
+}

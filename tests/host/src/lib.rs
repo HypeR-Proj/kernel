@@ -294,3 +294,19 @@ mod bootstrap_map_tests;
 #[cfg(test)]
 #[path = "cases/guest_io.rs"]
 mod guest_io;
+
+#[cfg(test)]
+#[path = "cases/fat_volume.rs"]
+mod fat_volume;
+
+#[cfg(test)]
+#[path = "../../../src/kernel/block/wire.rs"]
+mod native_block_wire;
+
+#[cfg(test)]
+#[path = "../../../src/kernel/vm/memory/extent_index.rs"]
+mod guest_extent_index;
+
+#[cfg(test)]
+#[path = "../../../src/kernel/vm/memory/grant_state.rs"]
+mod guest_grant_state;

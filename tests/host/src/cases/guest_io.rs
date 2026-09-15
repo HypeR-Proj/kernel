@@ -124,3 +124,18 @@ fn guest_io_copy_claim_is_valid_across_stop_and_abort() {
     assert_eq!(state.native_status(), 4);
     assert_eq!(state.claim(&mut bytes), Err(model::Error::Closed));
 }
+
+#[test]
+fn closed_notification_disable_remains_idempotent_for_backend_drain() {
+    let mut state = model::NotificationState::new();
+    let epoch = state.epoch;
+    assert_eq!(state.control(1), Ok(epoch));
+    state.kick(2);
+    state.close();
+    assert_eq!(state.control(0), Ok(epoch));
+    assert_eq!(state.control(0), Ok(epoch));
+    assert!(!state.enabled);
+    assert!(!state.back_irq());
+    assert_eq!(state.take_kicks(), 0);
+    assert_eq!(state.control(1), Err(model::Error::Closed));
+}

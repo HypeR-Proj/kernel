@@ -65,8 +65,9 @@ fn verify_system_inspectors(domain: &ResourceDomain) -> Result<(), Error> {
 
     let objects = crate::kernel::inspect::ObjectInspector::try_system(domain)
         .map_err(|_| Error::Construction)?;
-    let page = objects
-        .scan_objects(0)
+    let mut page = crate::kernel::inspect::Page::empty();
+    objects
+        .scan_objects(0, &mut page)
         .map_err(|_| Error::MissingInspectorObservation)?;
     if page.len() == 0 {
         return Err(Error::MissingInspectorObservation);
