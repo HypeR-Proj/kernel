@@ -54,12 +54,9 @@ mkdir "$work/root"
 (
     cd "$work/root"
     gzip -dc "$work/archive/boot/initramfs-lts" | cpio -id --quiet
-    cp "$root/tools/guest/init" init
-    chmod 755 init
-    find . -print | LC_ALL=C sort | cpio -o -H newc 2>/dev/null |
-        gzip -n -9 > "$output/initramfs.cpio.gz.tmp"
+    python3 "$root/tools/guest/prepare-rootfs.py" --arch riscv64 \
+        --root "$work/root" --output "$output"
 )
-mv "$output/initramfs.cpio.gz.tmp" "$output/initramfs.cpio.gz"
 
 
 

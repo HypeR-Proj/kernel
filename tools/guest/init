@@ -1,25 +1,54 @@
-#!/usr/bin/sh
+#!/bin/sh
 # SPDX-FileCopyrightText: 2026 roolrz
 # SPDX-License-Identifier: Apache-2.0
 
 # Deterministic first-userspace process for the hypervisor boot integration.
 
 export PATH=/usr/bin:/usr/sbin:/bin:/sbin
-/usr/bin/busybox mount -t proc proc /proc
-/usr/bin/busybox mount -t sysfs sysfs /sys
-/usr/bin/busybox mount -t devtmpfs devtmpfs /dev
+export HOME=/root
+if [ "${1:-}" != root-mounted ]; then
+    /bin/busybox mount -t proc proc /proc
+    /bin/busybox mount -t sysfs sysfs /sys
+    /bin/busybox mount -t devtmpfs devtmpfs /dev
+fi
+
+# Board guests explicitly request a persistent root; standalone fixtures keep
+# the same complete Alpine userspace in RAM without requiring an I/O VM.
+if [ "${1:-}" != root-mounted ]; then
+    read -r cmdline < /proc/cmdline
+    for argument in $cmdline; do
+        case "$argument" in
+            hyper.root=*) root_device=${argument#hyper.root=} ;;
+        esac
+    done
+    if [ -n "${root_device:-}" ]; then
+        for module in virtio_mmio virtio_scsi sd_mod ext4; do
+            /bin/busybox modprobe "$module" || exit 1
+        done
+        attempts=0
+        while [ ! -b "$root_device" ] && [ "$attempts" -lt 30 ]; do
+            /bin/busybox sleep 1
+            attempts=$((attempts + 1))
+        done
+        /bin/busybox mkdir -p /newroot
+        /bin/busybox mount -t ext4 -o rw "$root_device" /newroot || exit 1
+        for mountpoint in dev proc sys; do
+            /bin/busybox mount --move /"$mountpoint" /newroot/"$mountpoint" || exit 1
+        done
+        exec /bin/busybox switch_root /newroot /init root-mounted
+    fi
+fi
 
 echo "HypeR guest: /init reached"
 echo "HypeR guest: Linux userspace is running"
 
-# Exercise repeated virtual-timer retirement and reinjection. A single wakeup
-# cannot detect a level source that remains masked after its first list-register
-# lifecycle completes.
-timer_wakeups=0
-while [ "$timer_wakeups" -lt 8 ]; do
-    /usr/bin/busybox sleep 1
-    timer_wakeups=$((timer_wakeups + 1))
+# /dev/console cannot become a controlling tty. Open the active console
+# after setsid so the interactive shell owns its terminal and job control.
+# Keep PID 1 alive when the shell exits, and reap each shell before restarting.
+read -r consoles < /sys/class/tty/console/active
+console=/dev/${consoles##* }
+cd "$HOME" || exit 1
+while :; do
+    /bin/busybox setsid /bin/busybox sh -c \
+        'exec /bin/busybox sh -i <"$1" >"$1" 2>&1' sh "$console"
 done
-echo "HypeR guest: repeated timer wakeups passed"
-
-/usr/bin/busybox sh

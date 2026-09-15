@@ -129,18 +129,18 @@ olddefconfig:
 config:
 	$(CARGO) run --quiet --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET) -- config "$(CONFIG_FILE)" "$(CONFIG_FILE)"
 
-$(GUEST_ASSET_STAMP): $(GUEST_FETCH) tools/guest/init
+$(GUEST_ASSET_STAMP): $(GUEST_FETCH) tools/guest/init tools/guest/prepare-rootfs.py
 	sh $(GUEST_FETCH)
 
 guest-assets: $(GUEST_ASSET_STAMP)
-	@if [ ! -s $(GUEST_OUTPUT)/Image ] || [ ! -s $(GUEST_OUTPUT)/initramfs.cpio.gz ]; then sh $(GUEST_FETCH); fi
+	@if [ ! -s $(GUEST_OUTPUT)/Image ] || [ ! -s $(GUEST_OUTPUT)/initramfs.cpio.gz ] || [ ! -s $(GUEST_OUTPUT)/rootfs.tar ]; then sh $(GUEST_FETCH); fi
 
 $(X86_HOST_DTB): tests/qemu/x86_64-host.dts
 	mkdir -p $(KERNEL_OUTPUT)
 	$(DTC) -q -I dts -O dtb -o $@ $<
 
 clean-guest-assets:
-	rm -f $(GUEST_OUTPUT)/Image $(GUEST_OUTPUT)/initramfs.cpio.gz $(GUEST_ASSET_STAMP)
+	rm -f $(GUEST_OUTPUT)/Image $(GUEST_OUTPUT)/initramfs.cpio.gz $(GUEST_OUTPUT)/rootfs.tar $(GUEST_ASSET_STAMP)
 
 # Keep the bare and embedded passes in separate Cargo caches. Their cfg and
 # environment inputs remain stable across invocations, including no-op builds.

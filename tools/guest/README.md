@@ -5,20 +5,35 @@ SPDX-License-Identifier: Apache-2.0
 
 # External Linux guest test payload
 
-`make guest-assets` downloads the checksum-pinned Alpine Linux guest selected
-by `ARCH`: 3.23.5 for AArch64 and x86-64, or 3.24.1 for RISC-V 64-bit. It
-prepares the kernel and initramfs inputs for userspace image tooling. The root build composes
-a guest FIT and places it in the Native system initramfs. Generated payload files are ignored
-by Git and are not Apache-2.0 project source.
+`make guest-assets` downloads checksum-pinned Alpine Linux kernels and base
+root filesystems: 3.23.5 for AArch64/x86-64 and 3.24.1 for RISC-V. The userspace
+is Alpine minirootfs, with musl, BusyBox applet links, the package database and
+`apk`; it is no longer the netboot rescue shell. Network access still depends
+on the devices supplied to the guest; this does not add a guest network backend.
 
-Each script verifies SHA-256 checksums before extracting the standard
-Linux kernel payload (`Image` on Arm/RISC-V and bzImage on x86-64). It replaces
-the distribution initramfs entry point with the deterministic integration
-`/init` from `tools/guest`.
-Native integration tests pass the system initramfs and launch guests through
-userspace VMM tools. Standalone kernel tests use an empty ramfs and do not
-download guest payloads. All generated files are placed under
-`target/guest/`.
+The scripts retain matching netboot modules. AArch64 additionally extracts the
+virtio-scsi/SCSI/ext4 dependency closure from the pinned distribution modloop
+using `unsquashfs` (`squashfs-tools` on Linux, `squashfs` on Homebrew).
+No distribution source or generated binary is committed to this repository.
+
+Standalone Native integration uses the complete userspace in an initramfs.
+Board deployment generates an ext4 root disk using e2fsprogs (`mke2fs` and
+`debugfs`), with its size taken from the board JSON's VM volume. The board FIT
+passes `hyper.root=/dev/sda`; `/init` loads the disk modules, mounts that root
+read/write, and uses `switch_root`. Its initial RAM root is then discarded.
+The root disk is supplied through I/O VM virtio-scsi, not a direct guest device.
+The configuration partition holds the guest FIT, while the opaque per-VM
+partition holds the ext4 disk. The HypeR bootstrap contains only the I/O VM FIT.
+
+`/init` starts an interactive root shell with a controlling terminal and
+restarts it on exit. This is a development image, without a login service or
+OpenRC service setup. `make test-alpine-rootfs` verifies a 1 MiB file write,
+flush and checksum after VM stop/start using a disposable board disk.
+
+Generated payloads live under `kernel/target/guest/<arch>/`. Run
+`make clean-guest-assets ARCH=aarch64` to remove generated kernel/rootfs
+inputs; verified download caches can be reused. Plain AArch64 `make` rebuilds
+the board disk, resetting its data. `make run` reuses an existing disk.
 
 The Linux kernel is licensed under GPL-2.0-only. Alpine packages have their own
 licenses. Do not redistribute generated payloads as part of an Apache-2.0-only
