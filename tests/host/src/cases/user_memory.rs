@@ -138,6 +138,19 @@ impl Default for BackendState {
 #[derive(Clone)]
 struct Backend(Arc<BackendState>);
 
+impl Backend {
+    fn write_owned(&self, page: &mut Page, offset: usize, source: &[u8]) -> Result<(), PageError> {
+        let call = self.0.write_calls.fetch_add(1, Ordering::Relaxed) + 1;
+        if self.0.fail_write_at.load(Ordering::Relaxed) == call {
+            return Err(PageError);
+        }
+        let end = offset.checked_add(source.len()).ok_or(PageError)?;
+        let destination = page.bytes.get_mut(offset..end).ok_or(PageError)?;
+        destination.copy_from_slice(source);
+        Ok(())
+    }
+}
+
 impl PageBackend for Backend {
     type Page = Page;
     type Error = PageError;
@@ -175,22 +188,6 @@ impl PageBackend for Backend {
         }
         let end = offset.checked_add(destination.len()).ok_or(PageError)?;
         let source = page.bytes.get(offset..end).ok_or(PageError)?;
-        destination.copy_from_slice(source);
-        Ok(())
-    }
-
-    fn write_owned(
-        &self,
-        page: &mut Self::Page,
-        offset: usize,
-        source: &[u8],
-    ) -> Result<(), Self::Error> {
-        let call = self.0.write_calls.fetch_add(1, Ordering::Relaxed) + 1;
-        if self.0.fail_write_at.load(Ordering::Relaxed) == call {
-            return Err(PageError);
-        }
-        let end = offset.checked_add(source.len()).ok_or(PageError)?;
-        let destination = page.bytes.get_mut(offset..end).ok_or(PageError)?;
         destination.copy_from_slice(source);
         Ok(())
     }

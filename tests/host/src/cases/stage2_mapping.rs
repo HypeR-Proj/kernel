@@ -256,3 +256,11 @@ fn concurrent_execution_allows_distinct_cpus_and_preserves_failed_claims() {
     assert_eq!(release_error(execution.release(replacement, cpu0)), None);
     assert_eq!(release_error(execution.release(second, cpu1)), None);
 }
+
+#[test]
+#[should_panic(expected = "internal invariant failure: armed VM execution claim dropped")]
+fn abandoning_execution_claim_reports_instead_of_spinning() {
+    let execution = hyper::vm::translation::ExclusiveExecution::new(17);
+    let claim = crate::require_ok(execution.claim(hyper::cpu::CpuIndex::BOOT));
+    drop(claim);
+}
