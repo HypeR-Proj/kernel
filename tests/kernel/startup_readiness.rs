@@ -6,6 +6,8 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Error {
     Crash,
+    PrematureTopology,
+    PrematureSealing,
     Debug,
     Memory,
     MemoryProtection,
@@ -31,6 +33,19 @@ pub(super) fn run() -> Result<(), Error> {
     }
     if !crate::kernel::crash::is_ready() {
         return Err(Error::Crash);
+    }
+    Ok(())
+}
+
+/// Early rejection must not touch mappings needed by later CPU admission.
+pub(super) fn before_smp() -> Result<(), Error> {
+    if crate::kernel::cpu::frozen_topology().is_some() {
+        return Err(Error::PrematureTopology);
+    }
+    if crate::kernel::mm::seal_address_space()
+        != Err(crate::kernel::mm::FinalizationError::CpuTopologyUnavailable)
+    {
+        return Err(Error::PrematureSealing);
     }
     Ok(())
 }

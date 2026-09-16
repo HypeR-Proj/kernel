@@ -252,13 +252,13 @@ fn retirement_worklist_flattens_nested_final_handle_callbacks() {
         let child = cascading_handle(None, &transitions, &callback_depth, &maximum_depth);
         let parent = cascading_handle(Some(child), &transitions, &callback_depth, &maximum_depth);
         InTransitHandleBatch::from_prepared_handles(vec![parent]).release_into(&mut retirement);
-        retirement.drain();
-        assert_eq!(callback_depth.load(Ordering::Relaxed), 0);
     }
 
+    assert_eq!(transitions.load(Ordering::Relaxed), 0);
+    retirement.drain();
+    assert_eq!(callback_depth.load(Ordering::Relaxed), 0);
     assert_eq!(transitions.load(Ordering::Relaxed), 4);
     assert_eq!(maximum_depth.load(Ordering::Relaxed), 1);
-    drop(retirement);
 }
 
 #[test]

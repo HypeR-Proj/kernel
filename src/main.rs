@@ -18,87 +18,54 @@ mod kernel_tests;
 use core::convert::Infallible;
 use core::panic::PanicInfo;
 
-enum KernelStartError {
-    Boot(crate::kernel::boot::RuntimeError),
-    Cpu(crate::kernel::cpu::Error),
-    Crash(crate::kernel::crash::InitializationError),
-    EarlyCrash(crate::kernel::crash::EarlyInitializationError),
-    FileSystem(crate::kernel::vfs::InitializationError),
-    #[cfg(not(feature = "kernel-self-test"))]
-    Init(crate::kernel::init::Error),
-    Debug(crate::kernel::debug::InitializationError),
-    Device(crate::kernel::device::InitializationError),
-    Interrupt(crate::kernel::irq::InitializationError),
-    Log(crate::kernel::log::InitializationError),
-    Memory(crate::kernel::mm::InitializationError),
-    MemorySealing(crate::kernel::mm::FinalizationError),
-    Scheduler(crate::kernel::task::scheduler::Error),
-    Time(crate::kernel::time::InitializationError),
-    VirtualMachineInitialization(crate::kernel::vm::InitializationError),
-}
+// Keep each startup error's type, stage label, and build condition together.
+macro_rules! kernel_start_errors {
+    ($($(#[$condition:meta])* $variant:ident($error:ty) => $stage:literal),+ $(,)?) => {
+        enum KernelStartError {
+            $($(#[$condition])* $variant($error),)+
+        }
 
-macro_rules! impl_kernel_start_error {
-    ($($variant:ident($error:ty)),+ $(,)?) => {
         $(
+            $(#[$condition])*
             impl From<$error> for KernelStartError {
                 fn from(error: $error) -> Self {
                     Self::$variant(error)
                 }
             }
         )+
+
+        impl core::fmt::Debug for KernelStartError {
+            fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                let (stage, error): (&str, &dyn core::fmt::Debug) = match self {
+                    $($(#[$condition])* Self::$variant(error) => ($stage, error),)+
+                };
+                formatter
+                    .debug_struct("KernelStartError")
+                    .field("stage", &stage)
+                    .field("error", error)
+                    .finish()
+            }
+        }
     };
 }
 
-impl_kernel_start_error! {
-    Boot(crate::kernel::boot::RuntimeError),
-    Cpu(crate::kernel::cpu::Error),
-    Crash(crate::kernel::crash::InitializationError),
-    EarlyCrash(crate::kernel::crash::EarlyInitializationError),
-    FileSystem(crate::kernel::vfs::InitializationError),
-    Debug(crate::kernel::debug::InitializationError),
-    Device(crate::kernel::device::InitializationError),
-    Interrupt(crate::kernel::irq::InitializationError),
-    Log(crate::kernel::log::InitializationError),
-    Memory(crate::kernel::mm::InitializationError),
-    MemorySealing(crate::kernel::mm::FinalizationError),
-    Scheduler(crate::kernel::task::scheduler::Error),
-    Time(crate::kernel::time::InitializationError),
-    VirtualMachineInitialization(crate::kernel::vm::InitializationError),
-}
-
-#[cfg(not(feature = "kernel-self-test"))]
-impl From<crate::kernel::init::Error> for KernelStartError {
-    fn from(error: crate::kernel::init::Error) -> Self {
-        Self::Init(error)
-    }
-}
-
-impl core::fmt::Debug for KernelStartError {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let (stage, error): (&str, &dyn core::fmt::Debug) = match self {
-            Self::Boot(error) => ("boot", error),
-            Self::Cpu(error) => ("cpu", error),
-            Self::Crash(error) => ("crash", error),
-            Self::EarlyCrash(error) => ("early-crash", error),
-            Self::FileSystem(error) => ("file-system", error),
-            #[cfg(not(feature = "kernel-self-test"))]
-            Self::Init(error) => ("init", error),
-            Self::Debug(error) => ("debug", error),
-            Self::Device(error) => ("device", error),
-            Self::Interrupt(error) => ("interrupt", error),
-            Self::Log(error) => ("log", error),
-            Self::Memory(error) => ("memory", error),
-            Self::MemorySealing(error) => ("memory-sealing", error),
-            Self::Scheduler(error) => ("scheduler", error),
-            Self::Time(error) => ("time", error),
-            Self::VirtualMachineInitialization(error) => ("virtual-machine-initialization", error),
-        };
-        formatter
-            .debug_struct("KernelStartError")
-            .field("stage", &stage)
-            .field("error", error)
-            .finish()
-    }
+kernel_start_errors! {
+    Boot(crate::kernel::boot::RuntimeError) => "boot",
+    Cpu(crate::kernel::cpu::Error) => "cpu",
+    Crash(crate::kernel::crash::InitializationError) => "crash",
+    EarlyCrash(crate::kernel::crash::EarlyInitializationError) => "early-crash",
+    FileSystem(crate::kernel::vfs::InitializationError) => "file-system",
+    #[cfg(not(feature = "kernel-self-test"))]
+    Init(crate::kernel::init::Error) => "init",
+    Debug(crate::kernel::debug::InitializationError) => "debug",
+    Device(crate::kernel::device::InitializationError) => "device",
+    Interrupt(crate::kernel::irq::InitializationError) => "interrupt",
+    Log(crate::kernel::log::InitializationError) => "log",
+    Memory(crate::kernel::mm::InitializationError) => "memory",
+    MemorySealing(crate::kernel::mm::FinalizationError) => "memory-sealing",
+    Scheduler(crate::kernel::task::scheduler::Error) => "scheduler",
+    Time(crate::kernel::time::InitializationError) => "time",
+    VirtualMachineInitialization(crate::kernel::vm::InitializationError) => "virtual-machine-initialization",
 }
 
 /// Primary kernel entry after architecture initialization is complete.
@@ -124,6 +91,8 @@ extern "C" fn start_kernel() -> ! {
         crate::kernel::crash::initialize(&boot)?;
         crate::kernel::time::initialize(&mut boot)?;
         crate::kernel::log::initialize()?;
+        #[cfg(feature = "kernel-self-test")]
+        crate::kernel_tests::verify_early_startup();
         crate::kernel::cpu::initialize()?;
         crate::kernel::mm::activate_local_allocator_caches()?;
         crate::kernel::mm::seal_address_space()?;

@@ -36,6 +36,14 @@ mod vm_registry;
 mod vm_wfi_wait;
 mod wait_arbitration;
 
+/// Exercise rejection while secondary CPU admission has not completed yet.
+pub(crate) fn verify_early_startup() {
+    run_case(
+        "early address-space sealing rejection",
+        startup_readiness::before_smp,
+    );
+}
+
 pub(crate) fn run() {
     crate::hal::irq::enable_local();
     #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_X86_64))]
