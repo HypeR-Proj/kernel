@@ -70,7 +70,7 @@ config MAX_KERNEL_STACKS
 config KERNEL_STACK_SIZE_KB
     int "Kernel thread stack size in KiB"
     range 16 256
-    default 16
+    default 32
 
 config IRQ_STACK_SIZE_KB
     int "Per-CPU IRQ stack size in KiB"

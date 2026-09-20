@@ -40,14 +40,7 @@ CARGO ?= cargo
 CONFIG_FILE ?= .config
 CONFIG_PATH := $(abspath $(CONFIG_FILE))
 KERNEL_CONFIG_ENV := HYPER_CONFIG=$(CONFIG_PATH)
-STACK_METADATA ?= 0
-ifeq ($(STACK_METADATA),1)
-# Diagnostic builds only: the pinned stable rustc gates this metadata switch
-# behind -Z. Ordinary builds retain their existing compiler configuration.
-KERNEL_CONFIG_ENV += RUSTC_BOOTSTRAP=1
-STACK_CARGO_CONFIG := --config tools/stack-sizes.toml
-endif
-CARGO_KERNEL = $(KERNEL_CONFIG_ENV) $(CARGO) build --target $(TARGET) $(CARGO_PROFILE) $(CARGO_FEATURES) $(STACK_CARGO_CONFIG)
+CARGO_KERNEL = $(KERNEL_CONFIG_ENV) $(CARGO) build --target $(TARGET) $(CARGO_PROFILE) $(CARGO_FEATURES)
 QEMU_CPUS ?= 4
 QEMU_MEMORY ?= 512M
 INITRAMFS ?=
@@ -102,13 +95,6 @@ endif
 .PHONY: all prepare-config config defconfig olddefconfig guest-assets clean-guest-assets build image release check test test-image test-timer test-qemu test-vhe-required verify verify-runtime verify-image verify-boot verify-smp run clean
 
 all: image
-
-.PHONY: stack-budget
-STACK_REPORT ?= $(abspath target/stack-audit/$(ARCH)/frames.json)
-# Requires an image built with STACK_METADATA=1; fail closed on missing data.
-stack-budget:
-	python3 -B tools/stack-budget.py "$(KERNEL_ELF)" --readobj "$(READOBJ)" \
-		--output "$(STACK_REPORT)"
 
 prepare-config:
 	@if [ "$(CONFIG_FILE)" != ".config" ]; then \
