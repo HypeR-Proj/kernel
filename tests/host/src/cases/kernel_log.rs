@@ -456,7 +456,7 @@ fn byte_ring_treats_console_control_bytes_as_opaque_data() {
 #[test]
 fn output_buffer_retains_rejected_and_unattempted_bytes() {
     let mut output = OutputBuffer::<8>::new();
-    assert!(output.push_console_bytes(b"a\nb").is_ok());
+    assert!(output.push_bytes(b"a\nbc").is_ok());
     let mut accepted = [0; 4];
     let mut count = 0;
     let first = output.try_write(4, |byte| {
@@ -470,7 +470,7 @@ fn output_buffer_retains_rejected_and_unattempted_bytes() {
     assert_eq!(first.accepted, 2);
     assert!(!first.complete);
     assert!(first.blocked);
-    assert_eq!(&accepted[..2], b"a\r");
+    assert_eq!(&accepted[..2], b"a\n");
     assert_eq!(output.remaining(), 2);
 
     let second = output.try_write(1, |byte| {
@@ -489,7 +489,7 @@ fn output_buffer_retains_rejected_and_unattempted_bytes() {
     });
     assert!(final_progress.complete);
     assert!(!final_progress.blocked);
-    assert_eq!(&accepted, b"a\r\nb");
+    assert_eq!(&accepted, b"a\nbc");
 }
 
 #[test]

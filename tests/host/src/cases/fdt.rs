@@ -505,20 +505,26 @@ fn distinguishes_invalid_compatible_utf8_from_structural_errors() {
 }
 
 #[test]
-fn reports_misaligned_interrupt_cells_as_an_fdt_error() {
+fn quarantines_misaligned_device_interrupts_without_rejecting_the_tree() {
     let mut blob = qemu_like_dtb();
     let descriptor = cells(&[1, 13, 4, 1, 14, 4, 1, 11, 4, 1, 10, 4]);
-    let value = crate::require_some(
-        blob.windows(descriptor.len())
-            .position(|window| window == descriptor),
-    );
+    let value = crate::require_some(blob.windows(descriptor.len()).position(|w| w == descriptor));
     blob[value - 8..value - 4].copy_from_slice(&47u32.to_be_bytes());
-
-    let mut scanner = DeviceScanner::new(&[]);
-    assert!(matches!(
-        fdt::discover_from_bytes_with(&blob, &mut scanner),
-        Err(fdt::WalkError::Fdt(fdt::Error::Truncated))
-    ));
+    struct Observe(bool);
+    impl fdt::NodeVisitor for Observe {
+        type Error = core::convert::Infallible;
+        fn end_node(&mut self, node: fdt::NodeResources<'_>) -> Result<(), Self::Error> {
+            if node.resource_error == Some(fdt::Error::Truncated) {
+                assert!(node.registers.is_empty());
+                assert!(node.interrupt_cells.is_empty());
+                self.0 = true;
+            }
+            Ok(())
+        }
+    }
+    let mut observer = Observe(false);
+    crate::require_ok(fdt::discover_from_bytes_with(&blob, &mut observer));
+    assert!(observer.0);
 }
 
 #[test]
@@ -820,4 +826,95 @@ fn device_with_nine_register_windows_does_not_block_discovery() {
                 .any(|r| r.start() == 0x09010000 + n * 0x1000)
         );
     }
+}
+
+fn add_root_nodes(mut blob: Vec<u8>, nodes: &[u8]) -> Vec<u8> {
+    let word = |offset| {
+        u32::from_be_bytes(crate::require_ok(blob[offset..offset + 4].try_into())) as usize
+    };
+    let structure = word(8);
+    let size = word(36);
+    let strings = word(12);
+    let at = structure + size - 8;
+    blob.splice(at..at, nodes.iter().copied());
+    let total = blob.len() as u32;
+    blob[4..8].copy_from_slice(&total.to_be_bytes());
+    blob[12..16].copy_from_slice(&((strings + nodes.len()) as u32).to_be_bytes());
+    blob[36..40].copy_from_slice(&((size + nodes.len()) as u32).to_be_bytes());
+    blob
+}
+
+#[test]
+fn private_vc_memory_metadata_does_not_become_mmio_or_abort_discovery() {
+    let original = crate::require_ok(fdt::discover_from_bytes(&qemu_like_dtb()));
+    let mut nodes = Vec::new();
+    begin_node(&mut nodes, b"axi");
+    property(&mut nodes, 0, &1u32.to_be_bytes());
+    property(&mut nodes, 15, &1u32.to_be_bytes());
+    property(&mut nodes, 54, &[]);
+    begin_node(&mut nodes, b"vc_mem");
+    property(
+        &mut nodes,
+        27,
+        &cells(&[0x3fc00000, 0x40000000, 0xc0000000]),
+    );
+    push_u32(&mut nodes, FDT_END_NODE);
+    push_u32(&mut nodes, FDT_END_NODE);
+    let result = crate::require_ok(fdt::discover_from_bytes(&add_root_nodes(
+        qemu_like_dtb(),
+        &nodes,
+    )));
+    assert_eq!(result.memory.as_slice(), original.memory.as_slice());
+    assert_eq!(result.mmio.as_slice(), original.mmio.as_slice());
+}
+
+#[test]
+fn malformed_foundational_reg_is_still_fatal() {
+    for name in [b"memory@1234".as_slice(), b"cpu@1234".as_slice()] {
+        let mut nodes = Vec::new();
+        begin_node(&mut nodes, name);
+        property(&mut nodes, 27, &[0, 0, 0]);
+        push_u32(&mut nodes, FDT_END_NODE);
+        assert!(fdt::discover_from_bytes(&add_root_nodes(qemu_like_dtb(), &nodes)).is_err());
+    }
+    let mut nodes = Vec::new();
+    begin_node(&mut nodes, b"reserved-memory");
+    property(&mut nodes, 54, &[]);
+    begin_node(&mut nodes, b"reservation@1234");
+    property(&mut nodes, 27, &[0, 0, 0]);
+    push_u32(&mut nodes, FDT_END_NODE);
+    push_u32(&mut nodes, FDT_END_NODE);
+    assert!(fdt::discover_from_bytes(&add_root_nodes(qemu_like_dtb(), &nodes)).is_err());
+}
+
+#[test]
+fn invalid_bus_ranges_cannot_publish_child_mmio() {
+    let original = crate::require_ok(fdt::discover_from_bytes(&qemu_like_dtb()));
+    let mut nodes = Vec::new();
+    begin_node(&mut nodes, b"bad-bus");
+    property(&mut nodes, 54, &[0]);
+    begin_node(&mut nodes, b"device@1234");
+    property(&mut nodes, 27, &cells(&[0, 0x1234, 4096]));
+    push_u32(&mut nodes, FDT_END_NODE);
+    push_u32(&mut nodes, FDT_END_NODE);
+    let result = crate::require_ok(fdt::discover_from_bytes(&add_root_nodes(
+        qemu_like_dtb(),
+        &nodes,
+    )));
+    assert_eq!(result.mmio.as_slice(), original.mmio.as_slice());
+}
+
+#[test]
+fn recognized_timer_rejects_quarantined_interrupt_resources() {
+    let mut blob = qemu_like_dtb();
+    let descriptor = cells(&[1, 13, 4, 1, 14, 4, 1, 11, 4, 1, 10, 4]);
+    let value = crate::require_some(blob.windows(descriptor.len()).position(|w| w == descriptor));
+    blob[value - 8..value - 4].copy_from_slice(&47u32.to_be_bytes());
+    let mut visitor = aarch64_platform::EssentialDeviceDiscovery::new();
+    assert!(matches!(
+        fdt::discover_from_bytes_with(&blob, &mut visitor),
+        Err(fdt::WalkError::Visitor(
+            aarch64_platform::Error::InvalidProperty
+        ))
+    ));
 }
