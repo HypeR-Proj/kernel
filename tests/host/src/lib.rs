@@ -314,3 +314,7 @@ mod guest_grant_state;
 #[cfg(test)]
 #[path = "../../../src/kernel/vm/retirement_observation.rs"]
 mod vm_retirement_observation;
+
+#[cfg(test)]
+#[path = "../../../src/kernel/task/scheduler/switch_handoff.rs"]
+mod scheduler_switch_handoff;

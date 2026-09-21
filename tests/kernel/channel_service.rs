@@ -105,6 +105,9 @@ pub(super) fn run() -> Result<(), Error> {
     let process = create_process(&domain, &group)?;
 
     verify_handle_accounting_churn(&process)?;
+    verify_partial_charge_records(&process)?;
+    verify_handle_quota_rollback(&process, ResourceLimits::UNLIMITED)?;
+    verify_handle_admission_after_stop(&domain, &group)?;
     verify_atomic_handle_replacement(&process)?;
     verify_fifo_and_buffer_contract(&process)?;
     verify_copy_failure_restores_message(&process)?;
@@ -337,6 +340,104 @@ fn verify_handle_accounting_churn(process: &Process) -> Result<(), Error> {
         != baseline
     {
         return Err(Error::State(2));
+    }
+    Ok(())
+}
+
+/// Multiple entries share a record: removing one must not unlink its sibling.
+/// Exercise middle, head and tail unlink plus rekey after partial removal through
+/// real Process publication/close APIs rather than a duplicate accounting model.
+fn verify_partial_charge_records(process: &Process) -> Result<(), Error> {
+    let domain = process.resource_domain();
+    let baseline = domain.usage().total(ResourceKind::Handles);
+    let oldest = byte_channel_create(process)?;
+    let middle = byte_channel_create(process)?;
+    let newest = byte_channel_create(process)?;
+    process.close_handle(middle[0])?;
+    let replacement = process.replace_handle(middle[1], Rights::READ)?;
+    if process.handle_info(middle[1], Rights::NONE).is_ok()
+        || domain.usage().total(ResourceKind::Handles) != baseline + 5
+    {
+        return Err(Error::State(40));
+    }
+    process.close_handle(replacement)?;
+    process.close_handle(newest[1])?;
+    process.close_handle(oldest[0])?;
+    // Both surviving entries must still have their charge/index association.
+    process.handle_info(oldest[1], Rights::NONE)?;
+    process.handle_info(newest[0], Rights::NONE)?;
+    if domain.usage().total(ResourceKind::Handles) != baseline + 2 {
+        return Err(Error::State(41));
+    }
+    process.close_handle(newest[0])?;
+    process.close_handle(oldest[1])?;
+    if domain.usage().total(ResourceKind::Handles) != baseline {
+        return Err(Error::State(42));
+    }
+    Ok(())
+}
+
+fn verify_handle_quota_rollback(
+    process: &Process,
+    original_limits: ResourceLimits,
+) -> Result<(), Error> {
+    let domain = process.resource_domain();
+    let baseline = domain.usage().total(ResourceKind::Handles);
+    domain
+        .set_local_limits(original_limits.with(ResourceKind::Handles, baseline + 1))
+        .map_err(|_| Error::Construction)?;
+    // The first per-handle reservation succeeds, then the second fails. Both
+    // unpublished slots and the first charge must be returned by rollback.
+    let result = process.reserve_handles::<2>();
+    domain
+        .set_local_limits(original_limits)
+        .map_err(|_| Error::Construction)?;
+    let rejected = match result {
+        Ok(reservation) => {
+            process.abort_handles(reservation);
+            false
+        }
+        Err(ProcessError::Resource(_)) => true,
+        Err(error) => return Err(error.into()),
+    };
+    if !rejected || domain.usage().total(ResourceKind::Handles) != baseline {
+        return Err(Error::State(43));
+    }
+    let reservation = process.reserve_handles::<2>()?;
+    process.abort_handles(reservation);
+    if domain.usage().total(ResourceKind::Handles) != baseline {
+        return Err(Error::State(44));
+    }
+    Ok(())
+}
+
+fn verify_handle_admission_after_stop(
+    domain: &ResourceDomain,
+    group: &TaskGroup,
+) -> Result<(), Error> {
+    let baseline = domain.usage().total(ResourceKind::Handles);
+    let process = create_process(domain, group)?;
+    let object =
+        ObjectPublication::try_new(Event::try_new(domain).map_err(|_| Error::Construction)?)
+            .map_err(|_| Error::Construction)?;
+    let handle = PreparedHandle::try_from_new_object(object, Rights::WAIT, HandleFlags::NONE)
+        .map_err(ProcessError::from)?;
+    let reservation = process.reserve_handles::<1>()?;
+    process.request_stop(TerminalReason::Requested);
+    // The reservation was admitted before stop, but ordinary publication must
+    // now fail reversibly. Consume-on-success transactions have separate rules.
+    match process.publish_handles(reservation, [handle]) {
+        Ok(_) => return Err(Error::State(45)),
+        Err(failure) => {
+            if !matches!(failure.error, ProcessError::Lifecycle(_)) {
+                return Err(Error::State(46));
+            }
+            drop(failure);
+        }
+    }
+    retire_process(&process)?;
+    if domain.usage().total(ResourceKind::Handles) != baseline {
+        return Err(Error::State(47));
     }
     Ok(())
 }
