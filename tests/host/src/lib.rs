@@ -18,16 +18,16 @@ mod riscv_devices;
 mod sharded_lock;
 
 #[cfg(test)]
-#[path = "../../../src/arch/aarch64/address_layout.rs"]
+#[path = "../../../hal/src/arch/aarch64/address_layout.rs"]
 mod aarch64_address_layout_model;
 #[cfg(test)]
-#[path = "../../../src/arch/aarch64/guest_cpu_contract.rs"]
+#[path = "../../../hal/src/arch/aarch64/guest_cpu_contract.rs"]
 mod aarch64_guest_cpu_contract_model;
 #[cfg(test)]
-#[path = "../../../src/arch/aarch64/stage2_retirement.rs"]
+#[path = "../../../hal/src/arch/aarch64/stage2_retirement.rs"]
 mod aarch64_stage2_retirement_model;
 #[cfg(test)]
-#[path = "../../../src/arch/aarch64/user_contract.rs"]
+#[path = "../../../hal/src/arch/aarch64/user_contract.rs"]
 mod aarch64_user_contract_model;
 #[cfg(test)]
 #[path = "../../../src/kernel/task/external_execution.rs"]
@@ -36,7 +36,7 @@ mod external_execution_model;
 #[path = "../../../src/kernel/io_cache/mod.rs"]
 mod file_data_cache;
 #[cfg(test)]
-#[path = "../../../src/arch/aarch64/registers.rs"]
+#[path = "../../../hal/src/arch/aarch64/registers.rs"]
 mod registers;
 #[cfg(test)]
 #[path = "../../../src/kernel/vfs/read_contract.rs"]
@@ -277,7 +277,7 @@ mod file_data;
 mod riscv_guest_mechanisms;
 
 #[cfg(test)]
-#[path = "../../../src/arch/riscv64/isa.rs"]
+#[path = "../../../hal/src/arch/riscv64/isa.rs"]
 mod riscv_isa_contract;
 
 #[cfg(test)]
@@ -285,7 +285,7 @@ mod riscv_isa_contract;
 mod gicv2;
 
 #[cfg(test)]
-#[path = "../../../src/arch/aarch64/bootstrap_map.rs"]
+#[path = "../../../hal/src/arch/aarch64/bootstrap_map.rs"]
 mod bootstrap_map;
 #[cfg(test)]
 #[path = "cases/bootstrap_map.rs"]

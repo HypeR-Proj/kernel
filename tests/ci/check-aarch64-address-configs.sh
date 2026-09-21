@@ -22,7 +22,7 @@ check_configuration() {
         -e "s/^CONFIG_ARM64_IPA_BITS=.*/CONFIG_ARM64_IPA_BITS=$ipa_bits/" \
         "$base" >"$configuration"
 
-    HYPER_CONFIG=$configuration cargo check --lib --bins --target aarch64-unknown-none
+    HYPER_CONFIG=$configuration cargo check --bins --target aarch64-unknown-none
 }
 
 check_configuration 42 36 32

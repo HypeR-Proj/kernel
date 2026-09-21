@@ -31,6 +31,9 @@ case "${1:-}" in
         }
         sh tests/ci/test-boot-stack-contract.sh
         sh tests/ci/check-boot-stack-contract.sh
+        # Cargo enforces dependency direction; rustc enforces HAL privacy.
+        sh tests/ci/test-arch-boundaries.sh
+        sh tests/ci/check-arch-boundaries.sh
         sh tests/ci/test-arch-facades.sh
         sh tests/ci/check-arch-facades.sh
         sh tests/ci/test-irq-registration-contract.sh
@@ -43,8 +46,6 @@ case "${1:-}" in
         sh tests/ci/check-local-irq-lifecycle-contract.sh
         sh tests/ci/test-cross-call-publisher-pinning-contract.sh
         sh tests/ci/check-cross-call-publisher-pinning-contract.sh
-        sh tests/ci/test-arch-boundaries.sh
-        sh tests/ci/check-arch-boundaries.sh
         sh tests/ci/test-reschedule-publication-contract.sh
         sh tests/ci/check-reschedule-publication-contract.sh
         sh tests/ci/test-thread-migration-context-contract.sh
@@ -144,6 +145,9 @@ case "${1:-}" in
     x86_64-build)
         make check ARCH=x86_64
         make release ARCH=x86_64
+        make test-image ARCH=x86_64
+        make image ARCH=x86_64 CARGO_FEATURES="--features kernel-self-test"
+        make test-image ARCH=x86_64 CARGO_FEATURES="--features kernel-self-test"
         ;;
     *)
         usage

@@ -10,16 +10,18 @@ license = "Apache-2.0"
 description = "A modular, Rust-based type-1 hypervisor kernel"
 repository = "https://github.com/roolrz/HypeR"
 publish = false
+autolib = false
+
+[workspace]
+members = ["core", "hal"]
+exclude = ["tests/host", "tools/kallsyms", "tools/kconfig"]
+default-members = [".", "core", "hal"]
+resolver = "3"
 
 [features]
 default = []
-kernel-self-test = []
-kernel-stack-audit = []
-
-[lib]
-test = false
-bench = false
-doctest = false
+kernel-self-test = ["hyper/kernel-self-test", "hyper-hal/kernel-self-test"]
+kernel-stack-audit = ["hyper/kernel-stack-audit", "hyper-hal/kernel-stack-audit"]
 
 [[bin]]
 name = "hyper"
@@ -28,9 +30,8 @@ test = false
 bench = false
 
 [dependencies]
-hyper-abi = { path = "../sdk/abi" }
-rustc-demangle = { version = "0.1.28", default-features = false }
-fatfs = { path = "../third_party/rust-fatfs", default-features = false, features = ["lfn", "unicode"] }
+hyper = { package = "hyper-core", path = "core" }
+hyper-hal = { path = "hal" }
 
 [lints.clippy]
 doc_markdown = "deny"

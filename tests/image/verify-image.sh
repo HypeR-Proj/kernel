@@ -170,10 +170,16 @@ case "$arch" in
         printf '%s\n' "$symbols" | grep -q ' x86_64_svm_run$'
         grep -Eq '[[:space:]]lock$' "$instructions_file"
         grep -Eq '[[:space:]]vm(launch|resume)$' "$instructions_file"
-        grep -Eq '[[:space:]]vmx(on|off)[[:space:]]' "$instructions_file"
-        grep -Eq '[[:space:]](vmclear|vmptrld)[[:space:]]' "$instructions_file"
-        grep -Eq '[[:space:]]vm(read|write)q?[[:space:]]' "$instructions_file"
-        grep -Eq '[[:space:]]invept[[:space:]]' "$instructions_file"
+        # Production x86 exposes no userspace VM lifecycle; only the
+        # self-test image admits a VMX/SVM backend. Do not require dead Rust
+        # setup paths to survive production optimization. The backend-enabled
+        # artifact must still contain the complete VMX instruction contract.
+        if [ "${KERNEL_SELF_TEST_IMAGE:-0}" = 1 ]; then
+            grep -Eq '[[:space:]]vmx(on|off)[[:space:]]' "$instructions_file"
+            grep -Eq '[[:space:]](vmclear|vmptrld)[[:space:]]' "$instructions_file"
+            grep -Eq '[[:space:]]vm(read|write)q?[[:space:]]' "$instructions_file"
+            grep -Eq '[[:space:]]invept[[:space:]]' "$instructions_file"
+        fi
         grep -Eq '[[:space:]]vmrun$' "$instructions_file"
         grep -Eq '[[:space:]]vmload$' "$instructions_file"
         grep -Eq '[[:space:]]vmsave$' "$instructions_file"

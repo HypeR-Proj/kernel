@@ -688,11 +688,11 @@ fn boot_prepares_validates_then_commits_interrupt_virtualization() {
     let commit = crate::require_some(source.find("commit_interrupts(prepared_interrupts)"));
     assert!(prepare < validate && validate < commit);
 
-    let controller = include_str!("../../../../src/arch/aarch64/vm_interrupt.rs");
+    let controller = include_str!("../../../../hal/src/arch/aarch64/vm_interrupt.rs");
     assert!(!controller.contains("interrupt_virtualization_description"));
     assert!(controller.contains("list_registers: usize"));
 
-    let facade = include_str!("../../../../src/hal/selected/vm.rs");
+    let facade = include_str!("../../../../hal/src/hal/vm.rs");
     let constructor = crate::require_some(facade.find("fn prepare_interrupt_controller("));
     let constructor = &facade[constructor..];
     let constructor_end = crate::require_some(constructor.find("\n}\n"));
@@ -703,7 +703,7 @@ fn boot_prepares_validates_then_commits_interrupt_virtualization() {
 
 #[test]
 fn live_gic_access_detaches_hardware_around_one_saved_bank_transaction() {
-    let source = include_str!("../../../../src/arch/aarch64/vm_vcpu.rs");
+    let source = include_str!("../../../../hal/src/arch/aarch64/vm_vcpu.rs");
     let function = crate::require_some(source.find("pub(crate) fn access_guest_gic("));
     let body = &source[function..];
     let deactivate = crate::require_some(body.find("context.deactivate_vgic()"));
@@ -711,7 +711,7 @@ fn live_gic_access_detaches_hardware_around_one_saved_bank_transaction() {
     let activate = crate::require_some(body.find("context.activate_vgic()"));
     assert!(deactivate < transaction && transaction < activate);
 
-    let transaction_source = include_str!("../../../../src/arch/aarch64/vm_interrupt.rs");
+    let transaction_source = include_str!("../../../../hal/src/arch/aarch64/vm_interrupt.rs");
     let function = crate::require_some(transaction_source.find("fn access_saved_bank("));
     let body = &transaction_source[function..];
     let synchronize = crate::require_some(body.find(".synchronize(vcpu, slots)"));

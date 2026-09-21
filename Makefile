@@ -142,7 +142,7 @@ build: prepare-config
 
 image: build
 	$(if $(filter x86_64,$(ARCH)),$(OBJCOPY) --output-target=binary $(KERNEL_ELF) $(X86_PAYLOAD_IMAGE),$(OBJCOPY) --output-target=binary $(KERNEL_ELF) $(KERNEL_IMAGE).tmp)
-	$(if $(filter x86_64,$(ARCH)),$(CLANG) -target i386-none-elf -c src/arch/x86_64/setup.S -o $(X86_SETUP_OBJECT),true)
+	$(if $(filter x86_64,$(ARCH)),$(CLANG) -target i386-none-elf -c hal/src/arch/x86_64/setup.S -o $(X86_SETUP_OBJECT),true)
 	$(if $(filter x86_64,$(ARCH)),$(OBJCOPY) --only-section=.setup --output-target=binary $(X86_SETUP_OBJECT) $(X86_SETUP_IMAGE),true)
 	$(if $(filter x86_64,$(ARCH)),cp $(X86_SETUP_IMAGE) $(KERNEL_IMAGE).tmp,true)
 	$(if $(filter x86_64,$(ARCH)),dd if=$(X86_PAYLOAD_IMAGE) of=$(KERNEL_IMAGE).tmp bs=2560 seek=1 conv=notrunc status=none,true)
@@ -159,7 +159,7 @@ release: image
 	cmp $(KERNEL_IMAGE) $(KERNEL_STRIPPED_IMAGE)
 
 check: prepare-config
-	$(KERNEL_CONFIG_ENV) $(CARGO) check --lib --bins --target $(TARGET)
+	$(KERNEL_CONFIG_ENV) $(CARGO) check --bins --target $(TARGET)
 	$(KERNEL_CONFIG_ENV) $(CARGO) clippy --target $(TARGET) -- -D warnings
 	$(KERNEL_CONFIG_ENV) $(CARGO) clippy --target $(TARGET) --features kernel-self-test -- -D warnings
 	$(KERNEL_CONFIG_ENV) $(CARGO) clippy --manifest-path $(HOST_TEST_MANIFEST) --target $(HOST_TARGET) --all-targets -- -D warnings
@@ -190,7 +190,8 @@ else
 endif
 
 test-image:
-	sh tests/image/verify-image.sh $(ARCH) $(READOBJ) $(NM) $(OBJDUMP) $(KERNEL_ELF) $(KERNEL_IMAGE) $(KALLSYMS_BLOB)
+	KERNEL_SELF_TEST_IMAGE=$(if $(findstring kernel-self-test,$(CARGO_FEATURES)),1,0) \
+		sh tests/image/verify-image.sh $(ARCH) $(READOBJ) $(NM) $(OBJDUMP) $(KERNEL_ELF) $(KERNEL_IMAGE) $(KALLSYMS_BLOB)
 
 test-timer: image
 	sh $(QEMU_TIMER_SCRIPT) $(QEMU) $(KERNEL_IMAGE) $(QEMU_CPU) $(QEMU_MEMORY) "$(QEMU_BOOTARGS)"

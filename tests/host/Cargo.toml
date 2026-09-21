@@ -8,7 +8,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-hyper = { path = "../.." }
+hyper = { package = "hyper-core", path = "../../core" }
 
 [lints.clippy]
 expect_used = "deny"

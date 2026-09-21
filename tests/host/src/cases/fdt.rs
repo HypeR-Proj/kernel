@@ -757,7 +757,7 @@ fn owns_driver_before_activation_and_retires_it_before_manager_drop() {
     assert_eq!(LIFECYCLE_REMOVALS.load(Ordering::Relaxed), 1);
 }
 
-#[path = "../../../../src/arch/aarch64/platform.rs"]
+#[path = "../../../../hal/src/arch/aarch64/platform.rs"]
 mod aarch64_platform;
 
 #[test]

@@ -20,14 +20,29 @@ dependencies = [
 name = "hyper"
 version = "0.1.0"
 dependencies = [
+ "hyper-core",
+ "hyper-hal",
+]
+
+[[package]]
+name = "hyper-abi"
+version = "0.0.0"
+
+[[package]]
+name = "hyper-core"
+version = "0.1.0"
+dependencies = [
  "fatfs",
  "hyper-abi",
  "rustc-demangle",
 ]
 
 [[package]]
-name = "hyper-abi"
-version = "0.0.0"
+name = "hyper-hal"
+version = "0.1.0"
+dependencies = [
+ "hyper-core",
+]
 
 [[package]]
 name = "log"

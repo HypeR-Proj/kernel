@@ -6,9 +6,7 @@
 
 extern crate alloc;
 
-mod arch;
-#[path = "hal/selected/mod.rs"]
-mod hal;
+use hyper_hal as hal;
 pub mod kernel;
 
 #[cfg(feature = "kernel-self-test")]
@@ -127,6 +125,7 @@ extern "C" fn start_kernel() -> ! {
 /// Rust kernel entry used by secondary CPUs after architectural setup.
 #[unsafe(no_mangle)]
 extern "C" fn start_secondary_cpu(cpu_index: usize) -> ! {
+    hal::cpu::prepare_secondary_entry();
     if !crate::hal::cpu::secondary_is_compatible() {
         crate::hal::cpu::halt()
     }
@@ -140,4 +139,12 @@ extern "C" fn start_secondary_cpu(cpu_index: usize) -> ! {
 #[panic_handler]
 fn panic(info: &PanicInfo<'_>) -> ! {
     crate::kernel::crash::panic(info)
+}
+
+/// Assembly-to-Rust boot handoff, before permanent kernel mappings exist.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn hyper_bootstrap(raw0: usize, raw1: usize, ticks: u64) -> ! {
+    // SAFETY: Each selected assembly entry establishes the HAL boot contract.
+    let inputs = unsafe { hal::platform::prepare_boot(raw0, raw1, ticks) };
+    kernel::boot::prepare_boot_environment(inputs)
 }
