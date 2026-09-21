@@ -2471,3 +2471,25 @@ fn private_boundary_copy_uses_source_offset_and_rolls_back_partial_failure() {
         assert_eq!(bytes, expected);
     }
 }
+
+#[test]
+fn resident_ram_counts_sparse_backing_without_populating_it() {
+    let (backend, account) = fixtures();
+    let vmo = crate::require_ok(WritableVmo::try_new(PAGE_SIZE * 520, backend, account));
+    assert_eq!(crate::require_ok(vmo.resident_bytes(0, PAGE_SIZE * 520)), 0);
+    crate::require_ok(vmo.populate(PAGE_SIZE * 255, PAGE_SIZE * 3));
+    assert_eq!(
+        crate::require_ok(vmo.resident_bytes(0, PAGE_SIZE * 520)),
+        PAGE_SIZE * 3
+    );
+    assert_eq!(
+        crate::require_ok(vmo.resident_bytes(PAGE_SIZE * 256, PAGE_SIZE)),
+        PAGE_SIZE
+    );
+    assert_eq!(
+        crate::require_ok(vmo.resident_bytes(PAGE_SIZE * 258, PAGE_SIZE * 262)),
+        0
+    );
+    assert!(vmo.resident_bytes(PAGE_SIZE * 520, PAGE_SIZE).is_err());
+    assert!(vmo.same_storage(&vmo.clone()));
+}

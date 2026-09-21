@@ -21,6 +21,7 @@ pub(super) enum Error {
     ReleaseAccounting,
     LimitAccounting,
     Statistics,
+    ResidentMemory(&'static str),
 }
 
 pub(super) fn run() -> Result<(), Error> {
@@ -33,6 +34,7 @@ pub(super) fn run() -> Result<(), Error> {
         crate::kernel::accounting::ResourceLimits::UNLIMITED,
     )
     .map_err(Error::Resource)?;
+    GuestAddressSpace::verify_resident_memory_for_test(&domain).map_err(Error::ResidentMemory)?;
     let mut memory =
         GuestAddressSpace::new(identifier, BASE, 4 * PAGE_SIZE, &domain).map_err(Error::Copy)?;
     let (_, expected_metadata_bytes) =
