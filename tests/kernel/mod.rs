@@ -33,6 +33,8 @@ mod thread_migration;
 mod thread_sleep;
 #[cfg(CONFIG_ARCH_AARCH64)]
 mod user_memory_access;
+#[cfg(CONFIG_ARCH_AARCH64)]
+mod vcpu_migration;
 mod virtual_serial;
 mod vm_registry;
 mod vm_wfi_wait;
@@ -122,6 +124,8 @@ pub(crate) fn run() {
     );
     run_case("kernel VM registry tests", vm_registry::run);
     run_case("kernel vCPU endpoint wait tests", vm_wfi_wait::run);
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    run_case("real guest vCPU migration tests", vcpu_migration::run);
     crate::hal::irq::mask_local();
     #[cfg(CONFIG_ARCH_AARCH64)]
     run_case(

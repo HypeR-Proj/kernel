@@ -26,6 +26,7 @@ mod smp;
 mod stage2;
 mod stage2_retirement;
 mod timer;
+mod translation_identifiers;
 mod user;
 mod user_contract;
 mod user_entry;
@@ -100,7 +101,7 @@ pub use smp::SecondaryBootParameters;
 pub(crate) use smp::{
     current_cpu_index, current_hardware_id, secondary_entry_physical, send_event,
 };
-pub(crate) use stage2::retire_local as retire_guest_stage2_local;
+pub(crate) use stage2::retire_root_local as retire_guest_stage2_root_local;
 pub use stage2::{Error as Stage2Error, Stage2AddressSpace};
 pub(crate) use stage2::{
     publish_changes as publish_guest_stage2_changes,
@@ -113,7 +114,9 @@ pub use timer::{
 };
 pub use user::UserMachineContractError;
 pub(crate) use user::assert_kernel_pan;
-pub(crate) use user::{application_address_limit, user_address_limit};
+pub(crate) use user::{
+    application_address_limit, user_address_limit, user_translation_identifier_bits,
+};
 pub(crate) use user::{copy_from_exposed, copy_to_exposed};
 pub use user_entry::Error as UserEntryError;
 #[cfg(feature = "kernel-self-test")]
@@ -376,6 +379,10 @@ pub(crate) fn describe_runtime(mut emit: impl FnMut(core::fmt::Arguments<'_>)) {
         host_execution_mode_name()
     ));
     emit(format_args!(
+        "HypeR: translation identifiers: {}-bit ASID, {}-bit VMID",
+        address.asid_bits, address.vmid_bits
+    ));
+    emit(format_args!(
         "HypeR: AArch64 execution protection: PXN/UXN, WXN=on"
     ));
     emit(format_args!(
@@ -420,3 +427,9 @@ pub(crate) const fn maximum_guest_vcpus() -> u32 {
 }
 
 pub(crate) use smp::prepare_secondary_entry;
+
+pub(crate) fn guest_translation_identifier_bits() -> u8 {
+    address::capabilities().vmid_bits
+}
+
+pub(crate) use stage2::invalidate_namespace_local as invalidate_guest_translation_namespace_local;

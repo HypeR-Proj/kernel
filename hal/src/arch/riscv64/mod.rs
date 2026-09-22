@@ -20,6 +20,7 @@ mod sbi;
 mod smp;
 mod stage2;
 mod timer;
+mod translation_id_policy;
 mod user_entry;
 mod user_machine;
 mod vm_interrupt;
@@ -78,7 +79,8 @@ pub use stage2::GuestStage2RetirementRequest;
 pub use stage2::{Error as Stage2Error, Stage2AddressSpace};
 pub(crate) use stage2::{
     identifier_bits as guest_translation_identifier_bits,
-    publish_changes as publish_guest_stage2_changes, retire_local as retire_guest_stage2_local,
+    publish_changes as publish_guest_stage2_changes,
+    retire_root_local as retire_guest_stage2_root_local,
     synchronize_local as synchronize_guest_stage2_local,
 };
 pub use timer::{
@@ -353,3 +355,5 @@ pub(crate) fn riscv_guest_baseline_available() -> bool {
 }
 
 pub(crate) use smp::prepare_secondary_entry;
+
+pub(crate) use stage2::invalidate_namespace_local as invalidate_guest_translation_namespace_local;

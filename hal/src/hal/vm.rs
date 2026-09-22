@@ -140,18 +140,18 @@ pub fn prepare_guest_stage2_retirement(
     }
 }
 
-pub fn service_guest_stage2_retirement(request: GuestStage2RetirementRequest) {
+/// Parks a permanently retired hierarchy and invalidates all local guest tags.
+/// All execution owners of the root must have detached before this operation.
+pub fn retire_guest_stage2_root_local(root: u64) {
     #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
-    {
-        crate::arch::vm::service_guest_stage2_retirement(request.backend)
-    }
+    crate::arch::vm::retire_guest_stage2_root_local(root);
     #[cfg(not(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64)))]
     {
-        match request.never {}
+        let _ = root;
+        hyper::debug::invariant_failure("guest root retirement unsupported");
     }
 }
 
-/// Invalidate a retained, still-live identity without clearing its selection.
 pub fn service_guest_stage2_live(request: GuestStage2RetirementRequest) {
     #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
     crate::arch::vm::service_guest_stage2_live(request.backend);
@@ -1341,4 +1341,10 @@ pub fn update_saved_device_line(
 /// by VM-owned mailboxes and direct notification bindings.
 pub const fn supports_io_notifications() -> bool {
     cfg!(CONFIG_ARCH_AARCH64)
+}
+
+/// Completes local invalidation of every guest translation identifier.
+/// The caller keeps guest execution stopped and local interrupts masked.
+pub fn invalidate_guest_translation_namespace_local() {
+    crate::arch::vm::invalidate_guest_translation_namespace_local();
 }

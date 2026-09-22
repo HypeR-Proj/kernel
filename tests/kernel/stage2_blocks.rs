@@ -68,10 +68,14 @@ fn expect_leaf(
 }
 
 pub(super) fn run() -> Result<(), Error> {
+    let bits = crate::hal::vm::guest_translation_identifier_bits().map_err(|_| Error::Identity)?;
     let identifier = crate::kernel::mm::translation_id::reserve::<
         crate::kernel::mm::translation_id::Stage2Vmid,
-    >(8)
+    >(bits)
+    .map_err(|_| Error::Identity)?
+    .activate()
     .map_err(|_| Error::Identity)?;
+    let lease = identifier.acquire().map_err(|_| Error::Identity)?;
     let backing = PageBlock::allocate(9).map_err(|_| Error::Allocation)?;
     let physical = backing.physical().get();
     let mut owners = Vec::new();
@@ -86,8 +90,9 @@ pub(super) fn run() -> Result<(), Error> {
     };
     // SAFETY: Unique VMID reservation and exclusively retained zeroed pages.
     // This hierarchy is never activated or exposed to another execution context.
-    let mut space = unsafe { Stage2AddressSpace::new(identifier.value(), &mut allocate) }
-        .map_err(Error::Stage2)?;
+    let mut space = unsafe { Stage2AddressSpace::new(&mut allocate) }.map_err(Error::Stage2)?;
+    // SAFETY: The test retains this lease through every temporary BBM selection.
+    unsafe { space.bind_identifier(lease.value()) }.map_err(Error::Stage2)?;
     let initial_tables = allocations.get();
     // SAFETY: The whole aligned block is owned by backing and remains live;
     // neither this hierarchy nor its backing is published to a running VM.
@@ -271,6 +276,11 @@ pub(super) fn run() -> Result<(), Error> {
     )?;
     // All storage can be reclaimed without a retirement rendezvous because no
     // guest ever selected this root. BBM restored the prior hardware selection.
+    drop(lease);
+    let retiring = identifier.begin_retirement().map_err(|_| Error::Identity)?;
+    // SAFETY: The root was never executed and every temporary selection restored
+    // the original registers; no CPU can retain a translation from this hierarchy.
+    unsafe { retiring.complete() }.map_err(|_| Error::Identity)?;
     crate::pr_info!("HypeR test: stage-2 block mapping, split and revocation passed");
     Ok(())
 }

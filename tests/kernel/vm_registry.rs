@@ -128,18 +128,26 @@ fn prepare_test_vm() -> Result<
 fn prepare_test_vm_in(
     domain: &crate::kernel::accounting::ResourceDomain,
 ) -> Result<crate::kernel::vm::registry::PreparedVm, Error> {
+    prepare_test_vm_with(domain, |_, _| Ok(()))
+}
+
+fn prepare_test_vm_with(
+    domain: &crate::kernel::accounting::ResourceDomain,
+    initialize: impl FnOnce(&mut crate::kernel::vm::memory::GuestAddressSpace, u64) -> Result<(), Error>,
+) -> Result<crate::kernel::vm::registry::PreparedVm, Error> {
     let lifecycle = crate::kernel::vm::registry::VmLifecycleResources::try_reserve(domain, 1)
         .map_err(Error::Registry)?;
     let mut reservation = crate::kernel::vm::registry::reserve().map_err(Error::Registry)?;
     let identifier = reservation.take_hardware_vmid().map_err(Error::Registry)?;
     let (ram_base, timer_interrupt, platform_profile) = test_platform();
-    let address_space = crate::kernel::vm::memory::GuestAddressSpace::new(
+    let mut address_space = crate::kernel::vm::memory::GuestAddressSpace::new(
         identifier,
         ram_base,
         2 * hyper::mm::PAGE_SIZE,
         domain,
     )
     .map_err(Error::Memory)?;
+    initialize(&mut address_space, ram_base)?;
     let interrupt_plan = crate::hal::vm::prepare_interrupt_controller(1, timer_interrupt)
         .map_err(Error::Interrupts)?;
     let interrupt_controller_charge = lifecycle
@@ -172,7 +180,7 @@ fn prepare_test_vm_in(
             crate::kernel::vm::objects::VirtualCpuBootstrap {
                 entry: ram_base,
                 stack: 0,
-                arguments: [0; 4],
+                arguments: [ram_base + hyper::mm::PAGE_SIZE, 0, 0, 0],
             },
         )
         .map_err(Error::VcpuPreparation)?;
@@ -326,7 +334,7 @@ fn verify_thread_object_charge_lifetime() -> Result<(), Error> {
     Ok(())
 }
 
-fn wait_for_vm_usage_release(
+pub(super) fn wait_for_vm_usage_release(
     domain: &crate::kernel::accounting::ResourceDomain,
 ) -> Result<(), Error> {
     if !crate::kernel::task::wait_for_test_progress(
@@ -400,4 +408,38 @@ fn verify_observed_vm_retirement() -> Result<(), Error> {
         "HypeR test: retained VM observers permit retirement and slot reuse (4 cycles)"
     );
     Ok(())
+}
+
+/// Shares the dormant lifecycle fixture while installing a real executable guest.
+#[cfg(CONFIG_ARCH_AARCH64)]
+pub(super) fn prepare_migration_guest(
+    code: &[u8],
+) -> Result<
+    (
+        crate::kernel::vm::registry::PreparedVm,
+        crate::kernel::accounting::ResourceDomain,
+        *const core::sync::atomic::AtomicU64,
+    ),
+    Error,
+> {
+    let domain = crate::kernel::accounting::ResourceDomain::try_new_root(
+        crate::kernel::accounting::ResourceLimits::UNLIMITED,
+    )
+    .map_err(Error::Resource)?;
+    let mut counter = core::ptr::null();
+    let prepared = prepare_test_vm_with(&domain, |memory, base| {
+        memory.copy_to(base, code).map_err(Error::Memory)?;
+        memory
+            .copy_to(base + hyper::mm::PAGE_SIZE, &[0; 8])
+            .map_err(Error::Memory)?;
+        counter = memory
+            .atomic_counter_for_test(base + hyper::mm::PAGE_SIZE)
+            .map_err(Error::Memory)?;
+        memory
+            .publish_resident_instructions()
+            .map_err(Error::Memory)?;
+        memory.finish_boot_loading();
+        Ok(())
+    })?;
+    Ok((prepared, domain, counter))
 }

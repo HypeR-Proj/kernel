@@ -42,7 +42,9 @@ pub(crate) use super::imp::{
     application_address_limit, copy_from_exposed, copy_to_exposed, user_address_limit,
 };
 
-#[cfg(target_arch = "aarch64")]
-pub(crate) use super::imp::assert_kernel_pan as assert_kernel_access;
 #[cfg(target_arch = "riscv64")]
 pub(crate) use super::imp::{assert_kernel_access, user_translation_identifier_bits};
+#[cfg(target_arch = "aarch64")]
+pub(crate) use super::imp::{
+    assert_kernel_pan as assert_kernel_access, user_translation_identifier_bits,
+};

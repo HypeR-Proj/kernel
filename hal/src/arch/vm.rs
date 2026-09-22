@@ -66,7 +66,11 @@ pub(crate) fn guest_translation_identifier_bits() -> Result<u8, Stage2Error> {
     {
         super::imp::guest_translation_identifier_bits()
     }
-    #[cfg(not(CONFIG_ARCH_RISCV64))]
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    {
+        Ok(super::imp::guest_translation_identifier_bits())
+    }
+    #[cfg(CONFIG_ARCH_X86_64)]
     {
         Ok(8)
     }
@@ -80,18 +84,8 @@ pub(crate) fn prepare_guest_stage2_retirement(
 }
 
 #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
-pub(crate) fn service_guest_stage2_retirement(request: GuestStage2RetirementRequest) {
-    #[cfg(CONFIG_ARCH_AARCH64)]
-    {
-        super::imp::retire_guest_stage2_local(request)
-    }
-    #[cfg(CONFIG_ARCH_RISCV64)]
-    {
-        if super::imp::retire_guest_stage2_local(request).is_err() {
-            // Never acknowledge retirement while a hardware owner remains live.
-            hyper::debug::invariant_failure("vm::service_guest_stage2_retirement invariant");
-        }
-    }
+pub(crate) fn retire_guest_stage2_root_local(root: u64) {
+    super::imp::retire_guest_stage2_root_local(root);
 }
 
 #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
@@ -276,4 +270,11 @@ pub(crate) const fn maximum_guest_vcpus() -> u32 {
     {
         1
     }
+}
+
+pub(crate) fn invalidate_guest_translation_namespace_local() {
+    #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
+    super::imp::invalidate_guest_translation_namespace_local();
+    #[cfg(CONFIG_ARCH_X86_64)]
+    hyper::debug::invariant_failure("guest namespace rollover unsupported on x86");
 }

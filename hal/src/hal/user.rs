@@ -44,9 +44,6 @@ pub enum UserEntryError {
     Backend(crate::arch::user::UserEntryError),
 }
 
-#[cfg(CONFIG_ARCH_AARCH64)]
-const USER_TRANSLATION_IDENTIFIER_BITS: u8 = 8;
-
 /// Opaque construction policy for the selected native-user translation regime.
 ///
 /// The plan keeps architecture layout limits and ASID width below the HAL boundary.
@@ -95,9 +92,6 @@ pub fn address_space_plan() -> Result<AddressSpacePlan, AddressSpaceError> {
         if application_limit == 0 || application_limit >= address_limit {
             return Err(AddressSpaceError::InvalidAddressLimit);
         }
-        #[cfg(CONFIG_ARCH_AARCH64)]
-        let identifier_bits = USER_TRANSLATION_IDENTIFIER_BITS;
-        #[cfg(CONFIG_ARCH_RISCV64)]
         let identifier_bits = crate::arch::user::user_translation_identifier_bits()
             .map_err(AddressSpaceError::Contract)?;
         Ok(AddressSpacePlan {
@@ -270,10 +264,9 @@ impl ActiveAddressSpace<'_> {
 ///
 /// Allocator results must be new, zeroed, linearly mapped blocks of the
 /// requested order and remain retained through acknowledged root retirement.
-/// The ASID must name the caller's retained host-stage identifier; its value
-/// and generation must remain reserved until that same retirement completes.
+/// The generation identifies the retained software address-space owner. Hardware
+/// ASIDs are acquired separately for each admitted activation interval.
 pub unsafe fn prepare_host_address_space(
-    asid: u16,
     generation: u64,
     mut enumerate: impl FnMut(&mut dyn FnMut(MappingPage)),
     allocator: &mut impl FnMut(usize) -> Option<PhysicalAddress>,
@@ -294,7 +287,6 @@ pub unsafe fn prepare_host_address_space(
         // SAFETY: The facade forwards the table ownership contract unchanged.
         let backend = unsafe {
             crate::arch::user::prepare_host_user_address_space(
-                asid,
                 generation,
                 &mut arch_enumerate,
                 allocator,
@@ -305,7 +297,7 @@ pub unsafe fn prepare_host_address_space(
     }
     #[cfg(not(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64)))]
     {
-        let _ = (asid, generation, &mut enumerate, allocator);
+        let _ = (generation, &mut enumerate, allocator);
         Err(AddressSpaceError::Unsupported)
     }
 }
@@ -319,6 +311,8 @@ pub unsafe fn prepare_host_address_space(
 /// identifier must remain retained for the token's lifetime.
 pub unsafe fn activate_local<'pin>(
     root: &PreparedAddressSpace,
+    identifier: u16,
+    identifier_epoch: u64,
     cpu: CpuIndex,
     _pin: &'pin dyn PinnedExecution,
     _owner: &'pin dyn hyper::hal::user::UserTranslationOwner,
@@ -334,7 +328,9 @@ pub unsafe fn activate_local<'pin>(
     {
         // SAFETY: The caller supplies the admission, pinning, and retention
         // proof required by the architecture-local transition.
-        let backend = unsafe { crate::arch::user::activate_user_local(&root.backend) };
+        let backend = unsafe {
+            crate::arch::user::activate_user_local(&root.backend, identifier, identifier_epoch)
+        };
         Ok(ActiveAddressSpace {
             cpu,
             backend: Some(backend),
@@ -345,7 +341,7 @@ pub unsafe fn activate_local<'pin>(
     }
     #[cfg(not(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64)))]
     {
-        let _ = (root, cpu, kernel_access);
+        let _ = (root, identifier, identifier_epoch, cpu, kernel_access);
         Err(AddressSpaceError::Unsupported)
     }
 }

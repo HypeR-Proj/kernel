@@ -406,6 +406,12 @@ aarch64_secondary_entry:
     and     x5, x5, #ID_AA64MMFR0_TGRAN4_MASK
     cmp     x5, #ID_AA64MMFR0_TGRAN4_UNSUPPORTED
     b.eq    .Lsecondary_halt
+    // TCR.AS must be supported before installing the primary's stage-1 regime.
+    tbz     x2, #TCR_EL2_VHE_AS_SHIFT, .Lsecondary_asid_compatible
+    ubfx    x5, x4, #ID_AA64MMFR0_ASIDBITS_SHIFT, #4
+    cmp     x5, #ID_AA64MMFR0_ASIDBITS_16
+    b.ne    .Lsecondary_halt
+.Lsecondary_asid_compatible:
     msr     spsel, #1
     ldr     x1, [x19, #16]
     mov     sp, x1

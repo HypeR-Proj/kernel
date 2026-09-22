@@ -28,7 +28,9 @@ pub(super) fn run() -> Result<(), Error> {
     const BASE: u64 = 0x4000_0000;
     let identifier = crate::kernel::mm::translation_id::reserve::<
         crate::kernel::mm::translation_id::Stage2Vmid,
-    >(8)
+    >(
+        crate::hal::vm::guest_translation_identifier_bits().map_err(|_| Error::Identity)?,
+    )
     .map_err(|_| Error::Identity)?;
     let domain = crate::kernel::accounting::ResourceDomain::try_new_root(
         crate::kernel::accounting::ResourceLimits::UNLIMITED,
@@ -154,7 +156,9 @@ pub(super) fn run() -> Result<(), Error> {
     .map_err(Error::Resource)?;
     let identifier = crate::kernel::mm::translation_id::reserve::<
         crate::kernel::mm::translation_id::Stage2Vmid,
-    >(8)
+    >(
+        crate::hal::vm::guest_translation_identifier_bits().map_err(|_| Error::Identity)?,
+    )
     .map_err(|_| Error::Identity)?;
     let mut limited_memory =
         GuestAddressSpace::new(identifier, BASE, 2 * PAGE_SIZE, &limited).map_err(Error::Copy)?;
@@ -198,7 +202,9 @@ pub(super) fn run() -> Result<(), Error> {
     .map_err(Error::Resource)?;
     let identifier = crate::kernel::mm::translation_id::reserve::<
         crate::kernel::mm::translation_id::Stage2Vmid,
-    >(8)
+    >(
+        crate::hal::vm::guest_translation_identifier_bits().map_err(|_| Error::Identity)?,
+    )
     .map_err(|_| Error::Identity)?;
     if !matches!(
         GuestAddressSpace::new(identifier, BASE, 2 * PAGE_SIZE, &metadata_limited),

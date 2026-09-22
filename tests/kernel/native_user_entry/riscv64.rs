@@ -17,6 +17,12 @@ pub(crate) fn run() -> Result<(), Error> {
     let domain =
         ResourceDomain::try_new_root(ResourceLimits::UNLIMITED).map_err(|_| Error::Construction)?;
     let group = TaskGroup::try_new(&domain).map_err(|_| Error::Group)?;
+    super::verify_thread_creation_affinity(
+        &domain,
+        &group,
+        crate::hal::user::native_register_test_program_for_test(),
+        MachineAbi::Riscv64,
+    )?;
     // Sharing one hart forces ownership changes even when several harts are
     // online. The second pass permits independent execution and migration.
     let result = run_pair(&domain, &group, true)

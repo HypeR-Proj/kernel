@@ -114,6 +114,29 @@ const CANCELLED_EVENT_WAIT_PROGRAM: [u8; 52] = [
     0x40, 0x00, 0x20, 0xd4, // failure: brk #2.
 ];
 
+// Wait on an Event until the controller rolls over the hardware ASID pool.
+// Resumption must execute the same user mapping and return the expected status.
+const ROLLOVER_WAIT_PROGRAM: [u8; 72] = [
+    0x00, 0x00, 0x80, 0xd2, // mov x0, #0.
+    0x28, 0x01, 0x80, 0xd2, // mov x8, #9; event_create.
+    0x01, 0x00, 0x00, 0xd4, // svc #0.
+    0x1f, 0x00, 0x00, 0xf1, // cmp x0, #0.
+    0xa1, 0x01, 0x00, 0x54, // b.ne failure.
+    0xf3, 0x03, 0x01, 0xaa, // mov x19, x1.
+    0xe0, 0x03, 0x13, 0xaa, // mov x0, x19.
+    0x21, 0x00, 0x80, 0xd2, // mov x1, #1; SIGNALED.
+    0x02, 0x00, 0x80, 0x92, // mov x2, #-1; infinite wait.
+    0x68, 0x01, 0x80, 0xd2, // mov x8, #11; object_wait_one.
+    0x01, 0x00, 0x00, 0xd4, // svc #0; return after rollover.
+    0x1f, 0x00, 0x00, 0xf1, // cmp x0, #0.
+    0xa1, 0x00, 0x00, 0x54, // b.ne failure.
+    0xa0, 0x04, 0x80, 0xd2, // mov x0, #37; success status.
+    0xe8, 0x00, 0x80, 0xd2, // mov x8, #7; thread_exit.
+    0x01, 0x00, 0x00, 0xd4, // svc #0; must not return.
+    0x20, 0x00, 0x20, 0xd4, // brk #1.
+    0x40, 0x00, 0x20, 0xd4, // failure: brk #2.
+];
+
 // Mismatch succeeds, elapsed wait times out, misalignment is rejected, then
 // the controller cancels a genuinely published infinite atomic wait.
 const ATOMIC_WAIT_PROGRAM: [u8; 112] = [
@@ -137,6 +160,7 @@ enum RunControl {
     Join,
     CancelPublishedEventWait,
     CancelPublishedAtomicWait,
+    ResumeAfterAsidRollover,
 }
 
 #[derive(Clone, Copy)]
@@ -157,6 +181,7 @@ pub(crate) fn run() -> Result<(), Error> {
     let domain =
         ResourceDomain::try_new_root(ResourceLimits::UNLIMITED).map_err(|_| Error::Construction)?;
     let group = TaskGroup::try_new(&domain).map_err(|_| Error::Group)?;
+    super::verify_thread_creation_affinity(&domain, &group, &PROGRAM, MachineAbi::Aarch64)?;
 
     let outcome = run_program(
         &domain,
@@ -270,6 +295,22 @@ pub(crate) fn run() -> Result<(), Error> {
         return Err(Error::Terminal);
     }
 
+    let rollover = run_program(
+        &domain,
+        &group,
+        &ROLLOVER_WAIT_PROGRAM,
+        "selftest/el0-asid-rollover",
+        SiblingSetup::None,
+        RunControl::ResumeAfterAsidRollover,
+        ThreadAuthority::None,
+    )?;
+    if rollover.thread != (TerminalReason::ThreadExited { status: 37 })
+        || rollover.process != (TerminalReason::LastThreadExited { status: 37 })
+    {
+        return Err(Error::Terminal);
+    }
+    crate::pr_info!("HypeR test: Native execution resumed and retired after ASID rollover");
+
     verify_pending_creation_exit()?;
 
     group.request_stop().map_err(|_| Error::Group)?;
@@ -378,6 +419,29 @@ fn run_program(
         let report = process.request_stop(TerminalReason::Requested);
         if !report.newly_requested || !report.dispatch_complete {
             return Err(Error::Lifecycle);
+        }
+    }
+    if matches!(control, RunControl::ResumeAfterAsidRollover) {
+        let result = (|| {
+            wait_for_event_registration(&process)?;
+            let bits = crate::hal::user::address_space_plan()
+                .map_err(|_| Error::AddressSpace)?
+                .asid_bits();
+            crate::kernel::mm::translation_id::test_rollover::<
+                crate::kernel::mm::translation_id::HostAsid,
+            >(bits)
+            .map_err(|_| Error::AddressSpace)?;
+            process
+                .resolve_handle::<Event>(HandleValue::first_for_test(), Rights::SIGNAL)
+                .map_err(|_| Error::Lifecycle)?
+                .object()
+                .signal(0, Event::SIGNALED.bits())
+                .map_err(|_| Error::Lifecycle)
+        })();
+        if let Err(error) = result {
+            process.request_stop(TerminalReason::Requested);
+            retire_process(&process)?;
+            return Err(error);
         }
     }
     // Process completion is the externally visible aggregate lifetime cut.

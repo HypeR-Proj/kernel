@@ -14,6 +14,10 @@ extern crate alloc;
 mod riscv_devices;
 
 #[cfg(test)]
+#[path = "../../../hal/src/arch/riscv64/translation_id_policy.rs"]
+mod riscv_translation_id_policy;
+
+#[cfg(test)]
 #[path = "cases/sharded_lock.rs"]
 mod sharded_lock;
 
@@ -23,9 +27,6 @@ mod aarch64_address_layout_model;
 #[cfg(test)]
 #[path = "../../../hal/src/arch/aarch64/guest_cpu_contract.rs"]
 mod aarch64_guest_cpu_contract_model;
-#[cfg(test)]
-#[path = "../../../hal/src/arch/aarch64/stage2_retirement.rs"]
-mod aarch64_stage2_retirement_model;
 #[cfg(test)]
 #[path = "../../../hal/src/arch/aarch64/user_contract.rs"]
 mod aarch64_user_contract_model;
@@ -215,9 +216,6 @@ mod synchronization;
 #[path = "cases/timestamps.rs"]
 mod timestamps;
 #[cfg(test)]
-#[path = "cases/translation_id.rs"]
-mod translation_id;
-#[cfg(test)]
 #[path = "cases/user_memory.rs"]
 mod user_memory;
 #[cfg(test)]
@@ -318,3 +316,11 @@ mod vm_retirement_observation;
 #[cfg(test)]
 #[path = "../../../src/kernel/task/scheduler/switch_handoff.rs"]
 mod scheduler_switch_handoff;
+
+#[cfg(test)]
+#[path = "../../../hal/src/arch/aarch64/translation_identifiers.rs"]
+mod aarch64_translation_identifiers;
+
+#[cfg(test)]
+#[path = "../../../src/mm/translation_epoch.rs"]
+mod translation_epoch_model;

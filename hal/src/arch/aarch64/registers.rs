@@ -107,6 +107,9 @@ define_asm_constants! {
     R_AARCH64_RELATIVE = 1027;
 
     // ID_AA64MMFR0_EL1.
+    ID_AA64MMFR0_ASIDBITS_SHIFT = 4;
+    ID_AA64MMFR0_ASIDBITS_16 = 2;
+    ID_AA64MMFR1_VMIDBITS_SHIFT = 4;
     ID_AA64MMFR0_PARANGE_SHIFT = 0;
     ID_AA64MMFR0_PARANGE_MASK = 0xf;
     ID_AA64MMFR0_PARANGE_32BIT = 0x0;
@@ -303,6 +306,8 @@ define_asm_constants! {
     TCR_EL2_VHE_ORGN1_WBWA = 1 << 26;
     TCR_EL2_VHE_SH1_INNER = 3 << 28;
     TCR_EL2_VHE_TG1_4K = 2 << 30;
+    TCR_EL2_VHE_AS_SHIFT = 36;
+    TCR_EL2_VHE_AS = 1 << TCR_EL2_VHE_AS_SHIFT;
     TCR_EL2_VHE_IPS_SHIFT = 32;
     TCR_EL2_VHE_IPS_MASK = 7 << TCR_EL2_VHE_IPS_SHIFT;
     TCR_EL2_VHE_BOOT_BASE = TCR_EL2_T0SZ_48
@@ -568,6 +573,7 @@ pub const ICH_VMCR_PRIORITY_MASK_ALLOW_ALL: u64 = ICH_VMCR_PRIORITY_MASK;
 
 // Stage-2 translation control and descriptor fields, 4 KiB granule.
 pub const VTCR_EL2_T0SZ_MASK: u64 = 0x3f;
+pub const VTCR_EL2_VS: u64 = 1 << 19;
 pub const VTCR_EL2_PS_SHIFT: u64 = 16;
 pub const VTCR_EL2_T0SZ_39BIT: u64 = 25;
 pub const VTCR_EL2_SL0_LEVEL2: u64 = 0 << 6;

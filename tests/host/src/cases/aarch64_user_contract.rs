@@ -106,7 +106,9 @@ fn translation_register_encoding_retains_software_generation_separately() {
         registers.root_register(),
         (7 << registers::TTBR_ASID_SHIFT) | 0x4000
     );
-    assert_eq!(registers.generation(), 19);
+    let next_owner = UserTranslationRegisters::new(capabilities(), 0x4000, 7, 20)
+        .unwrap_or_else(|error| panic!("new software owner rejected: {error:?}"));
+    assert_eq!(registers.root_register(), next_owner.root_register());
 }
 
 #[test]
@@ -296,4 +298,19 @@ fn cow_fault_classification_requires_a_user_store_permission_fault() {
     assert!(!is_user_write_page_fault(
         instruction | registers::ESR_DATA_ABORT_WNR | 15
     ));
+}
+
+#[test]
+fn sixteen_bit_asids_preserve_high_bits_and_narrow_contract_rejects_them() {
+    let wide =
+        UserExecutionCapabilities::new(48, 40, 16).unwrap_or_else(|error| panic!("{error:?}"));
+    for id in [256, 0x8001, u16::MAX] {
+        let root = UserTranslationRegisters::new(wide, 0x8000, id, 1)
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        assert_eq!(
+            root.root_register() >> registers::TTBR_ASID_SHIFT,
+            u64::from(id)
+        );
+        assert!(UserTranslationRegisters::new(capabilities(), 0x8000, id, 1).is_err());
+    }
 }

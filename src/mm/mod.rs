@@ -10,7 +10,7 @@ mod allocation;
 pub mod allocator;
 pub mod boot;
 pub mod kaslr;
-mod translation_id;
+mod translation_epoch;
 
 pub use access::{ForeignCopyError, ForeignMemory, copy_from_foreign, copy_to_foreign};
 pub use address::{PAGE_SIZE, PhysicalAddress, VirtualAddress};
@@ -23,7 +23,8 @@ pub use allocation::{
 };
 pub use allocator::{BuddyAllocator, BuddyError, BuddyStats, MAX_ORDER, MemoryHandoff};
 pub use boot::{BootAllocator, BootAllocatorError, BootMemoryStats};
-pub use translation_id::{
-    ActiveTranslationId, ReservedTranslationId, RetiringTranslationId, TranslationIdError,
-    TranslationIdPool,
+
+pub use translation_epoch::{
+    TranslationBinding, TranslationEpochError, TranslationEpochPool, TranslationEpochSegment,
+    TranslationLease, TranslationOwner, TranslationTag, TranslationTagWidth,
 };

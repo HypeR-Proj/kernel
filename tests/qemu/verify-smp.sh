@@ -120,6 +120,11 @@ runtime_contract_is_ready() {
         else
             grep -q 'HypeR test: cross-CPU thread migration skipped (one CPU online)' "$log"
         fi &&
+        if [ "$cpus" -gt 1 ]; then
+            grep -q 'HypeR test: running and timer-waiting vCPU migration and retirement passed' "$log"
+        else
+            grep -q 'HypeR test: vCPU migration skipped (requires guest execution and two CPUs)' "$log"
+        fi &&
         grep -q 'HypeR test: guarded thread, IRQ, and emergency stacks passed' "$log" &&
         grep -q 'HypeR test: fatal-path readiness contract passed' "$log" &&
         grep -q 'HypeR test: Native syscall validation passed' "$log" &&
