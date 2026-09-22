@@ -25,6 +25,8 @@ mod reserved_timer;
 mod scheduler_parallel;
 mod scheduler_sync;
 mod stack_model;
+#[cfg(CONFIG_ARCH_AARCH64)]
+mod stage2_blocks;
 mod startup_readiness;
 mod support;
 mod thread_migration;
@@ -107,6 +109,11 @@ pub(crate) fn run() {
     let guest_execution = crate::hal::vm::guest_execution_available();
     if guest_execution {
         run_case("kernel guest-memory access tests", guest_memory_access::run);
+        #[cfg(CONFIG_ARCH_AARCH64)]
+        run_case(
+            "stage-2 block split and revocation tests",
+            stage2_blocks::run,
+        );
     }
     #[cfg(CONFIG_ARCH_AARCH64)]
     run_case(
