@@ -42,7 +42,7 @@ CONFIG_PATH := $(abspath $(CONFIG_FILE))
 KERNEL_CONFIG_ENV := HYPER_CONFIG=$(CONFIG_PATH)
 CARGO_KERNEL = $(KERNEL_CONFIG_ENV) $(CARGO) build --target $(TARGET) $(CARGO_PROFILE) $(CARGO_FEATURES)
 QEMU_CPUS ?= 4
-QEMU_MEMORY ?= 512M
+QEMU_MEMORY ?= 1G
 INITRAMFS ?=
 HOST_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 RUST_HOST := $(shell rustc -vV | sed -n 's/^host: //p')

@@ -42,13 +42,16 @@ fi
 echo "HypeR guest: /init reached"
 echo "HypeR guest: Linux userspace is running"
 
-# /dev/console cannot become a controlling tty. Open the active console
-# after setsid so the interactive shell owns its terminal and job control.
-# Keep PID 1 alive when the shell exits, and reap each shell before restarting.
+# BusyBox init owns PID 1, reaps children, respawns the shell and handles the
+# signals sent by ordinary poweroff/reboot. Select the actual tty because
+# /dev/console cannot become the shell's controlling terminal.
 read -r consoles < /sys/class/tty/console/active
-console=/dev/${consoles##* }
+console=${consoles##* }
 cd "$HOME" || exit 1
-while :; do
-    /bin/busybox setsid /bin/busybox sh -c \
-        'exec /bin/busybox sh -i <"$1" >"$1" 2>&1' sh "$console"
-done
+cat > /etc/inittab <<EOF
+$console::respawn:/bin/sh -c 'cd /root && exec /bin/sh -i'
+::ctrlaltdel:/bin/busybox reboot
+::shutdown:/bin/busybox sync
+::shutdown:/bin/busybox umount -a -r
+EOF
+exec /bin/busybox init

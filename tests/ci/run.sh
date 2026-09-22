@@ -134,7 +134,7 @@ case "${1:-}" in
             "${QEMU:-qemu-system-aarch64}" \
             "$test_image" \
             "${QEMU_CPU:-max}" \
-            "${QEMU_MEMORY:-512M}" \
+            "${QEMU_MEMORY:-1G}" \
             "${QEMU_BOOTARGS:-earlycon=pl011,mmio32,0x09000000}"
         ;;
     riscv64-qemu)

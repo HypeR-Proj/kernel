@@ -25,10 +25,23 @@ The root disk is supplied through I/O VM virtio-scsi, not a direct guest device.
 The configuration partition holds the guest FIT, while the opaque per-VM
 partition holds the ext4 disk. The HypeR bootstrap contains only the I/O VM FIT.
 
-`/init` starts an interactive root shell with a controlling terminal and
-restarts it on exit. This is a development image, without a login service or
+`/init` prepares the root filesystem and hands PID 1 to BusyBox init, which
+starts an interactive root shell with a controlling terminal, reaps children
+and restarts the shell on exit. This is a development image, without a login service or
 OpenRC service setup. `make test-alpine-rootfs` verifies a 1 MiB file write,
 flush and checksum after VM stop/start using a disposable board disk.
+
+Alpine images default to 256 MiB of RAM; override `NATIVE_GUEST_MEMORY_BYTES`
+when building to select another capacity. AArch64 images default to two vCPUs
+on both QEMU and Pi 5. Override
+`NATIVE_GUEST_VCPUS` when building to select another topology; the dedicated
+`make test-guest-smp` fixture still defaults to four vCPUs. RISC-V guests
+remain single-vCPU.
+
+Use ordinary `poweroff` and `reboot` commands. BusyBox init runs the shutdown
+actions to sync and unmount filesystems (remounting busy filesystems read-only)
+before the kernel power operation. The QEMU SMP test uses these same commands
+to cover the userspace shutdown path as well as PSCI.
 
 Generated payloads live under `kernel/target/guest/<arch>/`. Run
 `make clean-guest-assets ARCH=aarch64` to remove generated kernel/rootfs
