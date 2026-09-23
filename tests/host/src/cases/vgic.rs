@@ -970,3 +970,344 @@ fn edge_line_latches_a_pulse_and_does_not_reassert_until_the_next_rising_edge() 
     crate::require_ok(gic.set_trigger(id, cpu, InterruptTrigger::Level));
     assert_eq!(crate::require_ok(gic.refill(cpu, &mut slots)), 1);
 }
+
+#[test]
+fn active_commands_override_stale_lr_snapshots_and_preserve_pending() {
+    let cpu = VirtualCpuId::new(0);
+    let id = interrupt(48);
+    let mut gic = one_interrupt(48, 1, 1);
+    crate::require_ok(gic.set_enabled(id, cpu, true));
+    crate::require_ok(gic.inject(id, cpu));
+    let mut slots = [None];
+    crate::require_ok(gic.refill(cpu, &mut slots));
+    crate::require_ok(gic.set_active(id, cpu, true));
+    crate::require_ok(gic.synchronize(cpu, &slots));
+    assert!(crate::require_ok(gic.snapshot(id, cpu)).active);
+    crate::require_ok(gic.refill(cpu, &mut slots));
+    assert_eq!(
+        crate::require_some(slots[0]).state,
+        ListState::PendingActive
+    );
+    crate::require_ok(gic.set_active(id, cpu, false));
+    crate::require_ok(gic.synchronize(cpu, &slots));
+    assert!(!crate::require_ok(gic.snapshot(id, cpu)).active);
+    assert!(crate::require_ok(gic.snapshot(id, cpu)).pending);
+    crate::require_ok(gic.refill(cpu, &mut slots));
+    assert_eq!(crate::require_some(slots[0]).state, ListState::Pending);
+}
+
+#[test]
+fn active_command_survives_concurrent_hardware_deactivation() {
+    let cpu = VirtualCpuId::new(0);
+    let id = interrupt(48);
+    let mut gic = one_interrupt(48, 1, 1);
+    crate::require_ok(gic.set_enabled(id, cpu, true));
+    crate::require_ok(gic.inject(id, cpu));
+    let mut slots = [None];
+    crate::require_ok(gic.refill(cpu, &mut slots));
+    crate::require_ok(gic.set_active(id, cpu, true));
+    slots[0] = None;
+    crate::require_ok(gic.synchronize(cpu, &slots));
+    assert!(crate::require_ok(gic.snapshot(id, cpu)).active);
+    crate::require_ok(gic.set_active(id, cpu, false));
+    assert!(!crate::require_ok(gic.snapshot(id, cpu)).active);
+}
+
+#[test]
+fn clearing_active_level_irq_reasserts_line_and_obeys_disabled_state() {
+    let cpu = VirtualCpuId::new(0);
+    let id = interrupt(48);
+    let mut gic = one_interrupt(48, 1, 1);
+    crate::require_ok(gic.set_active(id, cpu, true));
+    crate::require_ok(gic.set_line(id, cpu, true));
+    crate::require_ok(gic.clear_pending(id, cpu));
+    crate::require_ok(gic.set_active(id, cpu, false));
+    assert!(crate::require_ok(gic.snapshot(id, cpu)).pending);
+    let mut slots = [None];
+    assert_eq!(crate::require_ok(gic.refill(cpu, &mut slots)), 0);
+    crate::require_ok(gic.set_enabled(id, cpu, true));
+    assert_eq!(crate::require_ok(gic.refill(cpu, &mut slots)), 1);
+}
+
+#[test]
+fn software_active_preempts_pending_residency_without_losing_pending() {
+    let cpu = VirtualCpuId::new(0);
+    let mut builder = crate::require_ok(VirtualGicBuilder::new(1));
+    for id in [48, 49, 50] {
+        crate::require_ok(builder.configure(
+            interrupt(id),
+            cpu,
+            0x80,
+            InterruptGroup::Group1,
+            InterruptTrigger::Edge,
+        ));
+    }
+    let mut gic = crate::require_ok(builder.finish(1));
+    crate::require_ok(gic.set_enabled(interrupt(48), cpu, true));
+    crate::require_ok(gic.inject(interrupt(48), cpu));
+    let mut slots = [None];
+    crate::require_ok(gic.refill(cpu, &mut slots));
+    // Active state needs hardware residency even while disabled.
+    crate::require_ok(gic.set_active(interrupt(49), cpu, true));
+    crate::require_ok(gic.set_active(interrupt(50), cpu, true));
+    crate::require_ok(gic.refill(cpu, &mut slots));
+    assert_eq!(crate::require_some(slots[0]).interrupt, interrupt(49));
+    assert_eq!(crate::require_some(slots[0]).state, ListState::Active);
+    assert!(crate::require_ok(gic.snapshot(interrupt(48), cpu)).pending);
+    let overflow = crate::require_ok(gic.snapshot(interrupt(50), cpu));
+    assert!(overflow.active);
+    assert!(!overflow.listed);
+    crate::require_ok(gic.set_active(interrupt(49), cpu, false));
+    crate::require_ok(gic.refill(cpu, &mut slots));
+    assert_eq!(crate::require_some(slots[0]).interrupt, interrupt(50));
+    // A hardware deactivate of a resident software-set active IRQ clears it.
+    slots[0] = None;
+    crate::require_ok(gic.synchronize(cpu, &slots));
+    assert!(!crate::require_ok(gic.snapshot(interrupt(50), cpu)).active);
+    crate::require_ok(gic.refill(cpu, &mut slots));
+    assert_eq!(crate::require_some(slots[0]).interrupt, interrupt(48));
+}
+
+#[test]
+fn active_route_is_held_until_deactivation_and_reset_releases_overflow() {
+    let cpu = VirtualCpuId::new(0);
+    let other = VirtualCpuId::new(1);
+    let mut builder = crate::require_ok(VirtualGicBuilder::new(2));
+    for id in [48, 49] {
+        crate::require_ok(builder.configure(
+            interrupt(id),
+            cpu,
+            0x80,
+            InterruptGroup::Group1,
+            InterruptTrigger::Edge,
+        ));
+    }
+    let mut gic = crate::require_ok(builder.finish(1));
+    for id in [48, 49] {
+        crate::require_ok(gic.set_active(interrupt(id), cpu, true));
+        crate::require_ok(gic.route(interrupt(id), other));
+        assert_eq!(crate::require_ok(gic.target(interrupt(id))), cpu);
+    }
+    let mut slots = [None];
+    crate::require_ok(gic.refill(cpu, &mut slots));
+    assert!(crate::require_ok(gic.snapshot(interrupt(49), cpu)).active);
+    crate::require_ok(gic.reset_vcpu(cpu, InterruptGroup::Group1, false));
+    for id in [48, 49] {
+        assert_eq!(crate::require_ok(gic.target(interrupt(id))), other);
+        assert!(!crate::require_ok(gic.snapshot(interrupt(id), other)).active);
+    }
+}
+
+#[test]
+fn active_admission_ignores_distributor_enable_but_pending_does_not() {
+    let cpu = VirtualCpuId::new(0);
+    let id = interrupt(48);
+    let mut gic = one_interrupt(48, 1, 1);
+    crate::require_ok(gic.set_enabled(id, cpu, true));
+    crate::require_ok(gic.inject(id, cpu));
+    crate::require_ok(gic.set_active(id, cpu, true));
+    gic.set_distributor_enabled(false);
+    let mut slots = [None];
+    crate::require_ok(gic.refill(cpu, &mut slots));
+    assert_eq!(crate::require_some(slots[0]).state, ListState::Active);
+    assert!(crate::require_ok(gic.snapshot(id, cpu)).pending);
+    gic.set_distributor_enabled(true);
+    crate::require_ok(gic.refill(cpu, &mut slots));
+    assert_eq!(
+        crate::require_some(slots[0]).state,
+        ListState::PendingActive
+    );
+}
+
+#[test]
+fn active_bitmap_mmio_reads_aliases_and_writes_only_selected_bits() {
+    use hyper::vm::arm::gic::mmio::{
+        DISTRIBUTOR_BASE, DecodedRegister, decode_v2, read_model_register, write_model_register,
+    };
+    use hyper::vm::exit::{AccessWidth, GuestPhysicalAddress};
+    let cpu = VirtualCpuId::new(0);
+    let mut builder = crate::require_ok(VirtualGicBuilder::new(1));
+    for id in 32..64 {
+        crate::require_ok(builder.configure(
+            interrupt(id),
+            cpu,
+            0x80,
+            InterruptGroup::Group1,
+            InterruptTrigger::Edge,
+        ));
+    }
+    let mut gic = crate::require_ok(builder.finish(1));
+    let register = |offset| {
+        let decoded = crate::require_some(crate::require_ok(decode_v2(
+            GuestPhysicalAddress::new(u64::from(DISTRIBUTOR_BASE) + offset),
+            AccessWidth::Word,
+        )));
+        let DecodedRegister::Model(register) = decoded.register() else {
+            unreachable!()
+        };
+        register
+    };
+    let set = register(0x304);
+    let clear = register(0x384);
+    crate::require_ok(write_model_register(&mut gic, cpu, set, 0b101));
+    assert_eq!(
+        crate::require_ok(read_model_register(&gic, cpu, set)),
+        0b101
+    );
+    assert_eq!(
+        crate::require_ok(read_model_register(&gic, cpu, clear)),
+        0b101
+    );
+    crate::require_ok(write_model_register(&mut gic, cpu, clear, 1));
+    assert_eq!(
+        crate::require_ok(read_model_register(&gic, cpu, set)),
+        0b100
+    );
+    crate::require_ok(write_model_register(&mut gic, cpu, clear, 0));
+    assert_eq!(
+        crate::require_ok(read_model_register(&gic, cpu, set)),
+        0b100
+    );
+}
+
+#[test]
+fn active_pressure_preserves_evicted_sgi_source() {
+    let cpu = VirtualCpuId::new(0);
+    let source = VirtualCpuId::new(2);
+    let mut builder = crate::require_ok(VirtualGicBuilder::new(3));
+    for id in [3, 48] {
+        crate::require_ok(builder.configure(
+            interrupt(id),
+            cpu,
+            0x80,
+            InterruptGroup::Group1,
+            InterruptTrigger::Edge,
+        ));
+    }
+    let mut gic = crate::require_ok(builder.finish(1));
+    crate::require_ok(gic.set_enabled(interrupt(3), cpu, true));
+    crate::require_ok(gic.inject_sgi(interrupt(3), cpu, source));
+    let mut slots = [None];
+    crate::require_ok(gic.refill(cpu, &mut slots));
+    assert_eq!(crate::require_some(slots[0]).source, 2);
+    crate::require_ok(gic.set_active(interrupt(48), cpu, true));
+    crate::require_ok(gic.refill(cpu, &mut slots));
+    assert_eq!(crate::require_some(slots[0]).interrupt, interrupt(48));
+    crate::require_ok(gic.set_active(interrupt(48), cpu, false));
+    crate::require_ok(gic.refill(cpu, &mut slots));
+    assert_eq!(crate::require_some(slots[0]).interrupt, interrupt(3));
+    assert_eq!(crate::require_some(slots[0]).source, 2);
+}
+
+#[test]
+fn dir_deactivates_overflow_in_any_order_and_obeys_eoi_mode() {
+    let cpu = VirtualCpuId::new(0);
+    let mut builder = crate::require_ok(VirtualGicBuilder::new(1));
+    for id in 32..48 {
+        crate::require_ok(builder.configure(
+            interrupt(id),
+            cpu,
+            0x80,
+            InterruptGroup::Group1,
+            InterruptTrigger::Edge,
+        ));
+    }
+    let mut model = crate::require_ok(builder.finish(2));
+    for id in 32..48 {
+        crate::require_ok(model.set_active(interrupt(id), cpu, true));
+    }
+    let mut slots = [None; 2];
+    crate::require_ok(model.refill(cpu, &mut slots));
+    crate::require_ok(model.deactivate(cpu, 47, None, false));
+    assert!(crate::require_ok(model.snapshot(interrupt(47), cpu)).active);
+    for invalid in [48, 1019, 1020, 1023, u32::MAX] {
+        crate::require_ok(model.deactivate(cpu, invalid, None, true));
+    }
+    for id in [
+        47, 32, 45, 34, 43, 36, 41, 38, 39, 40, 37, 42, 35, 44, 33, 46,
+    ] {
+        crate::require_ok(model.deactivate(cpu, id, None, true));
+        crate::require_ok(model.refill(cpu, &mut slots));
+        assert!(!crate::require_ok(model.snapshot(interrupt(id), cpu)).active);
+    }
+    assert!(slots.iter().all(Option::is_none));
+}
+
+#[test]
+fn dir_preserves_pending_and_requires_the_active_sgi_source() {
+    let cpu = VirtualCpuId::new(0);
+    let id = interrupt(3);
+    let mut model = one_interrupt(3, 3, 1);
+    crate::require_ok(model.set_enabled(id, cpu, true));
+    crate::require_ok(model.inject_sgi(id, cpu, VirtualCpuId::new(1)));
+    let mut slots = [None];
+    crate::require_ok(model.refill(cpu, &mut slots));
+    let slot = crate::require_some(slots[0].as_mut());
+    slot.state = ListState::Active;
+    crate::require_ok(model.synchronize(cpu, &slots));
+    crate::require_ok(model.inject_sgi(id, cpu, VirtualCpuId::new(2)));
+    crate::require_ok(model.refill(cpu, &mut slots));
+    assert_eq!(crate::require_some(slots[0]).state, ListState::Active);
+    crate::require_ok(model.deactivate(cpu, 3, Some(2), true));
+    assert!(crate::require_ok(model.snapshot(id, cpu)).active);
+    crate::require_ok(model.deactivate(cpu, 3, Some(1), true));
+    crate::require_ok(model.refill(cpu, &mut slots));
+    let slot = crate::require_some(slots[0]);
+    assert_eq!(slot.source, 2);
+    assert_eq!(slot.state, ListState::Pending);
+}
+
+#[test]
+fn software_active_sgi_keeps_canonical_source_while_another_source_waits() {
+    let cpu = VirtualCpuId::new(0);
+    let id = interrupt(3);
+    let mut model = one_interrupt(3, 2, 1);
+    crate::require_ok(model.set_enabled(id, cpu, true));
+    crate::require_ok(model.set_active(id, cpu, true));
+    crate::require_ok(model.inject_sgi(id, cpu, VirtualCpuId::new(1)));
+    let mut slots = [None];
+    crate::require_ok(model.refill(cpu, &mut slots));
+    let slot = crate::require_some(slots[0]);
+    assert_eq!(slot.source, 0);
+    assert_eq!(slot.state, ListState::Active);
+    crate::require_ok(model.deactivate(cpu, 3, Some(1), true));
+    assert!(crate::require_ok(model.snapshot(id, cpu)).active);
+    crate::require_ok(model.deactivate(cpu, 3, Some(0), true));
+    crate::require_ok(model.refill(cpu, &mut slots));
+    assert_eq!(crate::require_some(slots[0]).source, 1);
+    assert_eq!(crate::require_some(slots[0]).state, ListState::Pending);
+}
+
+#[test]
+fn folding_pending_sgi_into_active_lr_consumes_only_its_source() {
+    let cpu = VirtualCpuId::new(0);
+    let id = interrupt(3);
+    let mut model = one_interrupt(3, 3, 1);
+    crate::require_ok(model.set_enabled(id, cpu, true));
+    crate::require_ok(model.inject_sgi(id, cpu, VirtualCpuId::new(1)));
+    let mut slots = [None];
+    crate::require_ok(model.refill(cpu, &mut slots));
+    crate::require_some(slots[0].as_mut()).state = ListState::Active;
+    crate::require_ok(model.synchronize(cpu, &slots));
+    crate::require_ok(model.inject_sgi(id, cpu, VirtualCpuId::new(1)));
+    crate::require_ok(model.inject_sgi(id, cpu, VirtualCpuId::new(2)));
+    // An ISPENDR write also requests pending on the currently resident instance.
+    crate::require_ok(model.inject(id, cpu));
+    crate::require_ok(model.refill(cpu, &mut slots));
+    assert_eq!(
+        crate::require_some(slots[0]).state,
+        ListState::PendingActive
+    );
+    crate::require_ok(model.deactivate(cpu, 3, Some(1), true));
+    crate::require_ok(model.refill(cpu, &mut slots));
+    assert_eq!(crate::require_some(slots[0]).state, ListState::Pending);
+    // Guest acknowledges and completes the re-pended A instance.
+    slots[0] = None;
+    crate::require_ok(model.synchronize(cpu, &slots));
+    crate::require_ok(model.refill(cpu, &mut slots));
+    assert_eq!(crate::require_some(slots[0]).source, 2);
+    slots[0] = None;
+    crate::require_ok(model.synchronize(cpu, &slots));
+    crate::require_ok(model.refill(cpu, &mut slots));
+    assert!(slots[0].is_none());
+}

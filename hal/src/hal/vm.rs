@@ -495,7 +495,7 @@ pub enum VcpuAdministrativeStopReason {
 #[cfg_attr(not(CONFIG_ARCH_AARCH64), allow(dead_code))]
 pub enum VcpuWaitReason {
     Interrupt,
-    Mmio,
+    Device,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -607,8 +607,8 @@ impl VcpuRunExit {
         {
             match self.backend {
                 #[cfg(CONFIG_ARCH_AARCH64)]
-                crate::arch::vm::GuestRunExit::Wait(crate::arch::vm::GuestWaitReason::Mmio) => {
-                    VcpuRunDisposition::Wait(VcpuWaitReason::Mmio)
+                crate::arch::vm::GuestRunExit::Wait(crate::arch::vm::GuestWaitReason::Device) => {
+                    VcpuRunDisposition::Wait(VcpuWaitReason::Device)
                 }
                 crate::arch::vm::GuestRunExit::Wait(
                     crate::arch::vm::GuestWaitReason::Interrupt,
@@ -1118,6 +1118,76 @@ pub fn access_guest_gic(
     crate::arch::vm::access_guest_gic(&mut state.context, vcpu_id, interrupts, access, operation)
 }
 
+/// Whether activation was deferred before loading any guest hardware.
+pub fn interrupt_entry_deferred(error: &VcpuInterruptError) -> bool {
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    {
+        matches!(error, VcpuInterruptError::InterruptGateClosed)
+    }
+    #[cfg(not(CONFIG_ARCH_AARCH64))]
+    {
+        let _ = error;
+        false
+    }
+}
+
+pub fn interrupt_entry_gate_closed(interrupts: &InterruptController) -> bool {
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    {
+        interrupts.entry_gate_closed()
+    }
+    #[cfg(not(CONFIG_ARCH_AARCH64))]
+    {
+        let _ = interrupts;
+        false
+    }
+}
+
+pub fn interrupt_access_pending(interrupts: &InterruptController, vcpu: u32) -> bool {
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    {
+        interrupts.active_access_pending(vcpu)
+    }
+    #[cfg(not(CONFIG_ARCH_AARCH64))]
+    {
+        let _ = (interrupts, vcpu);
+        false
+    }
+}
+
+/// Completes an internal GIC transaction without a userspace device request.
+pub fn take_interrupt_access(
+    interrupts: &InterruptController,
+    vcpu: u32,
+) -> Option<hyper::vm::exit::MmioAction> {
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    {
+        interrupts
+            .take_active_access(vcpu)
+            .map(|result| match result {
+                Ok(Some(value)) => hyper::vm::exit::MmioAction::CompleteRead(value),
+                Ok(None) => hyper::vm::exit::MmioAction::CompleteWrite,
+                Err(_) => hyper::vm::exit::MmioAction::Stop,
+            })
+    }
+    #[cfg(not(CONFIG_ARCH_AARCH64))]
+    {
+        let _ = (interrupts, vcpu);
+        None
+    }
+}
+
+pub fn cancel_interrupt_access(interrupts: &InterruptController, vcpu: u32) {
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    {
+        interrupts.cancel_active_access(vcpu);
+    }
+    #[cfg(not(CONFIG_ARCH_AARCH64))]
+    {
+        let _ = (interrupts, vcpu);
+    }
+}
+
 #[cfg(feature = "kernel-self-test")]
 pub fn guest_execution_available() -> bool {
     crate::arch::vm::guest_execution_available()
@@ -1283,28 +1353,28 @@ pub const fn maximum_guest_vcpus() -> u32 {
 }
 
 #[derive(Debug)]
-pub enum MmioContextError {
+pub enum DeviceContextError {
     #[cfg_attr(CONFIG_ARCH_AARCH64, allow(dead_code))]
     Unsupported,
     #[cfg_attr(not(CONFIG_ARCH_AARCH64), allow(dead_code))]
     InvalidState,
 }
 
-pub fn complete_mmio_call(
+pub fn complete_device_call(
     state: &mut VcpuHardwareState,
     action: hyper::vm::exit::MmioAction,
-) -> Result<(), MmioContextError> {
+) -> Result<(), DeviceContextError> {
     #[cfg(CONFIG_ARCH_AARCH64)]
     {
         state
             .context
-            .complete_mmio(action)
-            .map_err(|_| MmioContextError::InvalidState)
+            .complete_device(action)
+            .map_err(|_| DeviceContextError::InvalidState)
     }
     #[cfg(not(CONFIG_ARCH_AARCH64))]
     {
         let _ = (state, action);
-        Err(MmioContextError::Unsupported)
+        Err(DeviceContextError::Unsupported)
     }
 }
 

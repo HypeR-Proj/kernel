@@ -576,8 +576,8 @@ fn dispatch_synchronous(
                     }
                     VectorAction::unwind(aarch64_unwind_guest as *const () as usize)
                 }
-                Ok(GuestDispatch::Mmio(completion)) => {
-                    if capture_mmio_guest(frame, generation, completion).is_err() {
+                Ok(GuestDispatch::Device(completion)) => {
+                    if capture_device_guest(frame, generation, completion).is_err() {
                         fatal_exception(frame, entry, exception_class)
                     }
                     VectorAction::unwind(aarch64_unwind_guest as *const () as usize)
@@ -725,7 +725,7 @@ fn fatal_exception(frame: &ExceptionFrame, entry: ExceptionEntry, exception_clas
 enum GuestDispatch {
     Resume,
     Wait,
-    Mmio(super::vsysreg::GuestMmioCompletion),
+    Device(super::vsysreg::GuestDeviceCompletion),
     Terminal(super::context::GuestTerminalCause),
 }
 
@@ -771,7 +771,9 @@ fn dispatch_guest_synchronous(
         };
         let action = crate::arch::vm::dispatch_mmio(access);
         return match action {
-            hyper::vm::exit::MmioAction::Deferred => Ok(GuestDispatch::Mmio(completion)),
+            hyper::vm::exit::MmioAction::Deferred => Ok(GuestDispatch::Device(
+                super::vsysreg::GuestDeviceCompletion::Mmio(completion),
+            )),
             hyper::vm::exit::MmioAction::Unhandled | hyper::vm::exit::MmioAction::Stop => Ok(
                 GuestDispatch::Terminal(super::context::GuestTerminalCause::Mmio),
             ),
@@ -796,6 +798,14 @@ fn dispatch_guest_synchronous(
             super::context::GuestTerminalCause::Synchronous(
                 super::context::GuestSynchronousTerminal::Failed { exit, failure },
             ),
+        ));
+    }
+    if action == super::GuestSyncAction::InterruptAccess {
+        if !super::vsysreg::guest_sync_action_matches(exit, action) {
+            return Err(());
+        }
+        return Ok(GuestDispatch::Device(
+            super::vsysreg::GuestDeviceCompletion::DeactivateInterrupt,
         ));
     }
     let applied = super::apply_guest_sync_action(
@@ -830,16 +840,16 @@ fn capture_waiting_guest(frame: &ExceptionFrame, generation: u64) -> Result<(), 
     super::lower_el::close_captured_guest(generation, context).map_err(|_| ())
 }
 
-fn capture_mmio_guest(
+fn capture_device_guest(
     frame: &ExceptionFrame,
     generation: u64,
-    completion: super::vsysreg::GuestMmioCompletion,
+    completion: super::vsysreg::GuestDeviceCompletion,
 ) -> Result<(), ()> {
     let mut context = super::lower_el::guest_context(generation).map_err(|_| ())?;
     // SAFETY: This exact generation owns the pinned context; the masked vector
     // has not published it for scheduling or retained any raw-frame borrow.
     unsafe { context.as_mut() }
-        .capture_mmio(frame, completion)
+        .capture_device(frame, completion)
         .map_err(|_| ())?;
     super::lower_el::close_captured_guest(generation, context).map_err(|_| ())
 }

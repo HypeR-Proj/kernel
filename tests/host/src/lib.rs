@@ -240,6 +240,10 @@ mod vfs_scratch;
 #[cfg(test)]
 #[path = "cases/vgic.rs"]
 mod vgic;
+
+#[cfg(test)]
+#[path = "cases/vgic_quiesce.rs"]
+mod vgic_quiesce;
 #[cfg(test)]
 #[path = "cases/virtual_legacy_pc.rs"]
 mod virtual_legacy_pc;
@@ -324,3 +328,7 @@ mod aarch64_translation_identifiers;
 #[cfg(test)]
 #[path = "../../../src/mm/translation_epoch.rs"]
 mod translation_epoch_model;
+
+#[cfg(test)]
+#[path = "../../../hal/src/arch/aarch64/vgic/common.rs"]
+mod vgic_common;

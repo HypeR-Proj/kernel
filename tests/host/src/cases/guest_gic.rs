@@ -334,7 +334,7 @@ fn redistributor_type_requires_one_complete_doubleword() {
 }
 
 #[test]
-fn exact_active_registers_decode_without_exposing_model_state() {
+fn exact_active_registers_decode_and_expose_model_state() {
     let distributor = u64::from(DISTRIBUTOR_BASE);
     assert_eq!(
         model_register(distributor + 0x0304, AccessWidth::Word).descriptor(),
@@ -367,6 +367,14 @@ fn exact_active_registers_decode_without_exposing_model_state() {
         access,
         u32::MAX.into(),
     ));
+    assert_eq!(
+        crate::require_ok(read_model_register(
+            &controller,
+            VirtualCpuId::new(0),
+            access
+        )),
+        u64::from(u32::MAX)
+    );
 }
 
 #[test]

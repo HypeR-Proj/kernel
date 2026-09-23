@@ -563,6 +563,9 @@ pub const ICH_VTR_PREEMPTION_BITS_SHIFT: u64 = 26;
 pub const ICH_VTR_PRIORITY_BITS_SHIFT: u64 = 29;
 pub const ICH_VTR_BITS_MASK: u64 = 0x7;
 pub const ICH_HCR_ENABLE: u64 = 1 << 0;
+pub const ICH_HCR_TRAP_COMMON: u64 = 1 << 10;
+pub const ICH_HCR_TRAP_DIR: u64 = 1 << 14;
+pub const ICH_VTR_TRAP_DIR_SUPPORTED: u64 = 1 << 19;
 pub const ICH_VMCR_ENABLE_GROUP0: u64 = 1 << 0;
 pub const ICH_VMCR_ENABLE_GROUP1: u64 = 1 << 1;
 pub const ICH_VMCR_ACK_CONTROL: u64 = 1 << 2;
@@ -717,3 +720,13 @@ pub const SYSREG_CNTVCT_EL0: SystemRegisterEncoding = SystemRegisterEncoding::ne
 pub const SYSREG_ACTLR_EL1: SystemRegisterEncoding = SystemRegisterEncoding::new(3, 0, 1, 0, 1);
 pub const SYSREG_ICC_SGI1R_EL1: SystemRegisterEncoding =
     SystemRegisterEncoding::new(3, 0, 12, 11, 5);
+
+pub const SYSREG_ICC_PMR_EL1: SystemRegisterEncoding = SystemRegisterEncoding::new(3, 0, 4, 6, 0);
+pub const SYSREG_ICC_CTLR_EL1: SystemRegisterEncoding =
+    SystemRegisterEncoding::new(3, 0, 12, 12, 4);
+pub const SYSREG_ICC_RPR_EL1: SystemRegisterEncoding = SystemRegisterEncoding::new(3, 0, 12, 11, 3);
+pub const SYSREG_ICC_DIR_EL1: SystemRegisterEncoding = SystemRegisterEncoding::new(3, 0, 12, 11, 1);
+pub const SYSREG_ICC_SGI0R_EL1: SystemRegisterEncoding =
+    SystemRegisterEncoding::new(3, 0, 12, 11, 7);
+pub const SYSREG_ICC_ASGI1R_EL1: SystemRegisterEncoding =
+    SystemRegisterEncoding::new(3, 0, 12, 11, 6);

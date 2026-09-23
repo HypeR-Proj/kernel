@@ -20,6 +20,7 @@ resolver = "3"
 
 [features]
 default = []
+kernel-vgic-tc-test = ["hyper-hal/kernel-vgic-tc-test"]
 kernel-self-test = ["hyper/kernel-self-test", "hyper-hal/kernel-self-test"]
 kernel-stack-audit = ["hyper/kernel-stack-audit", "hyper-hal/kernel-stack-audit"]
 

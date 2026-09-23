@@ -222,7 +222,11 @@ verify-boot: image
 verify-smp: image
 	$(MAKE) test-qemu ARCH=$(ARCH) QEMU_CPU=$(QEMU_CPU)
 
-run: image $(QEMU_RUN_PREREQUISITES)
+run:
+	@test -f "$(KERNEL_IMAGE)" || { echo "Missing kernel image; run make first" >&2; exit 2; }
+	@for artifact in $(QEMU_RUN_PREREQUISITES); do \
+		test -f "$$artifact" || { echo "Missing $$artifact; build it before run" >&2; exit 2; }; \
+	done
 	@test -n "$(INITRAMFS)" || { \
 		echo "INITRAMFS must name a newc archive containing an executable /init" >&2; \
 		exit 2; \
