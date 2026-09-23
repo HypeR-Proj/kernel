@@ -46,7 +46,9 @@ to cover the userspace shutdown path as well as PSCI.
 Generated payloads live under `kernel/target/guest/<arch>/`. Run
 `make clean-guest-assets ARCH=aarch64` to remove generated kernel/rootfs
 inputs; verified download caches can be reused. Plain AArch64 `make` rebuilds
-the board disk, resetting its data. `make run` reuses an existing disk.
+the kernel/bootstrap and preserves an existing board disk. Use `make rebuild`
+to repack guest payloads into that disk, resetting its persistent contents.
+`make run` only launches existing artifacts; it does not regenerate them.
 
 The Linux kernel is licensed under GPL-2.0-only. Alpine packages have their own
 licenses. Do not redistribute generated payloads as part of an Apache-2.0-only

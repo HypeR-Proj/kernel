@@ -15,7 +15,9 @@ this directory.
 
 | Path | Responsibility |
 | --- | --- |
-| `src/` | Kernel, architecture, HAL, driver, VM, and reusable mechanism sources |
+| `src/` | Kernel policy, portable contracts, drivers, VM models and reusable mechanisms |
+| `hal/` | Selected HAL crate and private architecture implementations |
+| `core/` | Manifest for the reusable `src/lib.rs` library |
 | `configs/` and `Kconfig` | Supported platform configurations and configuration schema |
 | `docs/` | Kernel architecture, ABI, boot, VM, and platform contracts |
 | `tests/` | Host, self-test, image, and QEMU kernel verification |

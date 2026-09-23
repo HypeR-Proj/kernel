@@ -332,3 +332,7 @@ mod translation_epoch_model;
 #[cfg(test)]
 #[path = "../../../hal/src/arch/aarch64/vgic/common.rs"]
 mod vgic_common;
+
+#[cfg(test)]
+#[path = "../../../hal/src/arch/aarch64/vgic/bank.rs"]
+mod vgic_bank;

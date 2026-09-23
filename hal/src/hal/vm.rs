@@ -363,6 +363,20 @@ pub unsafe fn activate_hardware(
     }
 }
 
+/// Consumes the diagnostic that outer cleanup reused a locally saved bank.
+/// Logging belongs to kernel policy, outside the hardware transition.
+pub fn take_reused_interrupt_save(state: &mut VcpuHardwareState) -> bool {
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    {
+        state.context.take_reused_vgic_save()
+    }
+    #[cfg(not(CONFIG_ARCH_AARCH64))]
+    {
+        let _ = state;
+        false
+    }
+}
+
 /// Saves and detaches the current vCPU's local machine state.
 ///
 /// # Safety

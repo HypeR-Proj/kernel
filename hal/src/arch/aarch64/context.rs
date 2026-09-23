@@ -97,6 +97,7 @@ pub struct VcpuContext {
     terminal_vector: u64,
     terminal_synchronous: Option<GuestSynchronousTerminal>,
     deferred_device: Option<super::vsysreg::GuestDeviceCompletion>,
+    vgic_bank: super::vgic::bank::Bank,
 }
 
 const GUEST_RUN_READY: u64 = 1;
@@ -266,6 +267,7 @@ impl VcpuContext {
             terminal_vector: 0,
             terminal_synchronous: None,
             deferred_device: None,
+            vgic_bank: super::vgic::bank::Bank::new(),
         }
     }
 
@@ -428,25 +430,35 @@ impl VcpuContext {
         }
     }
 
+    pub(crate) fn take_reused_vgic_save(&mut self) -> bool {
+        self.vgic_bank.take_reused_save()
+    }
+
     /// Loads this vCPU's GIC virtualization state on the current CPU.
     ///
     /// # Safety
     ///
     /// No other CPU may run this vCPU, and guest execution must not already be
     /// active on the calling CPU.
-    pub(crate) unsafe fn activate_vgic(&self) -> Result<(), super::VgicError> {
-        // SAFETY: This method forwards its exclusive-vCPU/local-CPU contract.
-        unsafe { super::vgic::activate(&self.vgic) }
+    pub(crate) unsafe fn activate_vgic(&mut self) -> Result<(), super::VgicError> {
+        self.vgic_bank.load(super::VgicError::StateMismatch, || {
+            // SAFETY: The caller owns the local bank; the guard rejects double loads.
+            unsafe { super::vgic::activate(&self.vgic) }
+        })
     }
 
     /// Saves this vCPU's GIC virtualization state and disables guest delivery.
     ///
     /// # Safety
     ///
-    /// This context must be the vCPU currently loaded on the calling CPU.
+    /// The caller must retain exclusive ownership of this CPU bank, with local
+    /// IRQs masked. It may already have been saved by a local operation; no
+    /// other vCPU may have acquired the bank in between.
     pub(crate) unsafe fn deactivate_vgic(&mut self) -> Result<(), super::VgicError> {
-        // SAFETY: This method forwards its active-local-vCPU contract.
-        unsafe { super::vgic::deactivate(&mut self.vgic) }
+        self.vgic_bank.save(super::VgicError::StateMismatch, || {
+            // SAFETY: The caller owns this bank. Already-saved cleanup never reads it.
+            unsafe { super::vgic::deactivate(&mut self.vgic) }
+        })
     }
 
     /// Loads this vCPU's architectural virtual timer state locally.
