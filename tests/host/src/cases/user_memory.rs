@@ -2626,3 +2626,77 @@ fn vmar_hint_uses_lowest_free_or_nearest_base_without_weakening_exact() {
         crate::require_ok(space.try_create_vmar_hint(root, PAGE_SIZE, base + PAGE_SIZE * 100));
     assert_eq!(distant.range().base().get(), base + PAGE_SIZE * 7);
 }
+
+#[test]
+fn vmar_hint_matches_exhaustive_placement_with_mixed_occupancy() {
+    const PAGES: usize = 6;
+    let base = 0x100_000;
+    for mask in 0_u64..(1 << PAGES) {
+        let (backend, account) = fixtures();
+        let space = crate::require_ok(UserAddressSpace::try_new(
+            window(),
+            slice(base, PAGE_SIZE * PAGES as u64),
+            backend.clone(),
+            account.clone(),
+        ));
+        let root = space.root_vmar();
+        // Reverse insertion order must not affect placement. Nested children
+        // with the same base must not obstruct their grandparent separately.
+        for page in (0..PAGES).rev() {
+            if mask & (1 << page) == 0 {
+                continue;
+            }
+            let range = slice(base + page as u64 * PAGE_SIZE, PAGE_SIZE);
+            if page % 2 == 0 {
+                let child = crate::require_ok(space.try_create_vmar(root, range));
+                crate::require_ok(space.try_create_vmar(child, range));
+            } else {
+                let vmo = crate::require_ok(WritableVmo::try_new(
+                    PAGE_SIZE,
+                    backend.clone(),
+                    account.clone(),
+                ));
+                crate::require_ok(vmo.populate(0, PAGE_SIZE));
+                let map = crate::require_ok(space.prepare_map_writable(
+                    root,
+                    range,
+                    vmo,
+                    0,
+                    Permissions::read_write(),
+                    Permissions::read_write(),
+                ));
+                complete(crate::require_ok(map.commit_for_test()));
+            }
+        }
+        for pages in 1..=PAGES + 1 {
+            for hint_page in 0..=PAGES + 2 {
+                let hint = if hint_page == 0 {
+                    0
+                } else {
+                    base + (hint_page - 1) as u64 * PAGE_SIZE
+                };
+                // Independent oracle enumerates every page-aligned candidate,
+                // rather than duplicating the free-gap algorithm.
+                let expected = (0..PAGES)
+                    .filter(|&start| {
+                        start + pages <= PAGES
+                            && (start..start + pages).all(|p| mask & (1 << p) == 0)
+                    })
+                    .map(|start| base + start as u64 * PAGE_SIZE)
+                    .min_by_key(|&address| (address.abs_diff(hint), address));
+                let result = space.try_create_vmar_hint(root, pages as u64 * PAGE_SIZE, hint);
+                if let Some(address) = expected {
+                    let child = crate::require_ok(result);
+                    assert_eq!(
+                        child.range().base().get(),
+                        address,
+                        "mask={mask} pages={pages} hint={hint}"
+                    );
+                    crate::require_ok(space.destroy_vmar(child));
+                } else {
+                    assert!(matches!(result, Err(AddressSpaceError::Allocation)));
+                }
+            }
+        }
+    }
+}
