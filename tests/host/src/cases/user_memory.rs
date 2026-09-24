@@ -2493,3 +2493,136 @@ fn resident_ram_counts_sparse_backing_without_populating_it() {
     assert!(vmo.resident_bytes(PAGE_SIZE * 520, PAGE_SIZE).is_err());
     assert!(vmo.same_storage(&vmo.clone()));
 }
+
+#[test]
+fn automatic_vmar_placement_respects_mappings_children_and_reuses_holes() {
+    let (backend, account) = fixtures();
+    let base = 0x100_000;
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(base, PAGE_SIZE * 8),
+        backend.clone(),
+        account.clone(),
+    ));
+    let root = space.root_vmar();
+    let vmo = crate::require_ok(WritableVmo::try_new(PAGE_SIZE, backend, account));
+    crate::require_ok(vmo.populate(0, PAGE_SIZE));
+    let map = crate::require_ok(space.prepare_map_writable(
+        root,
+        slice(base + PAGE_SIZE * 7, PAGE_SIZE),
+        vmo,
+        0,
+        Permissions::read_only(),
+        Permissions::read_only(),
+    ));
+    complete(crate::require_ok(map.commit_for_test()));
+    let fixed =
+        crate::require_ok(space.try_create_vmar(root, slice(base + PAGE_SIZE * 3, PAGE_SIZE * 2)));
+    let high =
+        crate::require_ok(space.try_create_vmar_hint(root, PAGE_SIZE * 2, base + PAGE_SIZE * 8));
+    assert_eq!(high.range(), slice(base + PAGE_SIZE * 5, PAGE_SIZE * 2));
+    let low =
+        crate::require_ok(space.try_create_vmar_hint(root, PAGE_SIZE * 3, base + PAGE_SIZE * 8));
+    assert_eq!(low.range(), slice(base, PAGE_SIZE * 3));
+    assert!(matches!(
+        space.try_create_vmar_hint(root, PAGE_SIZE, base + PAGE_SIZE * 8),
+        Err(AddressSpaceError::Allocation)
+    ));
+    assert!(
+        space
+            .try_create_vmar_hint(root, 0, base + PAGE_SIZE * 8)
+            .is_err()
+    );
+    assert!(
+        space
+            .try_create_vmar_hint(root, PAGE_SIZE + 1, base + PAGE_SIZE * 8)
+            .is_err()
+    );
+    assert!(
+        space
+            .try_create_vmar_hint(root, u64::MAX, base + PAGE_SIZE * 8)
+            .is_err()
+    );
+    crate::require_ok(space.destroy_vmar(high));
+    let reused =
+        crate::require_ok(space.try_create_vmar_hint(root, PAGE_SIZE * 2, base + PAGE_SIZE * 8));
+    assert_eq!(reused.range(), high.range());
+    let nested = crate::require_ok(space.try_create_vmar_hint(fixed, PAGE_SIZE * 2, 0));
+    assert_eq!(nested.range(), fixed.range());
+    crate::require_ok(space.destroy_vmar(nested));
+    crate::require_ok(space.destroy_vmar(fixed));
+    assert!(matches!(
+        space.try_create_vmar_hint(fixed, PAGE_SIZE, 0),
+        Err(AddressSpaceError::StaleVmar)
+    ));
+}
+
+#[test]
+fn automatic_vmar_placement_uses_high_application_range() {
+    for limit in [1u64 << 37, 1u64 << 47] {
+        let (backend, account) = fixtures();
+        let window = crate::require_ok(UserAddressWindow::for_test(0, limit));
+        let space = crate::require_ok(UserAddressSpace::try_new(
+            window,
+            slice(0x10_0000, limit - 0x10_0000),
+            backend.clone(),
+            account.clone(),
+        ));
+        let child = crate::require_ok(space.try_create_vmar_hint(
+            space.root_vmar(),
+            PAGE_SIZE * 3,
+            limit - PAGE_SIZE * 3,
+        ));
+        assert_eq!(child.range().end().get(), limit);
+        let vmo = crate::require_ok(WritableVmo::try_new(PAGE_SIZE, backend, account));
+        crate::require_ok(vmo.populate(0, PAGE_SIZE));
+        let range = slice(child.range().base().get() + PAGE_SIZE, PAGE_SIZE);
+        let map = crate::require_ok(space.prepare_map_writable(
+            child,
+            range,
+            vmo,
+            0,
+            Permissions::read_write(),
+            Permissions::read_write(),
+        ));
+        complete(crate::require_ok(map.commit_for_test()));
+        let unmap = crate::require_ok(space.prepare_unmap(child, range));
+        complete(crate::require_ok(unmap.commit_for_test()));
+        crate::require_ok(space.destroy_vmar(child));
+    }
+}
+
+#[test]
+fn vmar_hint_uses_lowest_free_or_nearest_base_without_weakening_exact() {
+    let (backend, account) = fixtures();
+    let base = 0x100_000;
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(base, PAGE_SIZE * 8),
+        backend,
+        account,
+    ));
+    let root = space.root_vmar();
+    let occupied =
+        crate::require_ok(space.try_create_vmar(root, slice(base + PAGE_SIZE * 3, PAGE_SIZE)));
+    let auto = crate::require_ok(space.try_create_vmar_hint(root, PAGE_SIZE, 0));
+    assert_eq!(auto.range().base().get(), base);
+    let near = crate::require_ok(space.try_create_vmar_hint(root, PAGE_SIZE, base + PAGE_SIZE * 3));
+    assert_eq!(near.range().base().get(), base + PAGE_SIZE * 2);
+    let exact_hint =
+        crate::require_ok(space.try_create_vmar_hint(root, PAGE_SIZE, base + PAGE_SIZE * 6));
+    assert_eq!(exact_hint.range().base().get(), base + PAGE_SIZE * 6);
+    assert!(matches!(
+        space.try_create_vmar(root, occupied.range()),
+        Err(AddressSpaceError::Overlap)
+    ));
+    assert!(space.try_create_vmar(root, slice(0, PAGE_SIZE)).is_err());
+    assert!(
+        space
+            .try_create_vmar_hint(root, PAGE_SIZE, base + 1)
+            .is_err()
+    );
+    let distant =
+        crate::require_ok(space.try_create_vmar_hint(root, PAGE_SIZE, base + PAGE_SIZE * 100));
+    assert_eq!(distant.range().base().get(), base + PAGE_SIZE * 7);
+}
