@@ -336,3 +336,17 @@ mod vgic_common;
 #[cfg(test)]
 #[path = "../../../hal/src/arch/aarch64/vgic/bank.rs"]
 mod vgic_bank;
+
+#[cfg(test)]
+use hyper::{collections, debug, mm};
+#[cfg(test)]
+#[path = "../../../src/collections/persistent_avl.rs"]
+mod persistent_avl;
+
+#[cfg(test)]
+#[path = "../../../src/collections/indexed_heap.rs"]
+mod indexed_heap;
+
+#[cfg(test)]
+#[path = "cases/collection_links.rs"]
+mod collection_links;

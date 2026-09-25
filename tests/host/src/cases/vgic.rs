@@ -23,7 +23,10 @@ fn bounded_runtime_storage_rejects_growth_past_its_preallocated_limit() {
     let mut storage = crate::require_ok(ready_model::BoundedVec::try_new(2));
     assert_eq!(storage.push(10), Ok(()));
     assert_eq!(storage.push(20), Ok(()));
-    assert_eq!(storage.push(30), Err(ready_model::ReadyError::Capacity));
+    assert_eq!(
+        storage.push(30),
+        Err(hyper::collections::bounded_vec::Error::Capacity)
+    );
     assert_eq!(storage.len(), 2);
     assert_eq!(storage.get(0), Some(&10));
     assert_eq!(storage.get(1), Some(&20));

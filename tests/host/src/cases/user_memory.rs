@@ -2700,3 +2700,71 @@ fn vmar_hint_matches_exhaustive_placement_with_mixed_occupancy() {
         }
     }
 }
+
+#[test]
+fn vmar_free_index_is_published_atomically_with_mapping_transactions() {
+    let (backend, account) = fixtures();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x30_000, PAGE_SIZE * 8),
+        backend.clone(),
+        account.clone(),
+    ));
+    let root = space.root_vmar();
+    let range = slice(0x32_000, PAGE_SIZE);
+    let vmo = crate::require_ok(WritableVmo::try_new(PAGE_SIZE, backend, account));
+    crate::require_ok(vmo.populate(0, PAGE_SIZE));
+    let prepared = crate::require_ok(space.prepare_map_writable(
+        root,
+        range,
+        vmo.clone(),
+        0,
+        Permissions::read_write(),
+        Permissions::read_write(),
+    ));
+    // Preparation alone must not consume the hole. A newer child reservation
+    // wins, and the stale mapping must not overwrite its free-space index.
+    let child = crate::require_ok(space.try_create_vmar(root, range));
+    assert!(matches!(
+        prepared.commit_for_test(),
+        Err(AddressSpaceError::StaleTransaction)
+    ));
+    assert!(matches!(
+        space.try_create_vmar(root, range),
+        Err(AddressSpaceError::Overlap)
+    ));
+    crate::require_ok(space.destroy_vmar(child));
+    let prepared = crate::require_ok(space.prepare_map_writable(
+        root,
+        range,
+        vmo,
+        0,
+        Permissions::read_write(),
+        Permissions::read_write(),
+    ));
+    complete(crate::require_ok(prepared.commit_for_test()));
+    let unmap = crate::require_ok(space.prepare_unmap(root, range));
+    assert!(matches!(
+        space.try_create_vmar(root, range),
+        Err(AddressSpaceError::Overlap)
+    ));
+    let other = crate::require_ok(space.try_create_vmar(root, slice(0x34_000, PAGE_SIZE)));
+    assert!(matches!(
+        unmap.commit_for_test(),
+        Err(AddressSpaceError::StaleTransaction)
+    ));
+    assert!(matches!(
+        space.try_create_vmar(root, range),
+        Err(AddressSpaceError::Overlap)
+    ));
+    let unmap = crate::require_ok(space.prepare_unmap(root, range));
+    complete(crate::require_ok(unmap.commit_for_test()));
+    crate::require_ok(space.destroy_vmar(other));
+    // Mapping removal and child destruction must coalesce both holes back into
+    // the complete parent range.
+    assert!(
+        space
+            .try_create_vmar(root, slice(0x30_000, PAGE_SIZE * 8))
+            .is_ok()
+    );
+}
