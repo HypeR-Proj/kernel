@@ -3,8 +3,9 @@
 
 //! Bare-metal contracts for level-triggered object observation.
 
+use alloc::boxed::Box;
 use hyper::cpu::CpuIndex;
-use hyper::mm::try_box;
+use hyper::mm::{FallibleArc, try_box};
 use hyper::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::kernel::accounting::{ResourceAmount, ResourceDomain, ResourceKind, ResourceLimits};
@@ -68,7 +69,7 @@ pub(super) fn run() -> Result<(), Error> {
         ResourceDomain::try_new_root(ResourceLimits::UNLIMITED).map_err(|_| Error::Resource)?;
     let event = Event::try_new(&domain).map_err(|_| Error::Event)?;
     let second_event = Event::try_new(&domain).map_err(|_| Error::Event)?;
-    let state = try_box(TestState {
+    let state = FallibleArc::try_new(TestState {
         domain,
         event,
         second_event,
@@ -111,7 +112,7 @@ struct TestState {
 }
 
 /// Every item is validated before an already-ready duplicate may be selected.
-fn exercise_multi_wait_validation(state: &TestState) -> Result<(), Error> {
+fn exercise_multi_wait_validation(state: &FallibleArc<TestState>) -> Result<(), Error> {
     state
         .event
         .signal(0, Event::SIGNALED.bits())
@@ -140,7 +141,7 @@ fn exercise_multi_wait_validation(state: &TestState) -> Result<(), Error> {
 }
 
 /// Cancellation after scheduler arming must remove every shared registration.
-fn exercise_multi_wait_cancellation(state: &TestState) -> Result<(), Error> {
+fn exercise_multi_wait_cancellation(state: &FallibleArc<TestState>) -> Result<(), Error> {
     reset_event(&state.second_event)?;
     let first = state
         .event
@@ -172,17 +173,11 @@ fn exercise_multi_wait_cancellation(state: &TestState) -> Result<(), Error> {
 }
 
 /// One shared scheduler generation must wake from any registered source.
-fn exercise_multi_wait_wakeup(state: &TestState) -> Result<(), Error> {
+fn exercise_multi_wait_wakeup(state: &FallibleArc<TestState>) -> Result<(), Error> {
     reset_event(&state.second_event)?;
     COMPLETION.store(0, Ordering::Release);
     FAILURE.store(0, Ordering::Release);
-    let waiter = scheduler::kthread_create_with_affinity(
-        "object-wait/many",
-        multi_event_waiter,
-        core::ptr::from_ref(state).expose_provenance(),
-        CpuMask::single(CpuIndex::BOOT),
-    )?;
-    scheduler::thread_ready(waiter)?;
+    spawn_waiter(state, "object-wait/many", multi_event_waiter)?;
     if !crate::kernel::task::wait_for_test_progress(
         crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
         || {
@@ -202,7 +197,7 @@ fn exercise_multi_wait_wakeup(state: &TestState) -> Result<(), Error> {
 }
 
 /// A level asserted before registration must complete the Armed generation.
-fn exercise_signal_before_arm(state: &TestState) -> Result<(), Error> {
+fn exercise_signal_before_arm(state: &FallibleArc<TestState>) -> Result<(), Error> {
     state
         .event
         .signal(0, Event::SIGNALED.bits())
@@ -213,7 +208,7 @@ fn exercise_signal_before_arm(state: &TestState) -> Result<(), Error> {
 }
 
 /// Clearing a level after notification must not replace the committed snapshot.
-fn exercise_latched_observation(state: &TestState) -> Result<(), Error> {
+fn exercise_latched_observation(state: &FallibleArc<TestState>) -> Result<(), Error> {
     start_waiter(state, "object-wait/latched", PRECURSOR_NONE)?;
     wait_for_registration(&state.event)?;
     state
@@ -230,7 +225,7 @@ fn exercise_latched_observation(state: &TestState) -> Result<(), Error> {
 
 /// An exact resolver which wins while Armed must survive object publication.
 fn exercise_resolution_before_park(
-    state: &TestState,
+    state: &FallibleArc<TestState>,
     precursor: usize,
     expected: u64,
     name: &str,
@@ -259,24 +254,49 @@ fn exercise_sequence_exhaustion(event: &Event) -> Result<(), Error> {
     Ok(())
 }
 
-fn start_waiter(state: &TestState, name: &str, precursor: usize) -> Result<(), Error> {
+fn start_waiter(state: &FallibleArc<TestState>, name: &str, precursor: usize) -> Result<(), Error> {
     COMPLETION.store(0, Ordering::Release);
     FAILURE.store(0, Ordering::Release);
     PRECURSOR.store(precursor, Ordering::Release);
-    let waiter = scheduler::kthread_create_with_affinity(
+    spawn_waiter(state, name, event_waiter)
+}
+
+/// Transfer an independent owner to each worker. An early test error may drop
+/// the caller's state before fail-stop reaches other CPUs; workers must not
+/// borrow that allocation, even though it is on the heap rather than the stack.
+fn spawn_waiter(
+    state: &FallibleArc<TestState>,
+    name: &str,
+    entry: crate::kernel::task::thread::KernelThreadEntry,
+) -> Result<(), Error> {
+    let owned = try_box(state.clone()).map_err(|_| Error::Resource)?;
+    let pointer = Box::into_raw(owned);
+    let waiter = match scheduler::kthread_create_with_affinity(
         name,
-        event_waiter,
-        core::ptr::from_ref(state).expose_provenance(),
+        entry,
+        pointer.expose_provenance(),
         CpuMask::single(CpuIndex::BOOT),
-    )?;
+    ) {
+        Ok(waiter) => waiter,
+        Err(error) => {
+            // SAFETY: failed construction never published a worker.
+            drop(unsafe { Box::from_raw(pointer) });
+            return Err(error.into());
+        }
+    };
+    // If publication fails, retain the argument for the dormant worker rather
+    // than freeing memory that its entry point can still consume.
     scheduler::thread_ready(waiter)?;
     Ok(())
 }
 
 extern "C" fn event_waiter(argument: usize) {
-    // SAFETY: `run` owns this boxed state until DONE proves that the one-shot
-    // waiter returned and scheduler quiescence reclaimed its stack.
-    let state = unsafe { &*core::ptr::with_exposed_provenance::<TestState>(argument) };
+    // SAFETY: spawn_waiter transfers one Box to this one-shot worker.
+    let state = unsafe {
+        Box::from_raw(core::ptr::with_exposed_provenance_mut::<
+            FallibleArc<TestState>,
+        >(argument))
+    };
     let bytes = match u64::try_from(PreparedSignalWait::allocation_size()) {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -337,8 +357,12 @@ extern "C" fn event_waiter(argument: usize) {
 }
 
 extern "C" fn multi_event_waiter(argument: usize) {
-    // SAFETY: `run` retains the boxed state until DONE and worker quiescence.
-    let state = unsafe { &*core::ptr::with_exposed_provenance::<TestState>(argument) };
+    // SAFETY: spawn_waiter transfers one Box to this one-shot worker.
+    let state = unsafe {
+        Box::from_raw(core::ptr::with_exposed_provenance_mut::<
+            FallibleArc<TestState>,
+        >(argument))
+    };
     let result = state
         .event
         .signal_source()

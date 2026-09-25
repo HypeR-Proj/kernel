@@ -311,6 +311,7 @@ pub(crate) fn run() -> Result<(), Error> {
     }
     crate::pr_info!("HypeR test: Native execution resumed and retired after ASID rollover");
 
+    super::atomic_wait::run(&domain, &group, &PROGRAM)?;
     verify_pending_creation_exit()?;
 
     group.request_stop().map_err(|_| Error::Group)?;
