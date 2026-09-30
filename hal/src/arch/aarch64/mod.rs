@@ -8,6 +8,7 @@ mod barrier;
 mod cache;
 mod context;
 mod exception;
+mod exposed_copy;
 mod gic_cpu_interface;
 mod guest_cpu_contract;
 mod guest_cpu_model;

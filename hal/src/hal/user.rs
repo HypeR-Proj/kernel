@@ -752,6 +752,8 @@ pub fn native_fault_test_programs_for_test() -> [&'static [u8]; 2] {
 ///
 /// The ranges must be resident, valid for `length`, and non-overlapping. The
 /// operation is non-faulting by construction of the retained page mapping.
+/// Both ranges are Normal memory, never MMIO. This provides neither an atomic
+/// snapshot nor a publication barrier; the owner synchronizes its protocol.
 pub unsafe fn copy_from_exposed(
     source: *const u8,
     destination: *mut u8,
