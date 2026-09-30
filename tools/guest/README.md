@@ -31,12 +31,12 @@ and restarts the shell on exit. This is a development image, without a login ser
 OpenRC service setup. `make test-alpine-rootfs` verifies a 1 MiB file write,
 flush and checksum after VM stop/start using a disposable board disk.
 
-Alpine images default to 256 MiB of RAM; override `NATIVE_GUEST_MEMORY_BYTES`
-when building to select another capacity. AArch64 images default to two vCPUs
-on both QEMU and Pi 5. Override
-`NATIVE_GUEST_VCPUS` when building to select another topology; the dedicated
-`make test-guest-smp` fixture still defaults to four vCPUs. RISC-V guests
-remain single-vCPU.
+Alpine definitions default to 256 MiB of RAM and two vCPUs on AArch64
+(one on RISC-V). Set `configuration.memory-bytes` and `configuration.vcpus`
+in the board JSON or Native `vms.json` to change these values. ITBs contain only
+payloads and can be reused without rebuilding. The `make test-guest-smp` fixture
+uses `app/init/tests/config/vms-smp-4.json`; select a different JSON definition
+with `NATIVE_SMP_VM_CONFIG`.
 
 Use ordinary `poweroff` and `reboot` commands. BusyBox init runs the shutdown
 actions to sync and unmount filesystems (remounting busy filesystems read-only)
