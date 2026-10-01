@@ -268,6 +268,24 @@ fn complete<BackendType: PageBackend, AccountType: MemoryAccount>(
 }
 
 #[test]
+fn writable_metadata_requirement_is_exact_and_rejects_invalid_ranges() {
+    type TestVmo = WritableVmo<Backend, Account>;
+    let one = crate::require_ok(TestVmo::metadata_layout(PAGE_SIZE));
+    let many = crate::require_ok(TestVmo::metadata_layout(32768 * PAGE_SIZE));
+    assert_eq!(many.size(), 32768 * one.size());
+    assert_eq!(many.align(), one.align());
+    assert_eq!(one.size(), core::mem::size_of::<usize>());
+    assert!(matches!(
+        TestVmo::metadata_layout(0),
+        Err(VmoError::InvalidRange)
+    ));
+    assert!(matches!(
+        TestVmo::metadata_layout(PAGE_SIZE + 1),
+        Err(VmoError::InvalidRange)
+    ));
+}
+
+#[test]
 fn typed_ranges_check_overflow_and_empty_copy_is_a_noop() {
     assert!(UserSlice::new(UserAddress::new(u64::MAX), 1).is_err());
     let (backend, account) = fixtures();

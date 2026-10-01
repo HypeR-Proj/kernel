@@ -13,6 +13,7 @@ mod file_locks;
 mod guest_entry_irq;
 mod guest_memory_access;
 mod handle_pages;
+mod io_cache;
 mod log_flush_barrier;
 mod native_syscall;
 #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
@@ -57,6 +58,10 @@ pub(crate) fn run() {
         crate::kernel::task::scheduler::test_wait_queue_topology,
     );
     run_case("kernel scheduler/sync tests", scheduler_sync::run);
+    run_case(
+        "file-cache growth and pressure ownership tests",
+        io_cache::run,
+    );
     run_case(
         "parallel scheduler wait/wake tests",
         scheduler_parallel::run,

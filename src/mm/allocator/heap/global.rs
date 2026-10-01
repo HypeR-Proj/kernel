@@ -36,6 +36,7 @@ const SNAPSHOT_OBJECTS: usize = {
 };
 type Snapshot = CacheSnapshot<SNAPSHOT_OBJECTS, { crate::cpu::MAX_CPUS }>;
 const CACHE_LIMITS: [usize; CACHED_CLASS_COUNT] = [16, 16, 12, 8, 4, 2];
+const EMERGENCY_RECLAIM_PAGES: usize = 64;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum CacheReclaimReason {
@@ -66,6 +67,41 @@ pub unsafe trait CpuLocalCachePolicy: InterruptMask {
 
     fn pin() -> Option<Self::Pin>;
     fn current_cpu(pin: &Self::Pin) -> Option<CpuIndex>;
+
+    /// Observes physical pressure under the central allocator lock. This must
+    /// be allocation-free and may only publish atomic/IRQ work; it must not
+    /// enter allocator, scheduler, cache, or other blocking synchronization.
+    fn memory_pressure(_available: PageAvailability) {}
+
+    /// Observes returned physical backing or released cache metadata claims.
+    /// The same under-lock, allocation-free restrictions apply as above.
+    fn memory_released(_available: PageAvailability) {}
+
+    /// Best-effort recovery after ordinary allocation fails. No allocator or
+    /// magazine lock is held. The implementation must not allocate, sleep, or
+    /// wait for a cache lock, and must inspect at most `pages` cache payloads.
+    fn try_reclaim(_pages: usize) -> usize {
+        0
+    }
+}
+
+/// Cheap central-buddy snapshot; excludes diagnostic magazine traversal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PageAvailability {
+    pub managed_pages: usize,
+    pub free_pages: usize,
+    /// Largest currently allocatable contiguous buddy block.
+    pub largest_free_order: Option<usize>,
+    pub file_cache_pages: usize,
+    /// In-flight cache metadata construction, not an additional allocation.
+    pub pending_cache_metadata_pages: usize,
+}
+
+impl PageAvailability {
+    pub const fn available_for_cache(self) -> usize {
+        self.free_pages
+            .saturating_sub(self.pending_cache_metadata_pages)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -77,11 +113,64 @@ pub enum CacheActivationError {
 
 struct AllocatorState {
     heap: Option<SlabAllocator>,
+    pending_cache_metadata_pages: usize,
 }
 
 impl AllocatorState {
     const fn uninitialized() -> Self {
-        Self { heap: None }
+        Self {
+            heap: None,
+            pending_cache_metadata_pages: 0,
+        }
+    }
+
+    fn availability(&self) -> Option<PageAvailability> {
+        let heap = self.heap.as_ref()?;
+        let buddy = heap.buddy.stats();
+        Some(PageAvailability {
+            managed_pages: buddy.managed_pages,
+            free_pages: buddy.free_pages,
+            largest_free_order: buddy.largest_free_order(),
+            file_cache_pages: heap.page_owners[PageOwner::FileCache.index()].pages,
+            pending_cache_metadata_pages: self.pending_cache_metadata_pages,
+        })
+    }
+
+    fn observe_pressure<P: CpuLocalCachePolicy>(&self) {
+        if let Some(available) = self.availability() {
+            P::memory_pressure(available);
+        }
+    }
+
+    fn observe_release<P: CpuLocalCachePolicy>(&self) {
+        if let Some(available) = self.availability() {
+            P::memory_released(available);
+        }
+    }
+}
+
+/// A conservative claim on headroom while cache metadata is constructed.
+///
+/// Keep this token until all backing allocations have completed, or until all
+/// partial allocations have been released on rollback. Actual backing already
+/// reduces buddy free pages; retaining the claim during construction therefore
+/// deliberately double-counts it. Ordinary allocations are never constrained
+/// by these claims and can still make a metadata construction fail.
+#[must_use]
+pub struct CacheMetadataReservation<'a, P: CpuLocalCachePolicy> {
+    allocator: &'a KernelGlobalAllocator<P>,
+    pages: usize,
+}
+
+impl<P: CpuLocalCachePolicy> Drop for CacheMetadataReservation<'_, P> {
+    fn drop(&mut self) {
+        self.allocator.state.with(|state| {
+            state.pending_cache_metadata_pages = state
+                .pending_cache_metadata_pages
+                .checked_sub(self.pages)
+                .unwrap_or_else(|| allocator_fault(AllocatorFault::AllocationCountUnderflow));
+            state.observe_release::<P>();
+        });
     }
 }
 
@@ -371,6 +460,63 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
         Some(stats)
     }
 
+    pub fn page_availability(&self) -> Option<PageAvailability> {
+        self.state.with(|state| state.availability())
+    }
+
+    /// Reserves metadata headroom atomically against cache pages and other
+    /// metadata construction. This neither allocates nor reclaims memory.
+    pub fn try_reserve_cache_metadata(
+        &self,
+        pages: usize,
+        min_free_pages: usize,
+    ) -> Option<CacheMetadataReservation<'_, P>> {
+        self.state.with(|state| {
+            let available = state.availability()?;
+            let pending = state.pending_cache_metadata_pages.checked_add(pages)?;
+            if available.free_pages < min_free_pages.checked_add(pending)? {
+                state.observe_pressure::<P>();
+                return None;
+            }
+            state.pending_cache_metadata_pages = pending;
+            state.observe_pressure::<P>();
+            Some(CacheMetadataReservation {
+                allocator: self,
+                pages,
+            })
+        })
+    }
+
+    /// Opportunistic allocation: the reserve check and buddy allocation share
+    /// one lock. Pending metadata claims also consume headroom. Failure never
+    /// reclaims memory or retries through the ordinary allocation path.
+    pub fn allocate_pages_above_reserve(
+        &self,
+        order: usize,
+        owner: PageOwner,
+        min_free_pages: usize,
+    ) -> Result<PhysicalAddress, BuddyError> {
+        if order > crate::mm::MAX_ORDER {
+            return Err(BuddyError::InvalidOrder);
+        }
+        self.state.with(|state| {
+            let available = state.availability().ok_or(BuddyError::OutOfMemory)?;
+            let result = match min_free_pages
+                .checked_add(state.pending_cache_metadata_pages)
+                .and_then(|reserve| reserve.checked_add(1usize << order))
+            {
+                Some(required) if available.free_pages >= required => state
+                    .heap
+                    .as_mut()
+                    .ok_or(BuddyError::OutOfMemory)?
+                    .allocate_pages(order, owner),
+                _ => Err(BuddyError::OutOfMemory),
+            };
+            state.observe_pressure::<P>();
+            result
+        })
+    }
+
     fn capture_cache_pages(
         &self,
         scratch: &mut Snapshot,
@@ -431,18 +577,30 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
         order: usize,
         owner: PageOwner,
     ) -> Result<PhysicalAddress, BuddyError> {
-        let first = self.state.with(|state| {
-            let heap = state.heap.as_mut().ok_or(BuddyError::OutOfMemory)?;
-            heap.allocate_pages(order, owner)
-        });
-        if first != Err(BuddyError::OutOfMemory) || !self.caches_enabled.load(Ordering::Acquire) {
+        let allocate = || {
+            self.state.with(|state| {
+                let heap = state.heap.as_mut().ok_or(BuddyError::OutOfMemory)?;
+                let result = heap.allocate_pages(order, owner);
+                state.observe_pressure::<P>();
+                result
+            })
+        };
+        let first = allocate();
+        if first != Err(BuddyError::OutOfMemory) || !self.initialized.load(Ordering::Acquire) {
             return first;
         }
-        let _ = self.reclaim_local_caches_internal(CacheReclaimReason::MemoryPressure);
-        self.state.with(|state| {
-            let heap = state.heap.as_mut().ok_or(BuddyError::OutOfMemory)?;
-            heap.allocate_pages(order, owner)
-        })
+        if self.caches_enabled.load(Ordering::Acquire) {
+            let _ = self.reclaim_local_caches_internal(CacheReclaimReason::MemoryPressure);
+            let second = allocate();
+            if second != Err(BuddyError::OutOfMemory) {
+                return second;
+            }
+        }
+        let pages = (1usize << order).min(EMERGENCY_RECLAIM_PAGES);
+        if P::try_reclaim(pages) == 0 {
+            return Err(BuddyError::OutOfMemory);
+        }
+        allocate()
     }
 
     /// # Safety
@@ -470,7 +628,9 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
         self.state.with(|state| {
             let heap = state.heap.as_mut().ok_or(BuddyError::OutOfMemory)?;
             // SAFETY: The public contract supplies the exact block and owner.
-            unsafe { heap.deallocate_pages(address, order, owner) }
+            unsafe { heap.deallocate_pages(address, order, owner)? };
+            state.observe_release::<P>();
+            Ok(())
         })
     }
 
@@ -497,7 +657,7 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
     }
 
     fn allocate_cached(&self, class: HeapSlabClass) -> *mut u8 {
-        for attempt in 0..2 {
+        for attempt in 0..3 {
             let (_pin, cpu) = self.pin_current_cache();
             // SAFETY: The pin fixes `cpu`; masking excludes a same-CPU IRQ
             // allocator entry while the selected local slot is locked.
@@ -533,6 +693,7 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
                         }
                     }
                 }
+                state.observe_pressure::<P>();
             });
 
             let caller = match batch.pop() {
@@ -541,6 +702,9 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
                     if attempt == 0 {
                         let _ =
                             self.reclaim_local_caches_internal(CacheReclaimReason::MemoryPressure);
+                        continue;
+                    }
+                    if attempt == 1 && P::try_reclaim(1) != 0 {
                         continue;
                     }
                     return null_mut();
@@ -593,27 +757,37 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
                 let Some(heap) = state.heap.as_mut() else {
                     return Err(LargeAllocationError::UnsupportedLayout);
                 };
-                match class {
+                let result = match class {
                     Some(class) => heap
                         .reserve_slab_object(class)
                         .map(CachedObject::into_caller_pointer)
                         .ok_or(LargeAllocationError::OutOfMemory),
                     None => heap.allocate_large(layout),
-                }
+                };
+                state.observe_pressure::<P>();
+                result
             })
         };
         let first = allocate();
         match first {
             Ok(pointer) => return pointer,
             Err(LargeAllocationError::UnsupportedLayout) => return null_mut(),
-            Err(LargeAllocationError::OutOfMemory)
-                if !self.caches_enabled.load(Ordering::Acquire) =>
-            {
-                return null_mut();
-            }
             Err(LargeAllocationError::OutOfMemory) => {}
         }
-        let _ = self.reclaim_local_caches_internal(CacheReclaimReason::MemoryPressure);
+        if self.caches_enabled.load(Ordering::Acquire) {
+            let _ = self.reclaim_local_caches_internal(CacheReclaimReason::MemoryPressure);
+            match allocate() {
+                Ok(pointer) => return pointer,
+                Err(LargeAllocationError::UnsupportedLayout) => return null_mut(),
+                Err(LargeAllocationError::OutOfMemory) => {}
+            }
+        }
+        let pages = super::allocation_page_bound(layout)
+            .unwrap_or(1)
+            .min(EMERGENCY_RECLAIM_PAGES);
+        if P::try_reclaim(pages) == 0 {
+            return null_mut();
+        }
         allocate().unwrap_or(null_mut())
     }
 
@@ -682,6 +856,7 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
             let Some(heap) = state.heap.as_mut() else {
                 allocator_fault(AllocatorFault::UninitializedDeallocation);
             };
+            let free_before = heap.buddy.free_pages();
             match class {
                 Some(class) => {
                     // SAFETY: GlobalAlloc supplies the exact live object and class.
@@ -692,6 +867,9 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
                     // SAFETY: GlobalAlloc supplies the exact live large allocation.
                     unsafe { heap.deallocate_large(pointer.as_ptr(), layout) };
                 }
+            }
+            if heap.buddy.free_pages() > free_before {
+                state.observe_release::<P>();
             }
         });
     }
@@ -705,12 +883,16 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
             let Some(heap) = state.heap.as_mut() else {
                 allocator_fault(AllocatorFault::InvalidCacheState);
             };
+            let free_before = heap.buddy.free_pages();
             loop {
                 match batch.pop() {
                     Ok(Some(object)) => heap.release_slab_object(object),
                     Ok(None) => break,
                     Err(_) => allocator_fault(AllocatorFault::InvalidCacheState),
                 }
+            }
+            if heap.buddy.free_pages() > free_before {
+                state.observe_release::<P>();
             }
         });
         count

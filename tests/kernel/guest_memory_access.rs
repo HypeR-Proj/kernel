@@ -26,6 +26,7 @@ pub(super) enum Error {
 
 pub(super) fn run() -> Result<(), Error> {
     const BASE: u64 = 0x4000_0000;
+    GuestAddressSpace::verify_live_capacity_for_test().map_err(Error::ResidentMemory)?;
     let identifier = crate::kernel::mm::translation_id::reserve::<
         crate::kernel::mm::translation_id::Stage2Vmid,
     >(

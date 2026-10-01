@@ -89,6 +89,7 @@ extern "C" fn start_kernel() -> ! {
         crate::kernel::crash::initialize(&boot)?;
         crate::kernel::time::initialize(&mut boot)?;
         crate::kernel::log::initialize()?;
+        crate::kernel::io_cache::worker::initialize()?;
         #[cfg(feature = "kernel-self-test")]
         crate::kernel_tests::verify_early_startup();
         crate::kernel::cpu::initialize()?;

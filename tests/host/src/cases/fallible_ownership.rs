@@ -71,6 +71,28 @@ fn external_weak_owner_prevents_unique_arc_conversion() {
 }
 
 #[test]
+fn rejected_unique_conversion_preserves_weak_lifetime_and_one_destructor() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let owner = crate::require_ok(hyper::mm::FallibleArc::try_new(CountedDrop(drops.clone())));
+    let observer = owner.downgrade();
+    let owner = match owner.try_into_unique() {
+        Ok(_) => panic!("weak-observed owner unexpectedly became unique"),
+        Err(owner) => owner,
+    };
+    let upgraded = crate::require_some(observer.upgrade());
+    assert_eq!(drops.load(Ordering::Acquire), 0);
+    drop(owner);
+    assert!(observer.is_alive());
+    assert_eq!(drops.load(Ordering::Acquire), 0);
+    drop(upgraded);
+    assert_eq!(drops.load(Ordering::Acquire), 1);
+    assert!(!observer.is_alive());
+    assert!(observer.upgrade().is_none());
+    drop(observer);
+    assert_eq!(drops.load(Ordering::Acquire), 1);
+}
+
+#[test]
 fn weak_allocation_outlives_but_does_not_retain_the_value() {
     let drops = Arc::new(AtomicUsize::new(0));
     let owner = crate::require_ok(hyper::mm::FallibleArc::try_new(CountedDrop(drops.clone())));

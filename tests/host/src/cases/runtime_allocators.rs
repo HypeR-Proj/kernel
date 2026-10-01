@@ -11,8 +11,8 @@ use std::mem::ManuallyDrop;
 use hyper::hal::interrupt::InterruptMask;
 use hyper::mm::allocator::heap::{
     AllocatorInvariant, AllocatorInvariantInstallError, AllocatorInvariantReport,
-    CacheActivationError, CpuLocalCachePolicy, InitError, KernelGlobalAllocator, PageOwner,
-    SlabAllocator, install_allocator_invariant_handler,
+    CacheActivationError, CpuLocalCachePolicy, InitError, KernelGlobalAllocator, PageAvailability,
+    PageOwner, SlabAllocator, allocation_page_bound, install_allocator_invariant_handler,
 };
 use hyper::mm::{BootAllocator, BuddyAllocator, BuddyError, PAGE_SIZE};
 use hyper::platform::{MAX_MEMORY_REGIONS, MAX_RESERVED_REGIONS, PhysicalRange, RegionList};
@@ -325,17 +325,21 @@ fn accounts_direct_pages_by_owner() {
     let guest = crate::require_ok(allocator.allocate_pages_for(3, PageOwner::Guest));
     let table = crate::require_ok(allocator.allocate_pages_for(0, PageOwner::PageTable));
     let user = crate::require_ok(allocator.allocate_pages_for(1, PageOwner::User));
+    let cache =
+        crate::require_ok(allocator.allocate_pages_above_reserve(0, PageOwner::FileCache, 4));
     let stats = crate::require_some(allocator.stats());
     assert_eq!(stats.guest_pages.pages, 8);
     assert_eq!(stats.page_table_pages.pages, 1);
     assert_eq!(stats.user_pages.pages, 2);
-    assert_eq!(stats.buddy.allocated_pages, 11);
+    assert_eq!(stats.file_cache_pages.pages, 1);
+    assert_eq!(stats.buddy.allocated_pages, 12);
 
     // SAFETY: These are the exact live blocks and owners returned above.
     unsafe {
         crate::require_ok(allocator.deallocate_pages_for(table, 0, PageOwner::PageTable));
         crate::require_ok(allocator.deallocate_pages_for(user, 1, PageOwner::User));
         crate::require_ok(allocator.deallocate_pages_for(guest, 3, PageOwner::Guest));
+        crate::require_ok(allocator.deallocate_pages_for(cache, 0, PageOwner::FileCache));
     }
     let stats = crate::require_some(allocator.stats());
     assert_eq!(stats.guest_pages.pages, 0);
@@ -343,6 +347,8 @@ fn accounts_direct_pages_by_owner() {
     assert_eq!(stats.page_table_pages.pages, 0);
     assert_eq!(stats.user_pages.pages, 0);
     assert_eq!(stats.user_pages.peak_pages, 2);
+    assert_eq!(stats.file_cache_pages.pages, 0);
+    assert_eq!(stats.file_cache_pages.peak_pages, 1);
     assert_eq!(stats.buddy.allocated_pages, 0);
 }
 
@@ -753,4 +759,574 @@ fn reclaimable_pages_cover_mixed_classes_and_cpus_without_draining() {
     assert_eq!(drained.cache.reclaimable_pages, Some(0));
     assert_eq!(drained.buddy.allocated_pages, 0);
     select_test_cpu(0);
+}
+
+#[test]
+fn cache_reservations_account_for_pending_and_constructed_metadata() {
+    let (memory, handoff) = handoff(64);
+    let allocator = ManuallyDrop::new(KernelGlobalAllocator::<TestInterruptMask>::new());
+    // SAFETY: The direct map remains writable until all allocations are released.
+    crate::require_ok(unsafe { allocator.initialize(&handoff, memory.pointer as u64) });
+    let pending = crate::require_some(allocator.try_reserve_cache_metadata(8, 8));
+    let layout = crate::require_ok(Layout::from_size_align(4096, 8));
+    assert_eq!(allocation_page_bound(layout), Some(2));
+    // SAFETY: The returned allocation is freed below with its exact layout.
+    let metadata = unsafe { allocator.alloc(layout) };
+    assert!(!metadata.is_null());
+    let available = crate::require_some(allocator.page_availability());
+    assert_eq!(available.free_pages, 62);
+    assert_eq!(available.pending_cache_metadata_pages, 8);
+    assert_eq!(available.available_for_cache(), 54);
+
+    let mut pages = Vec::new();
+    while let Ok(page) = allocator.allocate_pages_above_reserve(0, PageOwner::FileCache, 8) {
+        pages.push(page);
+    }
+    assert_eq!(pages.len(), 46);
+    assert!(allocator.try_reserve_cache_metadata(1, 8).is_none());
+    // A completed/rolled-back construction releases its conservative claim.
+    // SAFETY: Exact live allocation/layout, no remaining references.
+    unsafe { allocator.dealloc(metadata, layout) };
+    drop(pending);
+    assert_eq!(
+        crate::require_some(allocator.page_availability()).available_for_cache(),
+        18
+    );
+    let ordinary = crate::require_ok(allocator.allocate_pages_for(0, PageOwner::User));
+    // Ordinary allocations have priority over cache headroom.
+    assert_eq!(
+        crate::require_some(allocator.page_availability()).free_pages,
+        17
+    );
+    // SAFETY: Every address is released exactly once with its original owner.
+    unsafe {
+        for page in pages {
+            crate::require_ok(allocator.deallocate_pages_for(page, 0, PageOwner::FileCache));
+        }
+        crate::require_ok(allocator.deallocate_pages_for(ordinary, 0, PageOwner::User));
+    }
+    assert_eq!(
+        crate::require_some(allocator.page_availability()).free_pages,
+        64
+    );
+    assert!(
+        allocator
+            .try_reserve_cache_metadata(usize::MAX, 1)
+            .is_none()
+    );
+    assert_eq!(
+        allocator.allocate_pages_above_reserve(0, PageOwner::FileCache, usize::MAX),
+        Err(BuddyError::OutOfMemory)
+    );
+    assert_eq!(
+        allocator.allocate_pages_above_reserve(usize::MAX, PageOwner::FileCache, 0),
+        Err(BuddyError::InvalidOrder)
+    );
+}
+
+#[test]
+fn concurrent_cache_metadata_claims_cannot_overbook_headroom() {
+    let (memory, handoff) = handoff(64);
+    let allocator = ManuallyDrop::new(KernelGlobalAllocator::<TestInterruptMask>::new());
+    // SAFETY: Scoped workers finish before the direct map is released.
+    crate::require_ok(unsafe { allocator.initialize(&handoff, memory.pointer as u64) });
+    let rendezvous = std::sync::Barrier::new(9);
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            let allocator = &allocator;
+            let rendezvous = &rendezvous;
+            scope.spawn(move || {
+                let claim = allocator.try_reserve_cache_metadata(8, 8);
+                rendezvous.wait();
+                rendezvous.wait();
+                drop(claim);
+            });
+        }
+        rendezvous.wait();
+        let available = allocator.page_availability();
+        let denied = allocator.allocate_pages_above_reserve(0, PageOwner::FileCache, 8);
+        rendezvous.wait();
+        let available = crate::require_some(available);
+        assert_eq!(available.pending_cache_metadata_pages, 56);
+        assert_eq!(available.free_pages, 64);
+        assert_eq!(available.available_for_cache(), 8);
+        assert_eq!(denied, Err(BuddyError::OutOfMemory));
+    });
+    assert_eq!(
+        crate::require_some(allocator.page_availability()).pending_cache_metadata_pages,
+        0
+    );
+}
+
+#[test]
+fn concurrent_cache_pages_preserve_reserve_and_ordinary_allocations_can_use_it() {
+    let (memory, handoff) = handoff(64);
+    let allocator = ManuallyDrop::new(KernelGlobalAllocator::<TestInterruptMask>::new());
+    // SAFETY: Scoped workers finish before the direct map is released.
+    crate::require_ok(unsafe { allocator.initialize(&handoff, memory.pointer as u64) });
+    let pages = std::thread::scope(|scope| {
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let allocator = &allocator;
+            workers.push(scope.spawn(move || {
+                let mut pages = Vec::new();
+                while let Ok(page) =
+                    allocator.allocate_pages_above_reserve(0, PageOwner::FileCache, 8)
+                {
+                    pages.push(page);
+                }
+                pages
+            }));
+        }
+        workers
+            .into_iter()
+            .flat_map(|worker| crate::require_ok(worker.join()))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(pages.len(), 56);
+    let available = crate::require_some(allocator.page_availability());
+    assert_eq!(available.free_pages, 8);
+    assert_eq!(available.file_cache_pages, 56);
+    let mut ordinary = Vec::new();
+    for _ in 0..8 {
+        ordinary.push(crate::require_ok(
+            allocator.allocate_pages_for(0, PageOwner::User),
+        ));
+    }
+    assert_eq!(
+        crate::require_some(allocator.page_availability()).free_pages,
+        0
+    );
+    // SAFETY: Exact live blocks, each released once after all workers finished.
+    unsafe {
+        for page in pages {
+            crate::require_ok(allocator.deallocate_pages_for(page, 0, PageOwner::FileCache));
+        }
+        for page in ordinary {
+            crate::require_ok(allocator.deallocate_pages_for(page, 0, PageOwner::User));
+        }
+    }
+}
+
+#[test]
+fn allocation_backing_bound_covers_headers_alignment_and_all_classes() {
+    assert_eq!(
+        allocation_page_bound(crate::require_ok(Layout::from_size_align(0, 1))),
+        Some(1)
+    );
+    for size in [16, 32, 64, 128, 256, 512, 1024, 2048, 2049, 4096, 9000] {
+        for align in [1, 8, 64, 4096] {
+            let (memory, handoff) = handoff(64);
+            let allocator = ManuallyDrop::new(KernelGlobalAllocator::<TestInterruptMask>::new());
+            // SAFETY: This iteration owns the direct map and all allocations.
+            crate::require_ok(unsafe { allocator.initialize(&handoff, memory.pointer as u64) });
+            crate::require_ok(allocator.activate_local_caches(1));
+            let layout = crate::require_ok(Layout::from_size_align(size, align));
+            let bound = crate::require_some(allocation_page_bound(layout));
+            // SAFETY: Each allocation is freed with its exact layout below.
+            unsafe {
+                let pointer = allocator.alloc(layout);
+                assert!(!pointer.is_null());
+                assert!(
+                    64 - crate::require_some(allocator.page_availability()).free_pages <= bound
+                );
+                allocator.dealloc(pointer, layout);
+            }
+            allocator.reclaim_local_caches();
+        }
+    }
+    let unsupported = crate::require_ok(Layout::from_size_align(
+        (1usize << hyper::mm::MAX_ORDER) * PAGE_SIZE as usize,
+        1,
+    ));
+    assert_eq!(allocation_page_bound(unsupported), None);
+}
+
+struct ReclaimPolicy;
+type ReclaimAllocator = KernelGlobalAllocator<ReclaimPolicy>;
+
+std::thread_local! {
+    static RECLAIM_CALLS: Cell<usize> = const { Cell::new(0) };
+    static RECLAIM_REQUEST: Cell<usize> = const { Cell::new(0) };
+    static PRESSURE_OBSERVATION: Cell<Option<PageAvailability>> = const { Cell::new(None) };
+    static RELEASE_OBSERVATION: Cell<Option<PageAvailability>> = const { Cell::new(None) };
+    static RECLAIM_BLOCK: Cell<Option<(core::ptr::NonNull<ReclaimAllocator>, hyper::mm::PhysicalAddress, usize)>> = const { Cell::new(None) };
+}
+
+impl InterruptMask for ReclaimPolicy {
+    type State = bool;
+
+    fn save_and_disable() -> bool {
+        TestInterruptMask::save_and_disable()
+    }
+
+    fn restore(state: bool) {
+        TestInterruptMask::restore(state);
+    }
+}
+
+// SAFETY: Delegates to the same synchronous host CPU pin and interrupt mask.
+unsafe impl CpuLocalCachePolicy for ReclaimPolicy {
+    type Pin = TestPin;
+
+    fn pin() -> Option<Self::Pin> {
+        TestInterruptMask::pin()
+    }
+
+    fn current_cpu(pin: &Self::Pin) -> Option<hyper::cpu::CpuIndex> {
+        TestInterruptMask::current_cpu(pin)
+    }
+
+    fn memory_pressure(available: PageAvailability) {
+        assert!(test_irq_masked());
+        PRESSURE_OBSERVATION.with(|last| last.set(Some(available)));
+    }
+
+    fn memory_released(available: PageAvailability) {
+        assert!(test_irq_masked());
+        RELEASE_OBSERVATION.with(|last| last.set(Some(available)));
+    }
+
+    fn try_reclaim(pages: usize) -> usize {
+        assert!(!test_irq_masked());
+        TEST_PIN_DEPTH.with(|depth| assert_eq!(depth.get(), 0));
+        RECLAIM_CALLS.with(|count| count.set(count.get() + 1));
+        RECLAIM_REQUEST.with(|request| request.set(pages));
+        let Some((allocator, address, order)) = RECLAIM_BLOCK.with(|block| block.take()) else {
+            return 0;
+        };
+        // SAFETY: Each test installs this pointer only while its allocator and
+        // exact live cache block exist; this take is their sole release path.
+        let allocator = unsafe { allocator.as_ref() };
+        assert!(allocator.page_availability().is_some());
+        // Re-entry proves the callback runs without the central lock held.
+        // SAFETY: The installed block is unique and has the recorded owner/order.
+        crate::require_ok(unsafe {
+            allocator.deallocate_pages_for(address, order, PageOwner::FileCache)
+        });
+        1usize << order
+    }
+}
+
+#[test]
+fn ordinary_oom_reclaims_once_outside_allocator_locks_for_all_paths() {
+    for cached in [false, true] {
+        for object_size in [0, 64, 4096] {
+            set_test_irq_masked(false);
+            RECLAIM_CALLS.with(|count| count.set(0));
+            let (memory, handoff) = handoff(64);
+            let allocator = ManuallyDrop::new(ReclaimAllocator::new());
+            // SAFETY: The allocator and direct map outlive callback registration.
+            crate::require_ok(unsafe { allocator.initialize(&handoff, memory.pointer as u64) });
+            if cached {
+                crate::require_ok(allocator.activate_local_caches(1));
+            }
+            let reclaim_order = usize::from(object_size == 4096);
+            let block = crate::require_ok(
+                allocator.allocate_pages_for(reclaim_order, PageOwner::FileCache),
+            );
+            let mut occupied = Vec::new();
+            for _ in 0..64 - (1 << reclaim_order) {
+                occupied.push(crate::require_ok(
+                    allocator.allocate_pages_for(0, PageOwner::User),
+                ));
+            }
+            assert_eq!(
+                crate::require_some(PRESSURE_OBSERVATION.with(Cell::get)).free_pages,
+                0
+            );
+            RECLAIM_BLOCK.with(|pending| {
+                pending.set(Some((
+                    core::ptr::NonNull::from(&*allocator),
+                    block,
+                    reclaim_order,
+                )))
+            });
+            // Protected cache allocation must never recurse into reclamation.
+            assert_eq!(
+                allocator.allocate_pages_above_reserve(0, PageOwner::FileCache, 0),
+                Err(BuddyError::OutOfMemory)
+            );
+            assert_eq!(RECLAIM_CALLS.with(Cell::get), 0);
+            if object_size == 0 {
+                let page = crate::require_ok(allocator.allocate_pages_for(0, PageOwner::User));
+                // SAFETY: Exact live block just returned, no remaining users.
+                crate::require_ok(unsafe {
+                    allocator.deallocate_pages_for(page, 0, PageOwner::User)
+                });
+            } else {
+                let layout = crate::require_ok(Layout::from_size_align(object_size, 8));
+                // SAFETY: The allocation is freed exactly once with its layout.
+                unsafe {
+                    let pointer = allocator.alloc(layout);
+                    assert!(!pointer.is_null());
+                    allocator.dealloc(pointer, layout);
+                }
+                allocator.reclaim_local_caches();
+            }
+            assert_eq!(RECLAIM_CALLS.with(Cell::get), 1);
+            assert_eq!(
+                RECLAIM_REQUEST.with(Cell::get),
+                if object_size == 4096 { 2 } else { 1 }
+            );
+            assert!(RECLAIM_BLOCK.with(Cell::get).is_none());
+            // SAFETY: These independent live blocks were never offered for reclaim.
+            unsafe {
+                for page in occupied {
+                    crate::require_ok(allocator.deallocate_pages_for(page, 0, PageOwner::User));
+                }
+            }
+            assert_eq!(
+                crate::require_some(allocator.page_availability()).free_pages,
+                64
+            );
+        }
+    }
+}
+
+#[test]
+fn failed_emergency_reclaim_is_bounded_even_for_large_requests() {
+    set_test_irq_masked(false);
+    RECLAIM_CALLS.with(|count| count.set(0));
+    RECLAIM_BLOCK.with(|pending| pending.set(None));
+    let (memory, handoff) = handoff(256);
+    let allocator = ManuallyDrop::new(ReclaimAllocator::new());
+    // SAFETY: The direct map outlives every block allocated in this test.
+    crate::require_ok(unsafe { allocator.initialize(&handoff, memory.pointer as u64) });
+    let occupied = crate::require_ok(allocator.allocate_pages_for(8, PageOwner::User));
+    assert_eq!(
+        allocator.allocate_pages_for(7, PageOwner::Guest),
+        Err(BuddyError::OutOfMemory)
+    );
+    assert_eq!(RECLAIM_CALLS.with(Cell::get), 1);
+    assert_eq!(RECLAIM_REQUEST.with(Cell::get), 64);
+    assert_eq!(
+        allocator.allocate_pages_for(usize::MAX, PageOwner::User),
+        Err(BuddyError::InvalidOrder)
+    );
+    assert_eq!(RECLAIM_CALLS.with(Cell::get), 1);
+    // SAFETY: Exact live block, released once.
+    crate::require_ok(unsafe { allocator.deallocate_pages_for(occupied, 8, PageOwner::User) });
+}
+
+#[test]
+fn finite_cache_sweep_restores_a_large_buddy_order_above_resume_watermark() {
+    use crate::cache_reclaim_requests::RequestState;
+    use crate::file_data_cache::{
+        CacheAccess, CacheKey, ContentRevision, FileDataCache, FileIdentity, FilePageIndex,
+        FilesystemGeneration, NodeIdentity, ReclaimCursor, Refill,
+    };
+    use core::num::NonZeroU64;
+
+    struct Page<'a> {
+        allocator: &'a KernelGlobalAllocator<TestInterruptMask>,
+        address: hyper::mm::PhysicalAddress,
+    }
+    impl Drop for Page<'_> {
+        fn drop(&mut self) {
+            // SAFETY: This owner is the sole release path for its order-0 block.
+            crate::require_ok(unsafe {
+                self.allocator
+                    .deallocate_pages_for(self.address, 0, PageOwner::FileCache)
+            });
+        }
+    }
+
+    set_test_irq_masked(false);
+    let (memory, handoff) = handoff(1024);
+    let allocator = ManuallyDrop::new(KernelGlobalAllocator::<TestInterruptMask>::new());
+    // SAFETY: The test direct map outlives every cache and ordinary page owner.
+    crate::require_ok(unsafe { allocator.initialize(&handoff, memory.pointer as u64) });
+    let mut blocks = Vec::new();
+    for _ in 0..1024 {
+        blocks.push(crate::require_ok(
+            allocator.allocate_pages_for(0, PageOwner::FileCache),
+        ));
+    }
+    let cache = crate::require_ok(FileDataCache::try_new(768));
+    let file = FileIdentity::new(
+        FilesystemGeneration::new(NonZeroU64::MIN),
+        NodeIdentity::new(NonZeroU64::MIN),
+        ContentRevision::new(NonZeroU64::MIN),
+    );
+    for (index, address) in blocks.into_iter().enumerate() {
+        let page = Page {
+            allocator: &allocator,
+            address,
+        };
+        if index.is_multiple_of(4) {
+            drop(page);
+            continue;
+        }
+        let key = CacheKey::new(file, FilePageIndex::new(index as u64));
+        let load = match crate::require_ok(cache.access(key)) {
+            CacheAccess::Load(load) => load,
+            _ => panic!("fixture cache admission failed"),
+        };
+        drop(crate::require_ok(
+            load.fill_and_publish(|| Ok(page), |_| Refill::Recreate),
+        ));
+    }
+    let before = crate::require_some(allocator.page_availability());
+    assert_eq!(before.free_pages, 256);
+    assert!(before.free_pages * 100 > before.managed_pages * 15);
+    assert_eq!(before.largest_free_order, Some(0));
+    assert_eq!(
+        allocator.allocate_pages_for(8, PageOwner::User),
+        Err(BuddyError::OutOfMemory)
+    );
+
+    let pause = cache.pause_admission();
+    let mut requests = RequestState::new();
+    let request = crate::require_some(requests.begin(8));
+    let mut cursor = ReclaimCursor::new();
+    let first = cache.reclaim_scan(&mut cursor, 64, |_| true);
+    assert_eq!(first.detached, 64);
+    assert!(!first.finished);
+    assert!(
+        crate::require_some(allocator.page_availability())
+            .largest_free_order
+            .is_none_or(|order| order < request.target)
+    );
+    let mut detached = first.detached;
+    loop {
+        let batch = cache.reclaim_scan(&mut cursor, 64, |_| true);
+        assert!(batch.inspected <= 64);
+        detached += batch.detached;
+        let current = crate::require_some(allocator.page_availability());
+        assert!(current.free_pages * 100 > current.managed_pages * 15);
+        if current
+            .largest_free_order
+            .is_some_and(|order| order >= request.target)
+        {
+            break;
+        }
+        assert!(
+            !batch.finished,
+            "reclaimable fragmented block was not restored"
+        );
+    }
+    assert!(detached > 64);
+    assert!(requests.finish(request.generation));
+    let allocated = crate::require_ok(allocator.allocate_pages_for(8, PageOwner::User));
+    assert!(cache.usage().admission_paused);
+    drop(pause);
+    // SAFETY: The successful requested block is no longer used by this test.
+    crate::require_ok(unsafe { allocator.deallocate_pages_for(allocated, 8, PageOwner::User) });
+    drop(cache);
+    assert_eq!(
+        crate::require_some(allocator.page_availability()).free_pages,
+        1024
+    );
+}
+
+#[test]
+fn cache_availability_excludes_boot_reserved_ram() {
+    let memory_buffer = AlignedMemory::new(64);
+    let mut memory = RegionList::<MAX_MEMORY_REGIONS>::new();
+    crate::require_ok(memory.insert(crate::require_some(PhysicalRange::new(0, 64 * PAGE_SIZE))));
+    let reserved = RegionList::<MAX_RESERVED_REGIONS>::new();
+    let mut boot = crate::require_ok(BootAllocator::new(&memory, &reserved, 64 * PAGE_SIZE));
+    crate::require_ok(boot.reserve(crate::require_some(PhysicalRange::new(0, 16 * PAGE_SIZE))));
+    let allocator = ManuallyDrop::new(KernelGlobalAllocator::<TestInterruptMask>::new());
+    // SAFETY: The aligned buffer maps all RAM; the handoff excludes reserved pages.
+    crate::require_ok(unsafe {
+        allocator.initialize(&boot.handoff(), memory_buffer.pointer as u64)
+    });
+    let available = crate::require_some(allocator.page_availability());
+    assert_eq!(available.managed_pages, 48);
+    assert_eq!(available.free_pages, 48);
+    assert!(allocator.try_reserve_cache_metadata(41, 8).is_none());
+    let claim = crate::require_some(allocator.try_reserve_cache_metadata(40, 8));
+    assert_eq!(
+        crate::require_some(allocator.page_availability()).available_for_cache(),
+        8
+    );
+    drop(claim);
+}
+
+#[test]
+fn memory_release_notifies_after_page_heap_and_metadata_headroom_returns() {
+    let (memory, handoff) = handoff(64);
+    let allocator = ManuallyDrop::new(ReclaimAllocator::new());
+    // SAFETY: All allocations and callbacks finish before this mapping expires.
+    crate::require_ok(unsafe { allocator.initialize(&handoff, memory.pointer as u64) });
+    let page = crate::require_ok(allocator.allocate_pages_for(2, PageOwner::User));
+    RELEASE_OBSERVATION.with(|last| last.set(None));
+    // SAFETY: Exact live user block, no remaining references.
+    crate::require_ok(unsafe { allocator.deallocate_pages_for(page, 2, PageOwner::User) });
+    assert_eq!(
+        crate::require_some(RELEASE_OBSERVATION.with(Cell::get)).free_pages,
+        64
+    );
+    for cached in [false, true] {
+        if cached {
+            crate::require_ok(allocator.activate_local_caches(1));
+        }
+        for size in [64, 4096] {
+            let layout = crate::require_ok(Layout::from_size_align(size, 8));
+            // SAFETY: The exact layout and allocation are paired within this block.
+            unsafe {
+                let pointer = allocator.alloc(layout);
+                assert!(!pointer.is_null());
+                RELEASE_OBSERVATION.with(|last| last.set(None));
+                allocator.dealloc(pointer, layout);
+            }
+            if cached && size == 64 {
+                assert!(RELEASE_OBSERVATION.with(Cell::get).is_none());
+                allocator.reclaim_local_caches();
+            }
+            assert_eq!(
+                crate::require_some(RELEASE_OBSERVATION.with(Cell::get)).free_pages,
+                64
+            );
+        }
+    }
+    let claim = crate::require_some(allocator.try_reserve_cache_metadata(12, 8));
+    RELEASE_OBSERVATION.with(|last| last.set(None));
+    drop(claim);
+    let release = crate::require_some(RELEASE_OBSERVATION.with(Cell::get));
+    assert_eq!(release.available_for_cache(), 64);
+    assert_eq!(release.pending_cache_metadata_pages, 0);
+}
+
+#[test]
+fn partial_emergency_reclaim_does_not_loop_until_a_large_request_succeeds() {
+    set_test_irq_masked(false);
+    RECLAIM_CALLS.with(|count| count.set(0));
+    let (memory, handoff) = handoff(256);
+    let allocator = ManuallyDrop::new(ReclaimAllocator::new());
+    // SAFETY: The direct map outlives callback registration and all live blocks.
+    crate::require_ok(unsafe { allocator.initialize(&handoff, memory.pointer as u64) });
+    let reclaimable = crate::require_ok(allocator.allocate_pages_for(0, PageOwner::FileCache));
+    let mut occupied = Vec::new();
+    for _ in 0..255 {
+        occupied.push(crate::require_ok(
+            allocator.allocate_pages_for(0, PageOwner::User),
+        ));
+    }
+    RECLAIM_BLOCK.with(|pending| {
+        pending.set(Some((
+            core::ptr::NonNull::from(&*allocator),
+            reclaimable,
+            0,
+        )))
+    });
+    assert_eq!(
+        allocator.allocate_pages_for(7, PageOwner::Guest),
+        Err(BuddyError::OutOfMemory)
+    );
+    assert_eq!(RECLAIM_CALLS.with(Cell::get), 1);
+    assert_eq!(RECLAIM_REQUEST.with(Cell::get), 64);
+    assert!(RECLAIM_BLOCK.with(Cell::get).is_none());
+    assert_eq!(
+        crate::require_some(allocator.page_availability()).free_pages,
+        1
+    );
+    // SAFETY: All user blocks remain live and independent of the reclaimed page.
+    unsafe {
+        for page in occupied {
+            crate::require_ok(allocator.deallocate_pages_for(page, 0, PageOwner::User));
+        }
+    }
 }
