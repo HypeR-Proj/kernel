@@ -3,6 +3,9 @@
 
 //! Device-tree discovery, boot-property, and platform matching contracts.
 
+#[path = "fdt_pci.rs"]
+mod pci;
+
 use std::boxed::Box;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -917,4 +920,79 @@ fn recognized_timer_rejects_quarantined_interrupt_resources() {
             aarch64_platform::Error::InvalidProperty
         ))
     ));
+}
+
+#[test]
+fn dependency_snapshot_preserves_disabled_metadata_without_mmio_authority() {
+    let mut nodes = Vec::new();
+    begin_node(&mut nodes, b"optional@a000000");
+    property(&mut nodes, 31, b"test,optional-device\0");
+    property(&mut nodes, 86, b"disabled\0");
+    property(&mut nodes, 27, &cells(&[0, 0x0a00_0000, 0, 0x1000]));
+    property(&mut nodes, 79, b"firmware-method\0");
+    push_u32(&mut nodes, FDT_END_NODE);
+    let blob = add_root_nodes(qemu_like_dtb(), &nodes);
+    let mut ordinary = DeviceScanner::new(&[]);
+    crate::require_ok(fdt::discover_from_bytes_with(&blob, &mut ordinary));
+    assert!(
+        !crate::require_ok(ordinary.finish())
+            .iter()
+            .any(|node| node.is_compatible("test,optional-device"))
+    );
+    let mut snapshot = DeviceScanner::for_dependency_graph(&[]);
+    let platform = crate::require_ok(fdt::discover_from_bytes_with(&blob, &mut snapshot));
+    let devices = crate::require_ok(snapshot.finish());
+    let node = crate::require_some(
+        devices
+            .iter()
+            .find(|node| node.is_compatible("test,optional-device")),
+    );
+    assert_eq!(node.property("status"), Some(b"disabled\0".as_slice()));
+    assert_eq!(
+        node.property("method"),
+        Some(b"firmware-method\0".as_slice())
+    );
+    assert_eq!(
+        node.property("reg"),
+        Some(cells(&[0, 0x0a00_0000, 0, 0x1000]).as_slice())
+    );
+    assert!(node.registers().is_empty());
+    assert!(node.pci_memory().is_none());
+    assert!(
+        !platform
+            .mmio
+            .as_slice()
+            .iter()
+            .any(|range| range.start() == 0x0a00_0000)
+    );
+}
+
+#[test]
+fn dependency_snapshot_keeps_opaque_interrupt_bytes_without_granting_resources() {
+    let mut nodes = Vec::new();
+    begin_node(&mut nodes, b"opaque@a001000");
+    property(&mut nodes, 31, b"test,opaque-function\0");
+    property(&mut nodes, 27, &cells(&[0, 0x0a00_1000, 0, 0x1000]));
+    property(&mut nodes, 68, &[1, 2, 3, 4, 5]); // Not a host interrupt-cell array.
+    push_u32(&mut nodes, FDT_END_NODE);
+    let blob = add_root_nodes(qemu_like_dtb(), &nodes);
+    let mut scanner = DeviceScanner::for_dependency_graph(&[]);
+    crate::require_ok(fdt::discover_from_bytes_with(&blob, &mut scanner));
+    let devices = crate::require_ok(scanner.finish());
+    let node = crate::require_some(
+        devices
+            .iter()
+            .find(|node| node.is_compatible("test,opaque-function")),
+    );
+    assert_eq!(
+        node.property("compatible"),
+        Some(b"test,opaque-function\0".as_slice())
+    );
+    assert_eq!(
+        node.property("interrupts"),
+        Some([1, 2, 3, 4, 5].as_slice())
+    );
+    assert!(node.interrupt_cells().is_empty());
+    assert!(node.registers().is_empty());
+    assert!(node.pci_memory().is_none());
 }

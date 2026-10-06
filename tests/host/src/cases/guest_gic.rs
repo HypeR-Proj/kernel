@@ -3,8 +3,9 @@
 
 use hyper::vm::arm::gic::mmio::{
     BitmapRegister, DISTRIBUTOR_BASE, DISTRIBUTOR_SIZE, DecodeError, DecodedRegister, Frame,
-    ModelRegister, ModelRegisterDescriptor, REDISTRIBUTOR_BASE, REDISTRIBUTOR_SIZE, RegisterState,
-    ServiceRegister, decode_v3, read_model_register, write_model_register,
+    INTERRUPT_COUNT, ModelRegister, ModelRegisterDescriptor, REDISTRIBUTOR_BASE,
+    REDISTRIBUTOR_SIZE, RegisterState, ServiceRegister, decode_v3, read_model_register,
+    write_model_register,
 };
 use hyper::vm::arm::gic::{
     GicInterruptId, InterruptGroup, InterruptTrigger, VirtualGic, VirtualGicBuilder,
@@ -34,7 +35,7 @@ fn interrupt(id: u32) -> GicInterruptId {
 
 fn controller() -> VirtualGic {
     let mut controller = crate::require_ok(VirtualGicBuilder::new(1));
-    for id in 32..64 {
+    for id in 32..INTERRUPT_COUNT {
         crate::require_ok(controller.configure(
             interrupt(id),
             VirtualCpuId::new(0),
@@ -44,6 +45,96 @@ fn controller() -> VirtualGic {
         ));
     }
     crate::require_ok(controller.finish(1))
+}
+
+#[test]
+fn every_advertised_spi_bank_supports_configuration_and_delivery() {
+    use hyper::vm::arm::gic::mmio::decode_v2;
+    assert_eq!(INTERRUPT_COUNT, 256);
+    let registers = RegisterState::new();
+    for service in [
+        ServiceRegister::DistributorTypeV2,
+        ServiceRegister::DistributorType,
+    ] {
+        assert_eq!(
+            (registers.read(service) & 31) + 1,
+            u64::from(INTERRUPT_COUNT / 32)
+        );
+    }
+    for v2 in [false, true] {
+        for id in [40, 63, 64, 95, 96, 127, 128, 191, 192, 255] {
+            let decode = |offset: u64, width| {
+                let address = u64::from(DISTRIBUTOR_BASE) + offset;
+                let register = if v2 {
+                    crate::require_some(crate::require_ok(decode_v2(
+                        GuestPhysicalAddress::new(address),
+                        width,
+                    )))
+                    .register()
+                } else {
+                    register(address, width)
+                };
+                match register {
+                    DecodedRegister::Model(value) => value,
+                    other => panic!("missing SPI {id} register: {other:?}"),
+                }
+            };
+            let cpu = VirtualCpuId::new(0);
+            let mut controller = controller();
+            let priority = decode(0x400 + u64::from(id), AccessWidth::Byte);
+            crate::require_ok(write_model_register(&mut controller, cpu, priority, 0xa1));
+            assert_eq!(
+                crate::require_ok(read_model_register(&controller, cpu, priority)),
+                if v2 { 0xa0 } else { 0xa1 },
+            );
+            let configuration = decode(0xc00 + u64::from(id / 16 * 4), AccessWidth::Word);
+            crate::require_ok(write_model_register(
+                &mut controller,
+                cpu,
+                configuration,
+                2 << ((id % 16) * 2),
+            ));
+            assert_eq!(
+                crate::require_ok(controller.snapshot(interrupt(id), cpu)).trigger,
+                InterruptTrigger::Edge,
+            );
+            let route = if v2 {
+                decode(0x800 + u64::from(id), AccessWidth::Byte)
+            } else {
+                decode(0x6000 + u64::from(id) * 8, AccessWidth::DoubleWord)
+            };
+            crate::require_ok(write_model_register(
+                &mut controller,
+                cpu,
+                route,
+                u64::from(v2),
+            ));
+            let enable = decode(0x100 + u64::from(id / 32 * 4), AccessWidth::Word);
+            crate::require_ok(write_model_register(
+                &mut controller,
+                cpu,
+                enable,
+                1 << (id % 32),
+            ));
+            crate::require_ok(controller.inject(interrupt(id), cpu));
+            let mut slots = [None];
+            crate::require_ok(controller.refill(cpu, &mut slots));
+            assert_eq!(crate::require_some(slots[0]).interrupt.get(), id);
+        }
+        for offset in [0x120, 0x500, 0xc40] {
+            let address = u64::from(DISTRIBUTOR_BASE) + offset;
+            let decoded = if v2 {
+                crate::require_some(crate::require_ok(decode_v2(
+                    GuestPhysicalAddress::new(address),
+                    AccessWidth::Word,
+                )))
+                .register()
+            } else {
+                register(address, AccessWidth::Word)
+            };
+            assert_eq!(decoded, DecodedRegister::Reserved);
+        }
+    }
 }
 
 fn sparse_controller(ids: &[u32]) -> VirtualGic {
@@ -238,7 +329,7 @@ fn priority_registers_accept_bytes_and_aligned_words_only() {
         );
     }
     assert_eq!(
-        register(distributor + 0x0440, AccessWidth::Word),
+        register(distributor + 0x0500, AccessWidth::Word),
         DecodedRegister::Reserved
     );
 }
@@ -246,7 +337,15 @@ fn priority_registers_accept_bytes_and_aligned_words_only() {
 #[test]
 fn route_decoder_maps_exact_modeled_spi_registers() {
     let distributor = u64::from(DISTRIBUTOR_BASE);
-    for (offset, interrupt) in [(0x6100, 32), (0x6108, 33), (0x61f8, 63)] {
+    for (offset, interrupt) in [
+        (0x6100, 32),
+        (0x6108, 33),
+        (0x61f8, 63),
+        (0x6200, 64),
+        (0x63f8, 127),
+        (0x6400, 128),
+        (0x67f8, 255),
+    ] {
         let ModelRegisterDescriptor::Route(route) =
             model_register(distributor + offset, AccessWidth::DoubleWord).descriptor()
         else {
@@ -545,7 +644,10 @@ fn gicv2_decodes_private_interrupts_and_rejects_cross_frame_accesses() {
         .is_none()
     );
     let state = RegisterState::new();
-    assert_eq!(state.read(ServiceRegister::DistributorTypeV2), 1);
+    assert_eq!(
+        state.read(ServiceRegister::DistributorTypeV2),
+        u64::from(INTERRUPT_COUNT / 32 - 1)
+    );
     assert_eq!(state.read(ServiceRegister::PeripheralId2V2), 0x20);
 }
 
@@ -685,6 +787,30 @@ fn gicv2_sgi_filter_targets_and_banked_source_registers() {
     assert!(crate::require_ok(gic.snapshot(interrupt(3), VirtualCpuId::new(0))).pending);
     assert_eq!(
         RegisterState::new().read_for_cpu(ServiceRegister::DistributorTypeV2, 0, 4),
-        1 | (3 << 5)
+        u64::from(INTERRUPT_COUNT / 32 - 1) | (3 << 5)
     );
+}
+
+#[test]
+fn msi_event_remains_pending_without_a_durable_device_level() {
+    let cpu = VirtualCpuId::new(0);
+    for trigger in [InterruptTrigger::Level, InterruptTrigger::Edge] {
+        let mut builder = crate::require_ok(VirtualGicBuilder::new(1));
+        crate::require_ok(builder.configure(
+            interrupt(128),
+            cpu,
+            0x80,
+            InterruptGroup::Group1,
+            trigger,
+        ));
+        let mut controller = crate::require_ok(builder.finish(1));
+        // An MSI is a pending event, even before Linux has programmed ICFGR.
+        // A synthesized assert/deassert level pair would erase the first case.
+        crate::require_ok(controller.inject(interrupt(128), cpu));
+        assert!(crate::require_ok(controller.snapshot(interrupt(128), cpu)).pending);
+        crate::require_ok(controller.set_enabled(interrupt(128), cpu, true));
+        let mut slots = [None];
+        crate::require_ok(controller.refill(cpu, &mut slots));
+        assert_eq!(crate::require_some(slots[0]).interrupt.get(), 128);
+    }
 }

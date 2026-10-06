@@ -99,7 +99,7 @@ def main():
                 raise ValueError('unsquashfs is required (install squashfs-tools or Homebrew squashfs)')
             extracted = Path(temporary) / 'modloop'
             subprocess.run([tool, '-no-progress', '-d', str(extracted), str(modloop)], check=True)
-            # Include the block/filesystem module dependency closure, not every
+            # Include the device/filesystem module dependency closure, not every
             # driver in the distribution's modloop.
             versions = [p for p in (extracted / 'modules').iterdir() if (p / 'modules.dep').is_file()]
             if len(versions) != 1 or versions[0].name not in [p.name for p in modules.iterdir()]:
@@ -116,7 +116,7 @@ def main():
                 selected.add(module)
                 for dep in dependencies[module]:
                     include(dep)
-            for name in ('virtio_mmio', 'virtio_scsi', 'sd_mod', 'ext4'):
+            for name in ('virtio_mmio', 'virtio_scsi', 'virtio_net', 'sd_mod', 'ext4'):
                 matches = [p for p in dependencies if Path(p).stem == name]
                 if len(matches) != 1:
                     raise ValueError(f'missing module {name}')

@@ -188,6 +188,9 @@ mod native_abi;
 #[path = "cases/ns16550.rs"]
 mod ns16550;
 #[cfg(test)]
+#[path = "cases/pci.rs"]
+mod pci;
+#[cfg(test)]
 #[path = "cases/physical_ranges.rs"]
 mod physical_ranges;
 #[cfg(test)]

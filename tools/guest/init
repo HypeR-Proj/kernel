@@ -39,6 +39,23 @@ if [ "${1:-}" != root-mounted ]; then
     fi
 fi
 
+# Start networking only after the final root is mounted. Keep DHCP alive for
+# lease renewal, but never wait for a link or server before opening the shell.
+/bin/busybox ip link set lo up
+for module in virtio_mmio virtio_net; do
+    /bin/busybox modprobe "$module" >/dev/null 2>&1 || :
+done
+/bin/busybox mkdir -p /run /var/log
+for net in /sys/class/net/*; do
+    [ -e "$net" ] || continue
+    interface=${net##*/}
+    [ "$interface" != lo ] || continue
+    /bin/busybox ip link set dev "$interface" up || continue
+    /bin/busybox udhcpc -f -i "$interface" -t 3 -T 3 -A 5 \
+        -p "/run/udhcpc-$interface.pid" \
+        </dev/null >"/var/log/udhcpc-$interface.log" 2>&1 &
+done
+
 echo "HypeR guest: /init reached"
 echo "HypeR guest: Linux userspace is running"
 

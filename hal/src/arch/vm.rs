@@ -43,6 +43,8 @@ pub use super::imp::UnsupportedGuestExit;
 #[cfg(CONFIG_ARCH_RISCV64)]
 pub(crate) use super::imp::{access_plic, stopped_guest_wfi_state};
 
+#[cfg(CONFIG_ARCH_AARCH64)]
+pub(crate) use super::imp::inject_saved_guest_device_interrupt;
 #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
 pub use super::imp::{
     GuestAdministrativeStopReason, GuestRunError, GuestRunExit, GuestStage2RetirementRequest,

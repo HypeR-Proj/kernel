@@ -5,6 +5,85 @@
 mod model;
 
 #[test]
+fn admitted_virtio_kinds_keep_firmware_selection_unambiguous() {
+    use model::VirtioKind;
+    assert_eq!(VirtioKind::from_device_id(8), Some(VirtioKind::Scsi));
+    assert_eq!(VirtioKind::from_device_id(1), Some(VirtioKind::Net));
+    for id in [0, 2, 3, 9, u32::MAX] {
+        assert_eq!(VirtioKind::from_device_id(id), None);
+    }
+    for kind in [VirtioKind::Scsi, VirtioKind::Net] {
+        assert_eq!(VirtioKind::from_device_id(kind.device_id()), Some(kind));
+        assert!(model::transport_profile(kind.profile()));
+    }
+    assert_ne!(VirtioKind::Scsi.profile(), VirtioKind::Net.profile());
+    assert!(model::transport_profile(4));
+    for profile in [0, 2, 5, u32::MAX] {
+        assert!(!model::transport_profile(profile));
+    }
+}
+
+#[test]
+fn multiple_assignments_require_disjoint_apertures_and_interrupts() {
+    use model::assignments_conflict;
+    assert!(!assignments_conflict(
+        (0x0b00_0000, 65536, 40, 1),
+        (0x0b01_0000, 65536, 59, 1)
+    ));
+    assert!(assignments_conflict(
+        (0x0b00_0000, 65536, 40, 1),
+        (0x0b01_0000, 65536, 40, 1)
+    ));
+    // A register window may be only 512 bytes; its entire trap aperture is owned.
+    for offset in [0, 4096, 0xf000] {
+        assert!(assignments_conflict(
+            (0x0b00_0000, 65536, 40, 1),
+            (0x0b00_0000 + offset, 65536, 59, 1)
+        ));
+        assert!(assignments_conflict(
+            (0x0b00_0000 + offset, 65536, 59, 1),
+            (0x0b00_0000, 65536, 40, 1)
+        ));
+    }
+    for irq in [40, 59, 63, 64, 72, 127, 128, 191, 255] {
+        assert!(model::valid_guest_interrupt(irq));
+    }
+    for irq in [0, 31, 33, 39, 256, u32::MAX] {
+        assert!(!model::valid_guest_interrupt(irq));
+    }
+}
+
+#[test]
+fn distinct_physical_register_windows_may_share_a_host_page() {
+    use model::register_windows_conflict;
+    assert!(!register_windows_conflict(
+        0x0a00_3c00,
+        0x200,
+        0x0a00_3e00,
+        0x200
+    ));
+    assert!(register_windows_conflict(
+        0x0a00_3c00,
+        0x200,
+        0x0a00_3c00,
+        0x200
+    ));
+    assert!(register_windows_conflict(
+        0x0a00_3c00,
+        0x200,
+        0x0a00_3000,
+        0x1000
+    ));
+    assert!(register_windows_conflict(
+        0x0a00_3c00,
+        0x200,
+        0x0a00_3d00,
+        0x200
+    ));
+    assert!(register_windows_conflict(u64::MAX, 2, 0, 512));
+}
+
+#[test]
 fn assigned_dma_activation_requires_renegotiation_after_reset() {
     let mut state = model::Negotiation::new();
     assert!(!state.write(0x70, 15));
@@ -122,10 +201,58 @@ fn physical_register_windows_reject_gaps_and_crossing_accesses() {
     ] {
         assert!(model::register_offset(address, width, 0x3c00, 0x40).is_none());
     }
-    assert!(model::assignment_aperture(0x0b00_0000));
-    assert!(model::assignment_aperture(0x0bff_0000));
-    assert!(!model::assignment_aperture(0x0bff_f000));
-    assert!(!model::assignment_aperture(u64::MAX));
+    assert!(model::assignment_aperture(0x0b00_0000, 65536));
+    assert!(model::assignment_aperture(0x0bff_0000, 65536));
+    assert!(!model::assignment_aperture(0x0bff_f000, 65536));
+    assert!(!model::assignment_aperture(u64::MAX, 65536));
+}
+
+#[test]
+fn pci_function_owns_its_complete_aperture() {
+    let size = hyper::drivers::pci::APERTURE_SIZE;
+    let base = 0x0b80_0000;
+    assert!(model::assignment_aperture(base, size));
+    assert!(!model::assignments_conflict(
+        (base, size, 59, 1),
+        (0x0b00_0000, 65536, 40, 1)
+    ));
+    for other in [base, base + 0x10000, base + 0x20000, base + size - 4096] {
+        assert!(model::assignments_conflict(
+            (base, size, 59, 1),
+            (other, 65536, 40, 1)
+        ));
+        assert!(model::assignments_conflict(
+            (other, 65536, 40, 1),
+            (base, size, 59, 1)
+        ));
+    }
+    assert!(!model::assignments_conflict(
+        (base, size, 59, 1),
+        (base + size, 65536, 40, 1)
+    ));
+    assert!(model::assignment_aperture(0x0c00_0000 - size, size));
+    assert!(!model::assignment_aperture(0x0c00_0000 - size + 4096, size));
+    assert!(!model::assignment_aperture(base, 0));
+    assert!(!model::assignment_aperture(base, u64::MAX));
+    // Dedicated mediation cannot be overlaid by a userspace MMIO handler.
+    assert!(!model::owns_userspace_aperture(false, base, base, size));
+    assert_eq!(
+        model::register_offset(0x14034, 4, 0x4000, 0x10038),
+        Some(0x10034)
+    );
+    assert_eq!(model::register_offset(0x14038, 4, 0x4000, 0x10038), None);
+}
+
+#[test]
+fn bcm2712_inbound_size_rejects_reserved_encodings() {
+    use hyper::drivers::pci::inbound_size;
+    for encoded in [0, 22, 27, 32, u32::MAX] {
+        assert_eq!(inbound_size(encoded), None);
+    }
+    assert_eq!(inbound_size(1), Some(65536));
+    assert_eq!(inbound_size(21), Some(0x10_0000_0000));
+    assert_eq!(inbound_size(28), Some(4096));
+    assert_eq!(inbound_size(31), Some(32768));
 }
 
 #[test]
@@ -201,4 +328,46 @@ fn userspace_physical_mmio_requires_exact_owned_aperture_and_generic_profile() {
         u64::MAX - 65535,
         65536
     ));
+}
+
+#[test]
+fn pci_msi_range_admission_covers_every_vector_and_rejects_overflow() {
+    assert!(model::valid_guest_interrupt_range(128, 64));
+    assert!(model::valid_guest_interrupt_range(192, 64));
+    for (base, count) in [
+        (39, 1),
+        (128, 0),
+        (193, 64),
+        (255, 2),
+        (u32::MAX, 2),
+        (40, u32::MAX),
+    ] {
+        assert!(!model::valid_guest_interrupt_range(base, count));
+    }
+    assert!(!model::interrupt_ranges_conflict(128, 64, 64, 9));
+    assert!(!model::interrupt_ranges_conflict(128, 64, 192, 1));
+    assert!(!model::interrupt_ranges_conflict(128, 0, 128, 64));
+    for irq in 128..192 {
+        assert!(model::interrupt_ranges_conflict(128, 64, irq, 1));
+        assert!(model::interrupt_ranges_conflict(irq, 1, 128, 64));
+    }
+    assert!(model::interrupt_ranges_conflict(u32::MAX, 2, 64, 1));
+}
+
+#[test]
+fn pci_identity_is_canonical_and_independent_of_firmware_names() {
+    assert_eq!(model::pci_identity("1de4:0001"), Some(0x0001_1de4));
+    assert_eq!(model::pci_identity("abcd:ef09"), Some(0xef09_abcd));
+    for text in [
+        "1DE4:0001",
+        "0x1de4:1",
+        "1de4:1",
+        "1de4-0001",
+        "1de4:0001 ",
+        "zde4:0001",
+        "1de4:00010",
+        "",
+    ] {
+        assert_eq!(model::pci_identity(text), None);
+    }
 }

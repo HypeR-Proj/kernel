@@ -37,6 +37,7 @@ endif
 KERNEL_PROFILE := kernel
 CARGO_PROFILE := --profile $(KERNEL_PROFILE)
 CARGO ?= cargo
+export HYPER_BUILD_GIT_STATE := $(shell python3 -B tools/build-version.py --state)
 CONFIG_FILE ?= .config
 CONFIG_PATH := $(abspath $(CONFIG_FILE))
 KERNEL_CONFIG_ENV := HYPER_CONFIG=$(CONFIG_PATH)

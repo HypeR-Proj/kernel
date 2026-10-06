@@ -50,6 +50,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let output_directory = PathBuf::from(env::var("OUT_DIR")?);
     let target = env::var("TARGET")?;
     config::export(Path::new(&env::var("CARGO_MANIFEST_DIR")?))?;
+    export_build_version()?;
     configure_kallsyms_embedding()?;
 
     let header_path = output_directory.join("asm_constants.h");
@@ -105,6 +106,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         )?;
         println!("cargo:rustc-link-arg-bin=hyper={}", object_path.display());
     }
+    Ok(())
+}
+
+fn export_build_version() -> Result<(), Box<dyn Error>> {
+    let output = Command::new("python3")
+        .args(["-B", "tools/build-version.py"])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "kernel build version generation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    print!("{}", String::from_utf8(output.stdout)?);
     Ok(())
 }
 

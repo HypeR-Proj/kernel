@@ -1392,9 +1392,9 @@ pub fn complete_device_call(
     }
 }
 
-/// A saved guest device line could not be updated.
+/// A saved guest device interrupt could not be updated.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DeviceLineError {
+pub enum DeviceInterruptError {
     InvalidInterrupt,
     Backend,
     Unsupported,
@@ -1406,18 +1406,38 @@ pub fn update_saved_device_line(
     interrupts: &InterruptController,
     interrupt: u32,
     asserted: bool,
-) -> Result<(), DeviceLineError> {
+) -> Result<(), DeviceInterruptError> {
     #[cfg(CONFIG_ARCH_AARCH64)]
     {
         let interrupt = hyper::vm::arm::gic::GicInterruptId::new(interrupt)
-            .ok_or(DeviceLineError::InvalidInterrupt)?;
+            .ok_or(DeviceInterruptError::InvalidInterrupt)?;
         update_saved_guest_device_interrupt(interrupts, 0, interrupt, asserted)
-            .map_err(|_| DeviceLineError::Backend)
+            .map_err(|_| DeviceInterruptError::Backend)
     }
     #[cfg(not(CONFIG_ARCH_AARCH64))]
     {
         let _ = (interrupts, interrupt, asserted);
-        Err(DeviceLineError::Unsupported)
+        Err(DeviceInterruptError::Unsupported)
+    }
+}
+
+/// Publishes one message-signaled event without introducing a device level.
+pub fn inject_saved_device_interrupt(
+    interrupts: &InterruptController,
+    interrupt: u32,
+) -> Result<(), DeviceInterruptError> {
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    {
+        let interrupt = hyper::vm::arm::gic::GicInterruptId::new(interrupt)
+            .filter(|interrupt| interrupt.get() >= 32)
+            .ok_or(DeviceInterruptError::InvalidInterrupt)?;
+        crate::arch::vm::inject_saved_guest_device_interrupt(interrupts, interrupt)
+            .map_err(|_| DeviceInterruptError::Backend)
+    }
+    #[cfg(not(CONFIG_ARCH_AARCH64))]
+    {
+        let _ = (interrupts, interrupt);
+        Err(DeviceInterruptError::Unsupported)
     }
 }
 
