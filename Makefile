@@ -191,7 +191,7 @@ else
 endif
 
 test-image:
-	KERNEL_SELF_TEST_IMAGE=$(if $(findstring kernel-self-test,$(CARGO_FEATURES)),1,0) \
+	KERNEL_SELF_TEST_IMAGE=$(if $(or $(findstring kernel-self-test,$(CARGO_FEATURES)),$(findstring kernel-smmuv3-test,$(CARGO_FEATURES))),1,0) \
 		sh tests/image/verify-image.sh $(ARCH) $(READOBJ) $(NM) $(OBJDUMP) $(KERNEL_ELF) $(KERNEL_IMAGE) $(KALLSYMS_BLOB)
 
 test-timer: image
@@ -203,6 +203,19 @@ test-qemu: image
 	QEMU_CPUS=$(QEMU_CPUS) sh $(QEMU_TEST_SCRIPT) $(QEMU) $(KERNEL_IMAGE) $(QEMU_CPU) $(QEMU_MEMORY) "$(QEMU_BOOTARGS)"
 
 test-qemu: CARGO_FEATURES=--features kernel-self-test
+
+ifeq ($(ARCH),aarch64)
+test-smmuv3: image
+	python3 tests/qemu/verify-smmuv3.py $(QEMU) $(KERNEL_IMAGE) --cpus $(QEMU_CPUS)
+	python3 tests/qemu/verify-smmuv3.py $(QEMU) $(KERNEL_IMAGE) --cpus $(QEMU_CPUS) --failure timeout --log target/smmuv3-timeout-qemu.log
+
+test-smmuv3: CARGO_FEATURES=--features kernel-smmuv3-test
+else
+test-smmuv3:
+	@echo "test-smmuv3 requires ARCH=aarch64" >&2; exit 2
+endif
+
+.PHONY: test-smmuv3
 
 # Unsupported CPUs must stop before VHE register setup or Native admission.
 ifeq ($(ARCH),aarch64)

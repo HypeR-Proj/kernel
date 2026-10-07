@@ -47,7 +47,8 @@ impl From<crate::kernel::task::SleepError> for QuiescenceError {
 pub(super) fn quiesce_workers() -> Result<scheduler::Statistics, QuiescenceError> {
     let service_workers = crate::kernel::log::permanent_worker_count_for_test()
         + scheduler::permanent_worker_count_for_test()
-        + crate::kernel::io_cache::worker::permanent_worker_count_for_test();
+        + crate::kernel::io_cache::worker::permanent_worker_count_for_test()
+        + crate::kernel::device::iommu::runtime::permanent_worker_count_for_test();
     let mut last = QuiescenceSnapshot {
         threads: 0,
         ready: 0,

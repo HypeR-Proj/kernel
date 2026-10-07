@@ -273,7 +273,8 @@ fn late_publication_under_pressure(
     let pressure = Pressure::start();
     let service_workers = crate::kernel::log::permanent_worker_count_for_test()
         + crate::kernel::task::scheduler::permanent_worker_count_for_test()
-        + worker::permanent_worker_count_for_test();
+        + worker::permanent_worker_count_for_test()
+        + crate::kernel::device::iommu::runtime::permanent_worker_count_for_test();
     wait_without_allocation(|| {
         let usage = cache.usage();
         let statistics =

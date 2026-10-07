@@ -147,3 +147,40 @@ fn external_single_lane_pcie_does_not_inherit_x4_mapping_policy() {
     let (_, devices) = discover(&pci_tree(true, 0x02000000, 1));
     assert!(devices.iter().all(|node| node.pci_memory().is_none()));
 }
+
+#[test]
+fn ecam_retains_only_bounded_nonprefetchable_32_bit_window() {
+    let mut nodes = Vec::new();
+    begin_node(&mut nodes, b"pcie@4010000000");
+    property(&mut nodes, 0, &3u32.to_be_bytes());
+    property(&mut nodes, 15, &2u32.to_be_bytes());
+    property(&mut nodes, 31, b"pci-host-ecam-generic\0");
+    property(&mut nodes, 42, b"pci\0");
+    property(&mut nodes, 27, &cells(&[0x40, 0x10000000, 0, 0x10000000]));
+    property(
+        &mut nodes,
+        54,
+        &cells(&[
+            0x01000000, 0, 0, 0, 0x3eff0000, 0, 0x10000, 0x02000000, 0, 0x10000000, 0, 0x10000000,
+            0, 0x2eff0000, 0x03000000, 0x80, 0, 0x80, 0, 0x80, 0,
+        ]),
+    );
+    push_u32(&mut nodes, FDT_END_NODE);
+    let (platform, devices) = discover(&add_root_nodes(qemu_like_dtb(), &nodes));
+    let host = crate::require_some(
+        devices
+            .iter()
+            .find(|node| node.is_compatible("pci-host-ecam-generic")),
+    );
+    let (bus, window) = crate::require_some(host.pci_memory());
+    assert_eq!(bus, 0x10000000);
+    assert_eq!(window.start(), bus);
+    assert_eq!(window.size(), 8 * 1024 * 1024);
+    assert!(
+        !platform
+            .mmio
+            .as_slice()
+            .iter()
+            .any(|range| range.start() >= 0x8000000000)
+    );
+}

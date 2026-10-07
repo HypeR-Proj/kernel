@@ -40,3 +40,8 @@ root Makefile for complete SDK, initramfs, and production boot composition.
 
 Generated artifacts and configuration remain under this component's `target/`
 and `.config` paths whether commands begin here or at the repository root.
+
+`make test-smmuv3 ARCH=aarch64` builds the dedicated PCI DMA isolation fixture
+and runs it against QEMU's standard SMMUv3 model. See the
+[driver and acceptance contract](docs/smmuv3.md) for coverage, ownership,
+emulator limitations and the boundary with the current I/O VM deployment.

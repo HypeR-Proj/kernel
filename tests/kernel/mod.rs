@@ -25,6 +25,8 @@ mod reschedule_ipi;
 mod reserved_timer;
 mod scheduler_parallel;
 mod scheduler_sync;
+#[cfg(all(CONFIG_ARCH_AARCH64, feature = "kernel-smmuv3-test"))]
+pub(crate) mod smmuv3;
 mod stack_model;
 #[cfg(CONFIG_ARCH_AARCH64)]
 mod stage2_blocks;
@@ -131,6 +133,8 @@ pub(crate) fn run() {
     run_case("kernel vCPU endpoint wait tests", vm_wfi_wait::run);
     #[cfg(CONFIG_ARCH_AARCH64)]
     run_case("real guest vCPU migration tests", vcpu_migration::run);
+    #[cfg(all(CONFIG_ARCH_AARCH64, feature = "kernel-smmuv3-test"))]
+    run_case("SMMUv3 runtime fault handling", smmuv3::runtime::run);
     crate::hal::irq::mask_local();
     #[cfg(CONFIG_ARCH_AARCH64)]
     run_case(

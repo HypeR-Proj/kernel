@@ -36,8 +36,19 @@ pub(crate) mod signals {
     }
 }
 
+#[path = "../../../../src/kernel/object/identity.rs"]
+pub(crate) mod identity;
 #[path = "../../../../src/kernel/object/core.rs"]
 mod object_core;
+pub(crate) use object_core::ObjectCreationError;
+
+pub(crate) fn weak_is_alive(object: &object_core::WeakObjectRef) -> bool {
+    object.is_alive()
+}
+
+pub(crate) fn weak_can_upgrade(object: &object_core::WeakObjectRef) -> bool {
+    object.upgrade().is_some()
+}
 
 pub(crate) mod object {
     pub(crate) use super::object_core::{

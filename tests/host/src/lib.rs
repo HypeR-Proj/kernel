@@ -10,6 +10,10 @@
 extern crate alloc;
 
 #[cfg(test)]
+#[path = "cases/smmuv3.rs"]
+mod smmuv3;
+
+#[cfg(test)]
 #[path = "../../../src/mm/allocation/refcount.rs"]
 mod fallible_refcount;
 
