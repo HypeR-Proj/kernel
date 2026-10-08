@@ -9,7 +9,7 @@ root=$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)
 cd "$root"
 
 usage() {
-    echo "usage: kernel/tests/ci/run.sh {quality|scripts|aarch64-build|aarch64-qemu|riscv64-qemu|x86_64-build}" >&2
+    echo "usage: kernel/tests/ci/run.sh {quality|scripts|aarch64-build|aarch64-production|aarch64-self-test|aarch64-compact|aarch64-qemu|riscv64-qemu|x86_64-build}" >&2
     exit 2
 }
 
@@ -45,6 +45,11 @@ case "${1:-}" in
             xargs -0 shellcheck --severity=warning
         ;;
     aarch64-build)
+        for variant in production self-test compact; do
+            sh tests/ci/run.sh "aarch64-$variant"
+        done
+        ;;
+    aarch64-production)
         sh tests/ci/check-aarch64-address-configs.sh
         make check ARCH=aarch64
         make release ARCH=aarch64
@@ -54,11 +59,14 @@ case "${1:-}" in
             target/ci/aarch64/hyper.production.stripped
         cp target/aarch64-unknown-none/kernel/hyper.stripped.img \
             target/ci/aarch64/hyper.production.stripped.img
-
+        ;;
+    aarch64-self-test)
         make image ARCH=aarch64 CARGO_FEATURES="--features kernel-self-test"
         make test-image ARCH=aarch64
         copy_aarch64_artifacts self-test
-
+        ;;
+    aarch64-compact)
+        mkdir -p target/ci/aarch64
         compact_config=target/ci/aarch64/compact.config
         sed \
             -e 's/^CONFIG_ARM64_VA_BITS=.*/CONFIG_ARM64_VA_BITS=42/' \
