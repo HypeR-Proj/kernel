@@ -1907,3 +1907,25 @@ fn every_physical_claim_preparation_failure_aborts_its_real_handle_reservation()
     assert_eq!(value, 17);
     reservation.abort(&mut table);
 }
+
+#[test]
+fn diagnostic_pin_does_not_preserve_active_handle_authority() {
+    let transitions = Arc::new(AtomicUsize::new(0));
+    let object = object(12, &transitions);
+    let mut table = HandleTable::new();
+    let reservation = crate::require_ok(table.reserve::<1>());
+    let value = reservation.values()[0];
+    reservation.publish(&mut table, [prepared(object.clone(), Rights::INSPECT)]);
+    let pin = crate::require_ok(table.inspect_object(value));
+    assert_eq!(object.snapshot().references.diagnostic, 1);
+    remove_all(&mut table);
+    assert_eq!(transitions.load(Ordering::Relaxed), 1);
+    assert_eq!(object.snapshot().handles, ObjectHandleState::Retired);
+    assert!(table.inspect_object(value).is_err());
+    assert_eq!(
+        pin.details(0),
+        Err(kernel::diagnostics::DetailError::Unsupported)
+    );
+    drop(pin);
+    assert_eq!(object.snapshot().references.diagnostic, 0);
+}

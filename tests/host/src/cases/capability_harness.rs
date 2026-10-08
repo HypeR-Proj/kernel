@@ -40,7 +40,9 @@ pub(crate) mod signals {
 pub(crate) mod identity;
 #[path = "../../../../src/kernel/object/core.rs"]
 mod object_core;
-pub(crate) use object_core::ObjectCreationError;
+pub(crate) use object_core::{Koid, ObjectCreationError, ObjectKind, UserExportableObject};
+#[path = "../../../../src/kernel/object/diagnostics.rs"]
+pub(crate) mod diagnostics;
 
 pub(crate) fn weak_is_alive(object: &object_core::WeakObjectRef) -> bool {
     object.is_alive()
@@ -52,11 +54,11 @@ pub(crate) fn weak_can_upgrade(object: &object_core::WeakObjectRef) -> bool {
 
 pub(crate) mod object {
     pub(crate) use super::object_core::{
-        ActiveHandleError, ActiveHandleOwner, ErasedKernelRef, ExportPolicy, KernelObject,
-        KernelRef, KernelService, Koid, ObjectHandleState, ObjectKind, ObjectPublication,
-        ObjectReferenceSnapshot, ObjectRetirement, ObjectSnapshot, OperationPin, PublishableRef,
-        Scheduler, TransferClass, UserExportableObject, final_reap_pending, private,
-        reap_final_objects, reap_one_final_object,
+        ActiveHandleError, ActiveHandleOwner, Diagnostic, ErasedKernelRef, ExportPolicy,
+        KernelObject, KernelRef, KernelService, Koid, ObjectHandleState, ObjectKind,
+        ObjectPublication, ObjectReferenceSnapshot, ObjectRetirement, ObjectSnapshot, OperationPin,
+        PublishableRef, Scheduler, TransferClass, UserExportableObject, final_reap_pending,
+        private, reap_final_objects, reap_one_final_object,
     };
     pub(crate) use super::signals;
     pub(crate) use super::signals::SignalSource;

@@ -2786,3 +2786,65 @@ fn vmar_free_index_is_published_atomically_with_mapping_transactions() {
             .is_ok()
     );
 }
+
+#[test]
+fn vmar_details_keep_local_range_permissions_and_retired_identity() {
+    use user::{VmarDetailError, VmarDetailRecord};
+    let (backend, account) = fixtures();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x4000, PAGE_SIZE * 4),
+        backend.clone(),
+        account.clone(),
+    ));
+    let child =
+        crate::require_ok(space.try_create_vmar(space.root_vmar(), slice(0x5000, PAGE_SIZE)));
+    let vmo = crate::require_ok(WritableVmo::try_new(PAGE_SIZE, backend, account));
+    assert!(vmo.populate(0, PAGE_SIZE).is_ok());
+    let map = crate::require_ok(space.prepare_map_writable(
+        child,
+        slice(0x5000, PAGE_SIZE),
+        vmo,
+        0,
+        Permissions::read_only(),
+        Permissions::read_write(),
+    ));
+    complete(crate::require_ok(map.commit_for_test()));
+    let page = crate::require_ok(space.vmar_details(child, 0));
+    assert_eq!(
+        page.record,
+        VmarDetailRecord::Region {
+            range: child.range(),
+            live: true
+        }
+    );
+    let mapping = crate::require_ok(space.vmar_details(child, page.next_cursor));
+    assert_eq!(
+        mapping.record,
+        VmarDetailRecord::Mapping {
+            range: child.range(),
+            permissions: Permissions::read_only(),
+            maximum_permissions: Permissions::read_write()
+        }
+    );
+    assert_eq!(mapping.next_cursor, 0);
+    let unmap = crate::require_ok(space.prepare_unmap(child, child.range()));
+    complete(crate::require_ok(unmap.commit_for_test()));
+    assert!(space.destroy_vmar(child).is_ok());
+    let replacement = crate::require_ok(space.try_create_vmar(space.root_vmar(), child.range()));
+    assert_ne!(replacement, child);
+    let retired = crate::require_ok(space.vmar_details(child, 0));
+    assert_eq!(
+        retired.record,
+        VmarDetailRecord::Region {
+            range: child.range(),
+            live: false
+        }
+    );
+    assert_eq!(retired.next_cursor, 0);
+    assert_eq!(space.vmar_details(child, 1), Err(VmarDetailError::Stale));
+    assert_eq!(
+        space.vmar_details(replacement, u64::MAX),
+        Err(VmarDetailError::InvalidCursor)
+    );
+}
