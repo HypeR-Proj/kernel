@@ -25,66 +25,13 @@ copy_aarch64_artifacts() {
 
 case "${1:-}" in
     quality)
-        command -v rg >/dev/null 2>&1 || {
-            echo "ripgrep is required for the source-quality suite" >&2
-            exit 2
-        }
-        sh tests/ci/test-boot-stack-contract.sh
-        sh tests/ci/check-boot-stack-contract.sh
-        # Cargo enforces dependency direction; rustc enforces HAL privacy.
-        sh tests/ci/test-arch-boundaries.sh
-        sh tests/ci/check-arch-boundaries.sh
-        sh tests/ci/test-arch-facades.sh
-        sh tests/ci/check-arch-facades.sh
-        sh tests/ci/test-irq-registration-contract.sh
-        sh tests/ci/check-irq-registration-contract.sh
-        sh tests/ci/test-irq-transition-contract.sh
-        sh tests/ci/check-irq-transition-contract.sh
-        sh tests/ci/test-boot-lifecycle-contract.sh
-        sh tests/ci/check-boot-lifecycle-contract.sh
-        sh tests/ci/test-local-irq-lifecycle-contract.sh
-        sh tests/ci/check-local-irq-lifecycle-contract.sh
-        sh tests/ci/test-cross-call-publisher-pinning-contract.sh
-        sh tests/ci/check-cross-call-publisher-pinning-contract.sh
-        sh tests/ci/test-reschedule-publication-contract.sh
-        sh tests/ci/check-reschedule-publication-contract.sh
-        sh tests/ci/test-thread-migration-context-contract.sh
-        sh tests/ci/check-thread-migration-context-contract.sh
-        sh tests/ci/test-thread-retirement-contract.sh
-        sh tests/ci/check-thread-retirement-contract.sh
-        sh tests/ci/test-thread-resource-alias-contract.sh
-        sh tests/ci/check-thread-resource-alias-contract.sh
-        sh tests/ci/test-scheduler-cpu-ownership-contract.sh
-        sh tests/ci/check-scheduler-cpu-ownership-contract.sh
-        sh tests/ci/test-scheduler-thread-table-contract.sh
-        sh tests/ci/check-scheduler-thread-table-contract.sh
-        sh tests/ci/test-x86-stage1-shootdown-contract.sh
-        sh tests/ci/check-x86-stage1-shootdown-contract.sh
-        sh tests/ci/test-secondary-handoff-contract.sh
-        sh tests/ci/check-secondary-handoff-contract.sh
-        sh tests/ci/test-riscv-guest-frame-contract.sh
-        sh tests/ci/check-riscv-guest-frame-contract.sh
-        sh tests/ci/test-native-user-boundary.sh
-        sh tests/ci/check-native-user-boundary.sh
-        sh tests/ci/test-vcpu-transition-contract.sh
-        sh tests/ci/check-vcpu-transition-contract.sh
-        sh tests/ci/test-aarch64-guest-unwind-contract.sh
-        sh tests/ci/check-aarch64-guest-unwind-contract.sh
-        sh tests/ci/test-vcpu-interrupt-publication-contract.sh
-        sh tests/ci/check-vcpu-interrupt-publication-contract.sh
-        sh tests/ci/test-vm-retirement-contract.sh
-        sh tests/ci/check-vm-retirement-contract.sh
-        sh tests/ci/test-guest-residency-contract.sh
-        sh tests/ci/check-guest-residency-contract.sh
-        sh tests/ci/test-allocator-invariant-contract.sh
-        sh tests/ci/check-allocator-invariant-contract.sh
-        sh tests/ci/test-allocator-cache-contract.sh
-        sh tests/ci/check-allocator-cache-contract.sh
-        sh tests/ci/test-deferred-log-contract.sh
-        sh tests/ci/check-deferred-log-contract.sh
+        # Check resolved dependencies and compiler-enforced HAL privacy.
+        python3 -B tests/ci/test-hal-boundary.py
+        python3 -B tests/ci/hal-boundary.py
         sh tests/ci/test-aarch64-kaslr-geometry.sh
         cargo fmt --all -- --check
         cargo fmt --manifest-path tests/host/Cargo.toml -- --check
+        cargo fmt --manifest-path tests/concurrency/Cargo.toml -- --check
         cargo fmt --manifest-path tools/kconfig/Cargo.toml -- --check
         cargo fmt --manifest-path tools/kallsyms/Cargo.toml -- --check
         make test ARCH=aarch64

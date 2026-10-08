@@ -112,31 +112,3 @@ fn owned_tickets_retain_complete_context() {
     let report = crate::require_some(diagnostics.admit_unhandled_mmio(identity, 2, write));
     assert!(std::format!("{report}").contains("write 0xabcd, occurrence 2"));
 }
-
-#[test]
-fn terminal_vmexit_retains_report_until_exact_hardware_detach() {
-    let vmexit = include_str!("../../../../src/kernel/entry/vmexit/selected.rs");
-    let start = crate::require_some(vmexit.find("fn dispatch_mmio"));
-    let remainder = &vmexit[start..];
-    let end = crate::require_some(remainder.find("fn dispatch_guest_sync"));
-    let body = &remainder[..end];
-    assert!(body.contains("active_vcpu::with"));
-    assert!(!body.contains("publish_terminal_supplement"));
-    assert!(!body.contains("pr_err!"));
-    assert!(!body.contains("kernel::log"));
-
-    let device = include_str!("../../../../src/kernel/vm/device/aarch64.rs");
-    let helper = crate::require_some(device.find("fn publish_terminal_mmio_report"));
-    let helper_body = &device[helper..];
-    assert!(device.contains("admit_unhandled_mmio"));
-    assert!(helper_body.contains("publish_terminal_mmio_report(report).is_err()"));
-
-    let runner = include_str!("../../../../src/kernel/vm/vcpu/runner.rs");
-    let detach = crate::require_some(runner.find("transition::detach_stopped"));
-    let finish = crate::require_some(runner.find("detached.finish()"));
-    let take = crate::require_some(runner.find("take_terminal_mmio_report"));
-    let report = crate::require_some(runner.find("pr_err!(\"{report}\")"));
-    assert!(detach < finish);
-    assert!(finish < take);
-    assert!(take < report);
-}

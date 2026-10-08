@@ -518,6 +518,11 @@ pub fn run_user<'context, 'pin>(
 }
 
 impl<'context, 'pin> StoppedUser<'context, 'pin> {
+    /// Separates the captured exit from its still-active translation ownership.
+    ///
+    /// This does not deactivate the native root. The address-space owner must
+    /// restore the preceding translation before dispatching the exit or allowing
+    /// scheduling; the publication proof identifies the stopped run generation.
     pub fn release(
         mut self,
     ) -> (
@@ -621,6 +626,12 @@ impl<'context> UserExit<'context> {
     }
 }
 
+/// Exclusive authority to finish one stopped native-user context generation.
+///
+/// Completion methods update the saved context or mark it discarded; they do
+/// not enter userspace. A binding mismatch retains ownership in
+/// [`CompletionFailure`] for fail-stop handling, rather than allowing the
+/// context to be reused or silently dropped.
 #[must_use = "native-user return ownership must be resumed or discarded exactly once"]
 pub struct ReturnCapability<'context> {
     #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]

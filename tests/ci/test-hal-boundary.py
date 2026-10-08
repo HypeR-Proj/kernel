@@ -59,19 +59,26 @@ class GraphTests(unittest.TestCase):
 
 
 class DiagnosticTests(unittest.TestCase):
-    def test_expected_private_module_error(self):
-        self.assertTrue(boundary.private_arch_error(json.dumps({
+    @staticmethod
+    def diagnostic(code='E0603', file='src/lib.rs', line=2):
+        return json.dumps({
             'reason': 'compiler-message',
-            'message': {'code': {'code': 'E0603'}, 'message': 'module `arch` is private'},
-        })))
+            'target': {'src_path': file},
+            'message': {'code': {'code': code}, 'level': 'error',
+                        'message': 'wording is not the contract',
+                        'spans': [{'file_name': file, 'line_start': line, 'is_primary': True}]},
+        })
+
+    def test_expected_private_module_error(self):
+        self.assertTrue(boundary.private_arch_error(self.diagnostic()))
 
     def test_unrelated_failure_cannot_pass(self):
-        for code, message in [('E0432', 'unresolved import'),
-                              ('E0603', 'module `other` is private'), (None, 'build error')]:
-            self.assertFalse(boundary.private_arch_error(json.dumps({
-                'reason': 'compiler-message',
-                'message': {'code': {'code': code}, 'message': message},
-            })))
+        for diagnostic in (self.diagnostic(code='E0432'), self.diagnostic(code=None),
+                           self.diagnostic(file='dependency/src/lib.rs'),
+                           self.diagnostic(line=10),
+                           self.diagnostic(file='build.rs')):
+            self.assertFalse(boundary.private_arch_error(diagnostic))
+            self.assertFalse(boundary.private_arch_error(self.diagnostic() + '\n' + diagnostic))
         self.assertFalse(boundary.private_arch_error('cargo: failed to run rustc'))
 
 

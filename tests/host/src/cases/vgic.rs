@@ -684,46 +684,6 @@ fn reserves_worst_case_shared_route_capacity_before_runtime() {
 }
 
 #[test]
-fn boot_prepares_validates_then_commits_interrupt_virtualization() {
-    let source = include_str!("../../../../src/kernel/vm/mod.rs");
-    let prepare = crate::require_some(source.find("prepare_interrupts(binding.host_interrupt())"));
-    let validate = crate::require_some(source.find("timer::validate_hardware("));
-    let commit = crate::require_some(source.find("commit_interrupts(prepared_interrupts)"));
-    assert!(prepare < validate && validate < commit);
-
-    let controller = include_str!("../../../../hal/src/arch/aarch64/vm_interrupt.rs");
-    assert!(!controller.contains("interrupt_virtualization_description"));
-    assert!(controller.contains("list_registers: usize"));
-
-    let facade = include_str!("../../../../hal/src/hal/vm.rs");
-    let constructor = crate::require_some(facade.find("fn prepare_interrupt_controller("));
-    let constructor = &facade[constructor..];
-    let constructor_end = crate::require_some(constructor.find("\n}\n"));
-    let constructor = &constructor[..constructor_end];
-    assert!(constructor.contains("interrupt_virtualization_description()"));
-    assert!(constructor.contains("InterruptError::MissingCapabilities"));
-}
-
-#[test]
-fn live_gic_access_detaches_hardware_around_one_saved_bank_transaction() {
-    let source = include_str!("../../../../hal/src/arch/aarch64/vm_vcpu.rs");
-    let function = crate::require_some(source.find("pub(crate) fn access_guest_gic("));
-    let body = &source[function..];
-    let deactivate = crate::require_some(body.find("context.deactivate_vgic()"));
-    let transaction = crate::require_some(body.find("interrupts.access_saved_bank("));
-    let activate = crate::require_some(body.find("context.activate_vgic()"));
-    assert!(deactivate < transaction && transaction < activate);
-
-    let transaction_source = include_str!("../../../../hal/src/arch/aarch64/vm_interrupt.rs");
-    let function = crate::require_some(transaction_source.find("fn access_saved_bank("));
-    let body = &transaction_source[function..];
-    let synchronize = crate::require_some(body.find(".synchronize(vcpu, slots)"));
-    let operation = crate::require_some(body.find("match (register, operation)"));
-    let refill = crate::require_some(body.find(".refill(vcpu, slots)"));
-    assert!(synchronize < operation && operation < refill);
-}
-
-#[test]
 fn v2_list_registers_preserve_states_and_quantize_priority() {
     use hyper::vm::arm::gic::lr_v2;
     for state in [

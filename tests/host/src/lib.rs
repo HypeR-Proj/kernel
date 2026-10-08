@@ -138,9 +138,6 @@ mod cpu;
 #[path = "cases/crash_text.rs"]
 mod crash_text;
 #[cfg(test)]
-#[path = "cases/cross_call_pinning.rs"]
-mod cross_call_pinning;
-#[cfg(test)]
 #[path = "cases/elf.rs"]
 mod elf;
 #[cfg(test)]

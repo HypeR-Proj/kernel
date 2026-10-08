@@ -21,6 +21,7 @@ const LEVEL_SIZES: [u64; 3] = [1 << 30, 1 << 21, PAGE_SIZE];
 const TABLE_ENTRIES: usize = 512;
 // Retained through allocation-free firmware rescanning and kernel boot.
 const KERNEL_STACK_PAGES: usize = 64;
+const _: () = assert!(KERNEL_STACK_PAGES as u64 * PAGE_SIZE >= 256 * 1024);
 const STACK_SLOT_PAGES: usize = 65;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

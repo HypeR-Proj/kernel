@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 roolrz
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "hyper-concurrency-tests"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dev-dependencies]
+hyper = { package = "hyper-core", path = "../../core" }
+loom = "0.7.2"
+
+[lints.clippy]
+expect_used = "deny"
+unwrap_used = "deny"
+
+[workspace]

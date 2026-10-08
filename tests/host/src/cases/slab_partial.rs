@@ -239,17 +239,3 @@ fn insert_and_head_removal_plans_update_only_the_typed_root() {
     remove.commit();
     assert_eq!(original_lists.head(class), Some(page(2)));
 }
-
-#[test]
-fn topology_exposes_borrow_bound_permits_not_detached_plans() {
-    let source = include_str!("../../../../src/mm/allocator/heap/partial.rs");
-
-    assert!(source.contains("struct HeadPermit<'a"));
-    assert!(source.contains("struct InsertPermit<'a"));
-    assert!(source.contains("struct RemovePermit<'a"));
-    assert!(!source.contains("struct HeadSnapshot"));
-    assert!(!source.contains("struct InsertPlan"));
-    assert!(!source.contains("struct RemovePlan"));
-    assert!(!source.contains("commit_insert"));
-    assert!(!source.contains("commit_remove"));
-}

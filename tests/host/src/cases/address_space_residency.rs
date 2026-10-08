@@ -4,6 +4,14 @@
 use hyper::mm::{AddressSpaceResidency, ResidencyError};
 
 #[test]
+fn update_and_retirement_cuts_have_distinct_types() {
+    assert_ne!(
+        core::any::TypeId::of::<hyper::mm::UpdateCut<4>>(),
+        core::any::TypeId::of::<hyper::mm::RetirementCut<4>>(),
+    );
+}
+
+#[test]
 fn update_cut_blocks_late_entrants_and_targets_all_residents() {
     let mut state = crate::require_ok(AddressSpaceResidency::<4>::try_new(7));
     state
@@ -117,16 +125,6 @@ fn inactive_mapping_preflight_rejects_an_active_owner_without_mutation() {
     assert_eq!(state.epoch(), 9);
     crate::require_ok(state.leave(0, 9));
     crate::require_ok(state.check_inactive(9));
-}
-
-#[test]
-fn update_and_retirement_cuts_are_distinct_linear_types() {
-    let source = include_str!("../../../../src/mm/address_space_state.rs");
-    assert!(source.contains("pub struct UpdateCut"));
-    assert!(source.contains("pub struct RetirementCut"));
-    assert!(source.contains("cut: UpdateCut<CPUS>"));
-    assert!(source.contains("cut: RetirementCut<CPUS>"));
-    assert!(!source.contains("pub struct ResidencyCut"));
 }
 
 #[test]

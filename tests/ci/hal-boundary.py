@@ -39,7 +39,9 @@ def verify_graph(metadata):
         raise ValueError('kernel policy must not be published as the reusable core library')
 
 
-def private_arch_error(output):
+def private_arch_error(output, source=Path('src/lib.rs')):
+    """Only the expected rustc error at the probe import proves privacy."""
+    errors = []
     for line in output.splitlines():
         try:
             message = json.loads(line)
@@ -48,10 +50,16 @@ def private_arch_error(output):
         if message.get('reason') != 'compiler-message':
             continue
         diagnostic = message.get('message', {})
-        if ((diagnostic.get('code') or {}).get('code') == 'E0603'
-                and diagnostic.get('message') == 'module `arch` is private'):
-            return True
-    return False
+        if diagnostic.get('level') == 'error':
+            errors.append((message.get('target', {}).get('src_path', ''), diagnostic))
+    return bool(errors) and all(
+        Path(target).resolve() == source.resolve()
+        and (diagnostic.get('code') or {}).get('code') == 'E0603'
+        and any(span.get('is_primary') and span.get('line_start') == 2
+                and span.get('file_name') in ('src/lib.rs', str(source))
+                for span in diagnostic.get('spans', []))
+        for target, diagnostic in errors
+    )
 
 
 def cargo_command():
@@ -101,20 +109,20 @@ def check_privacy(root):
         source.write_text('#![no_std]\npub use hyper_hal::arch;\n')
         negative = subprocess.run(command, cwd=root, env=environment,
                                   capture_output=True, text=True)
-        if negative.returncode == 0 or not private_arch_error(negative.stdout):
+        if negative.returncode == 0 or not private_arch_error(negative.stdout, source):
             raise RuntimeError('private architecture import did not fail with E0603:\n'
                                + negative.stdout + negative.stderr)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=('graph', 'privacy'))
+    parser.add_argument('check', choices=('graph', 'privacy', 'all'), nargs='?', default='all')
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[2])
     arguments = parser.parse_args()
     root = arguments.root.resolve()
-    if arguments.check == 'graph':
+    if arguments.check in ('graph', 'all'):
         check_graph(root)
-    else:
+    if arguments.check in ('privacy', 'all'):
         check_privacy(root)
     print(f'HAL {arguments.check} boundary verified')
 

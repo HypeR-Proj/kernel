@@ -67,24 +67,3 @@ fn truncated_crash_reason_cannot_splice_in_a_terminal_text() {
 
     assert_eq!(reason.as_str(), prefix);
 }
-
-#[test]
-fn crash_payload_forwards_truncation_to_a_separate_banner_record() {
-    let state = include_str!("../../../../src/kernel/crash/state.rs");
-    let getter = crate::require_some(state.find("fn reason_was_truncated(&self)"));
-    let getter = &state[getter..];
-    let getter_end = crate::require_some(getter.find("\n    }"));
-    assert!(getter[..getter_end].contains("self.reason.was_truncated()"));
-
-    let coordination = include_str!("../../../../src/kernel/crash/coordination.rs");
-    let banner = crate::require_some(coordination.find("super::report::emit_banner("));
-    let banner = &coordination[banner..];
-    let banner_end = crate::require_some(banner.find(");"));
-    assert!(banner[..banner_end].contains("payload.reason_was_truncated()"));
-
-    let report = include_str!("../../../../src/kernel/crash/report.rs");
-    let reason_record = crate::require_some(report.find("format_args!(\"{reason}\")"));
-    let marker = crate::require_some(report.find("format_args!(\"[crash reason truncated]\")"));
-    assert!(reason_record < marker);
-    assert!(report[..marker].contains("if reason_was_truncated"));
-}

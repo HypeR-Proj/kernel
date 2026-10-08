@@ -115,6 +115,11 @@ runtime_contract_is_ready() {
         else
             true
         fi &&
+        if [ "$cpus" -ge 3 ]; then
+            grep -q 'HypeR test: concurrent wait arbitration passed (32 rounds)' "$log"
+        else
+            grep -q 'HypeR test: concurrent wait arbitration skipped (requires three CPUs)' "$log"
+        fi &&
         if [ "$cpus" -gt 1 ]; then
             grep -q 'HypeR test: cross-CPU thread migration passed' "$log"
         else
@@ -162,6 +167,7 @@ sh "$(dirname "$0")/empty-initramfs.sh" "$initrd"
 
 "$qemu" \
     -machine "virt,virtualization=on,gic-version=$gic_version,dtb-randomness=on" \
+    -accel tcg,thread=multi \
     -cpu "$cpu" \
     -smp "$cpus" \
     -m "$memory" \
