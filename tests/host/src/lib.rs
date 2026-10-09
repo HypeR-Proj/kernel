@@ -120,6 +120,9 @@ mod assigned_device;
 #[path = "cases/boot_allocator.rs"]
 mod boot_allocator;
 #[cfg(test)]
+#[path = "cases/bootstrap_elf.rs"]
+mod bootstrap_elf;
+#[cfg(test)]
 #[path = "cases/cache_publication.rs"]
 mod cache_publication;
 #[cfg(test)]
@@ -137,12 +140,6 @@ mod cpu;
 #[cfg(test)]
 #[path = "cases/crash_text.rs"]
 mod crash_text;
-#[cfg(test)]
-#[path = "cases/elf.rs"]
-mod elf;
-#[cfg(test)]
-#[path = "cases/exec_startup.rs"]
-mod exec_startup;
 #[cfg(test)]
 #[path = "cases/fallible_ownership.rs"]
 mod fallible_ownership;

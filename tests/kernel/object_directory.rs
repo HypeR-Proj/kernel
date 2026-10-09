@@ -110,7 +110,7 @@ fn verify_current_thread_object() -> Result<(), Error> {
         return Err(Error::MissingSchedulerObject);
     }
 
-    let mut cursor = Some(ThreadObjectScanCursor::start());
+    let mut cursor = Some(ThreadObjectScanCursor::from_token(0));
     while let Some(position) = cursor {
         let mut page = crate::kernel::task::ThreadObjectSnapshotPage::empty();
         crate::kernel::task::scheduler::scan_thread_objects(position, &mut page)

@@ -98,7 +98,6 @@ extern "C" fn start_kernel() -> ! {
 
         crate::kernel::device::platform_device_initialize(&boot)?;
         crate::kernel::vm::initialize(&boot)?;
-        crate::kernel::debug::report_startup_state();
 
         #[cfg(feature = "kernel-self-test")]
         crate::kernel_tests::run();

@@ -331,7 +331,7 @@ fn handle_diagnostics_page_generation_qualified_object_edges() {
     reservation.publish(&mut table, handles);
 
     let mut observed = Vec::new();
-    let mut cursor = Some(HandleScanCursor::start());
+    let mut cursor = Some(HandleScanCursor::from_token(0));
     for _ in 0..=expected.len() {
         let Some(position) = cursor else {
             break;
