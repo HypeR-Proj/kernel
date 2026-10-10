@@ -66,6 +66,41 @@ fn guest_io_notifications_survive_pre_enable_completion_and_consume_race() {
 }
 
 #[test]
+fn guest_io_delivery_coalesces_without_losing_queue_or_signal_state() {
+    let mut state = model::NotificationState::new();
+    let epoch = crate::require_ok(state.control(1));
+    state.kick(0);
+    let asserted = (state.front_irq(), state.back_irq(), state.signals(true));
+    state.kick(0);
+    state.kick(1);
+    assert_eq!(
+        asserted,
+        (state.front_irq(), state.back_irq(), state.signals(true))
+    );
+    assert_eq!(state.take_kicks(), 3);
+    assert!(!state.back_irq());
+    state.kick(1);
+    assert!(state.back_irq());
+
+    state.call((u64::from(epoch) << 32) | 1);
+    assert_eq!(state.signals(true), 2);
+    assert_eq!(state.signals(false), 0);
+    assert!(state.front_irq());
+    state.call((u64::from(epoch) << 32) | 2);
+    // The guest line stays asserted, but Native still needs the new error bit.
+    assert!(state.front_irq());
+    assert_eq!(state.signals(true), 6);
+    state.ack(1);
+    assert!(state.front_irq());
+    assert_eq!(state.signals(true), 4);
+    state.close();
+    assert!(!state.front_irq());
+    assert!(!state.back_irq());
+    assert_eq!(state.signals(true), 1);
+    assert_eq!(state.signals(false), 1);
+}
+
+#[test]
 fn guest_io_reset_rejects_stale_completion_and_close_is_terminal() {
     let mut state = model::NotificationState::new();
     let old = crate::require_ok(state.control(1));

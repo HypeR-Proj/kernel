@@ -19,6 +19,10 @@ pub(super) enum Error {
     ProgressTimeout,
     SchedulerThreadLeaked,
     UnsupportedAdmission,
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    Notification(&'static str),
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    Quiescence(super::support::QuiescenceError),
 }
 
 impl From<crate::kernel::task::SleepError> for Error {
@@ -75,7 +79,28 @@ pub(super) fn run() -> Result<(), Error> {
         verify_dormant_vcpu_stop()?;
         verify_thread_object_charge_lifetime()?;
         verify_observed_vm_retirement()?;
+        #[cfg(CONFIG_ARCH_AARCH64)]
+        verify_notification_delivery()?;
     }
+    Ok(())
+}
+
+#[cfg(CONFIG_ARCH_AARCH64)]
+fn verify_notification_delivery() -> Result<(), Error> {
+    let (front, front_domain) = prepare_test_vm()?;
+    let (back, back_domain) = prepare_test_vm()?;
+    let result =
+        crate::kernel::vm::io::Notification::verify_delivery_for_test(front, back, &front_domain)
+            .map_err(Error::Notification);
+    // Cleanup must run even after a failed assertion in the interleaving test.
+    let front_released = wait_for_vm_usage_release(&front_domain);
+    let back_released = wait_for_vm_usage_release(&back_domain);
+    let quiescent = super::support::quiesce_workers().map_err(Error::Quiescence);
+    result?;
+    front_released?;
+    back_released?;
+    quiescent?;
+    crate::pr_info!("HypeR test: notification publication interleavings passed");
     Ok(())
 }
 
