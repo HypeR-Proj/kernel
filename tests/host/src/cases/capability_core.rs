@@ -693,6 +693,7 @@ fn typed_resolution_uses_compiler_checked_downcast_and_survives_close() {
     ));
     let resolved = crate::require_ok(table.resolve::<TestObject>(value, Rights::INSPECT));
     assert_eq!(resolved.koid(), koid);
+    assert_eq!(resolved.rights(), Rights::INSPECT);
     let pinned = object.snapshot();
     assert_eq!(pinned.references.kernel_service, 1);
     assert_eq!(pinned.references.user_authority, 1);
@@ -705,6 +706,7 @@ fn typed_resolution_uses_compiler_checked_downcast_and_survives_close() {
     assert_eq!(retired.references.user_authority, 0);
     assert_eq!(retired.references.operation_pin, 1);
     assert_eq!(resolved.object().value, 99);
+    assert_eq!(resolved.rights(), Rights::INSPECT);
 }
 
 #[test]

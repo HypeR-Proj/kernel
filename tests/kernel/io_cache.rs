@@ -100,6 +100,7 @@ pub(super) fn run() -> Result<(), Error> {
     wait(|| !worker::draining_for_test())?;
     super::support::quiesce_workers().map_err(|_| Error::Quiescence)?;
     late_publication_under_pressure(cache, &domain)?;
+    directory_pages_under_pressure(cache, &domain)?;
     scheduled_domain_reclaim(cache, &domain)?;
     scheduled_impossible_order(cache, &domain)?;
     if crate::kernel::mm::cache_memory::availability()
@@ -107,6 +108,118 @@ pub(super) fn run() -> Result<(), Error> {
     {
         return Err(Error::PhysicalPages);
     }
+    Ok(())
+}
+
+/// A live directory identity and its trusted continuation do not pin metadata
+/// pages. The actual reclaim worker must discard both wire batches and lookup
+/// payloads, then reject optional retention while the pressure episode lasts.
+#[inline(never)]
+fn directory_pages_under_pressure(
+    cache: &FileDataCache<crate::kernel::vfs::CachePage>,
+    domain: &ResourceDomain,
+) -> Result<(), Error> {
+    use hyper_filesystem::protocol::{
+        DIRECTORY_BATCH_BYTES, DirectoryBatch, DirectoryBatchBuilder, DirectoryCursor, Entry,
+        RESPONSE_BYTES, entry_encode_into,
+    };
+
+    let baseline = domain.usage().committed(ResourceKind::KernelMemoryBytes);
+    let stream_identity =
+        crate::kernel::vfs::cache_test_record(6, domain).map_err(|_| Error::Allocation)?;
+    let weak = stream_identity.downgrade();
+    let identity = FileIdentity::new(
+        FilesystemGeneration::new(NonZeroU64::MAX),
+        NodeIdentity::new(NonZeroU64::new(6).ok_or(Error::Cache)?),
+        ContentRevision::new(NonZeroU64::MIN),
+    );
+    let mut entry = Entry::empty();
+    entry.name[..5].copy_from_slice(b"child");
+    entry.name_len = 5;
+    let mut bytes = [0; DIRECTORY_BATCH_BYTES];
+    let mut builder =
+        DirectoryBatchBuilder::new(&mut bytes, DirectoryCursor::START).ok_or(Error::Cache)?;
+    let continuation = DirectoryCursor {
+        words: [17, 32, 7, 11],
+    };
+    if builder.push(&entry, continuation) != Some(true) {
+        return Err(Error::Cache);
+    }
+    let length = builder.finish(false).ok_or(Error::Cache)?;
+    let directory_key = CacheKey::directory(identity, 0);
+    let lookup_key = CacheKey::lookup(identity, 0);
+    let mut encoded = [0; RESPONSE_BYTES];
+    let encoded_length = entry_encode_into(&entry, &mut encoded).ok_or(Error::Cache)?;
+    let name_length = 5_u64.to_le_bytes();
+    for (key, parts) in [
+        (directory_key, [&bytes[..length], &[][..], &[][..]]),
+        (
+            lookup_key,
+            [
+                &name_length[..],
+                b"child".as_slice(),
+                &encoded[..encoded_length],
+            ],
+        ),
+    ] {
+        let CacheAccess::Load(reservation) = cache.access(key).map_err(|_| Error::Cache)? else {
+            return Err(Error::Cache);
+        };
+        drop(
+            reservation
+                .fill_and_publish(
+                    || {
+                        crate::kernel::vfs::CachePage::try_copy_parts(
+                            &parts,
+                            stream_identity.clone(),
+                        )
+                    },
+                    |page| page.refill_parts(&parts, stream_identity.clone()),
+                )
+                .map_err(|_| Error::Cache)?,
+        );
+    }
+    let checkpoint = {
+        let page = cache
+            .lookup(directory_key)
+            .map_err(|_| Error::Cache)?
+            .ok_or(Error::Cache)?;
+        let batch = DirectoryBatch::decode(page.value().bytes()).ok_or(Error::Cache)?;
+        batch.records().next().ok_or(Error::Cache)?.next_cursor()
+    };
+    // Only scalar continuation state and the live directory identity survive
+    // here, exactly the ownership boundary kept by a DirectoryStream.
+    let pressure = Pressure::start();
+    wait(|| {
+        worker::draining_for_test() && cache.usage().clean == 0 && cache.usage().live_payloads == 0
+    })?;
+    wait(|| {
+        crate::kernel::mm::cache_memory::availability()
+            .is_some_and(|memory| memory.file_cache_pages == 0)
+    })?;
+    if checkpoint != continuation
+        || weak.upgrade().is_none()
+        || cache
+            .lookup(directory_key)
+            .map_err(|_| Error::Cache)?
+            .is_some()
+        || cache
+            .lookup(lookup_key)
+            .map_err(|_| Error::Cache)?
+            .is_some()
+        || !matches!(cache.access(directory_key), Ok(CacheAccess::CapacityBusy))
+    {
+        return Err(Error::IdentityLifetime);
+    }
+    drop(stream_identity);
+    if weak.upgrade().is_some()
+        || domain.usage().committed(ResourceKind::KernelMemoryBytes) != baseline
+    {
+        return Err(Error::IdentityLifetime);
+    }
+    drop(pressure);
+    wait(|| !worker::draining_for_test())?;
+    super::support::quiesce_workers().map_err(|_| Error::Quiescence)?;
     Ok(())
 }
 

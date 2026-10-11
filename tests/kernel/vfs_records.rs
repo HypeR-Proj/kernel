@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-//! Binding cursor coverage and bounded-stack teardown in scheduled context.
+//! Indexed bindings, cursor coverage, and bounded-stack scheduled teardown.
 
 use alloc::string::String;
 
@@ -16,8 +16,8 @@ pub(crate) fn run(domain: &ResourceDomain) -> Result<(), TestError> {
     let expired = node(FileRecord::try_new(2, domain)?, domain)?;
     let mut records = Records::new();
     records.insert(binding(&expired, 2, domain)?);
-    // Begin with B in the examined list, then insert A in the unexamined list.
-    // A prefix-first cursor must not miss B when it expires between batches.
+    // Begin past B, then insert A before the cursor. Wrapping must revisit B
+    // when it expires between batches without losing the newly inserted A.
     if !matches!(records.inspect_next(), Some(None)) {
         return Err(TestError::Contract("record cursor retains live entry"));
     }
@@ -32,8 +32,7 @@ pub(crate) fn run(domain: &ResourceDomain) -> Result<(), TestError> {
     drop(records);
     let live_usage = domain.usage().committed(ResourceKind::KernelMemoryBytes);
 
-    // An error after a large prepared prefix exercises unwinding both owning
-    // chains. Recursive Box-tail destruction would exhaust a kernel stack.
+    // An error after a large prepared prefix exercises both owning indices.
     let failed = prepare_prefix_then_fail(&live, domain);
     if !matches!(failed, Err(Error::InvalidInput))
         || domain.usage().committed(ResourceKind::KernelMemoryBytes) != live_usage
@@ -48,6 +47,7 @@ pub(crate) fn run(domain: &ResourceDomain) -> Result<(), TestError> {
     }
     quota_retirement()?;
     prediction_does_not_lease_node(domain)?;
+    indexed_paths(domain)?;
     Ok(())
 }
 
@@ -148,4 +148,54 @@ fn binding(
         content: owner.record.downgrade(),
         _charge: record_charge(domain)?,
     })
+}
+
+fn indexed_paths(domain: &ResourceDomain) -> Result<(), TestError> {
+    let baseline = domain.usage().committed(ResourceKind::KernelMemoryBytes);
+    let active = node(FileRecord::try_new(81, domain)?, domain)?;
+    let mut records = Records::new();
+    for id in 0..256 {
+        let mut record = binding(&active, id, domain)?;
+        record.set_path(alloc::format!("directory/item-{id}"));
+        records.insert(record);
+    }
+    for id in 0..256 {
+        let old = alloc::format!("directory/item-{id}");
+        let new = alloc::format!("renamed/item-{id}");
+        if records.find_path(&old).map(|record| record.id) != Some(id) {
+            return Err(TestError::Contract(
+                "indexed path resolves its own identity",
+            ));
+        }
+        records.set_path(id, new.clone())?;
+        if records.find_path(&old).is_some()
+            || records.find_path(&new).map(|record| record.id) != Some(id)
+            || records.path(id)? != new
+        {
+            return Err(TestError::Contract("rename replaces both binding indices"));
+        }
+        if id % 2 == 0 {
+            drop(records.remove(id));
+            if records.get(id).is_some() || records.find_path(&new).is_some() {
+                return Err(TestError::Contract("removal retires both binding indices"));
+            }
+        }
+    }
+    if records.len() != 128 || records.iter().any(|record| record.id % 2 == 0) {
+        return Err(TestError::Contract(
+            "indexed iteration visits retained bindings",
+        ));
+    }
+    records.retain(|record| record.id < 128);
+    if records.len() != 64 {
+        return Err(TestError::Contract("indexed retain preserves count"));
+    }
+    drop(records);
+    drop(active);
+    if domain.usage().committed(ResourceKind::KernelMemoryBytes) != baseline {
+        return Err(TestError::Contract(
+            "binding index storage retires with records",
+        ));
+    }
+    Ok(())
 }

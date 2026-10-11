@@ -68,6 +68,9 @@ mod external_execution_model;
 #[path = "../../../src/kernel/io_cache/mod.rs"]
 mod file_data_cache;
 #[cfg(test)]
+#[path = "cases/filesystem_cache.rs"]
+mod filesystem_cache_cases;
+#[cfg(test)]
 #[path = "../../../hal/src/arch/aarch64/registers.rs"]
 mod registers;
 #[cfg(test)]
