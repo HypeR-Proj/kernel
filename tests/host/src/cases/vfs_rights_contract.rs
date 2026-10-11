@@ -15,6 +15,7 @@ fn every_file_right_is_derived_from_the_source_directory() {
         native::HYPER_NATIVE_RIGHT_DUPLICATE,
         native::HYPER_NATIVE_RIGHT_TRANSFER,
         native::HYPER_NATIVE_RIGHT_INSPECT,
+        native::HYPER_NATIVE_RIGHT_PROTECT,
         native::HYPER_NATIVE_RIGHT_READ
             | native::HYPER_NATIVE_RIGHT_EXECUTE
             | native::HYPER_NATIVE_RIGHT_TRANSFER,
@@ -47,6 +48,7 @@ fn child_directory_rights_are_monotonically_derived() {
         native::HYPER_NATIVE_RIGHT_DUPLICATE,
         native::HYPER_NATIVE_RIGHT_TRANSFER,
         native::HYPER_NATIVE_RIGHT_INSPECT,
+        native::HYPER_NATIVE_RIGHT_PROTECT,
     ] {
         let required = crate::require_some(directory_rights_for_directory(requested));
         assert_ne!(required & native::HYPER_NATIVE_RIGHT_READ, 0);

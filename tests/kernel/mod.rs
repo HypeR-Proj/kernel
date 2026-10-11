@@ -35,7 +35,7 @@ mod support;
 mod thread_migration;
 mod thread_sleep;
 mod type_contracts;
-#[cfg(CONFIG_ARCH_AARCH64)]
+#[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
 mod user_memory_access;
 #[cfg(CONFIG_ARCH_AARCH64)]
 mod vcpu_migration;
@@ -127,7 +127,7 @@ pub(crate) fn run() {
             stage2_blocks::run,
         );
     }
-    #[cfg(CONFIG_ARCH_AARCH64)]
+    #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
     run_case(
         "kernel application-memory access tests",
         user_memory_access::run,

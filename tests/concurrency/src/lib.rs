@@ -24,3 +24,11 @@ fn require_ok<T, E: core::fmt::Debug>(result: Result<T, E>) -> T {
         Err(error) => panic!("unexpected failure: {error:?}"),
     }
 }
+
+#[path = "../../../src/kernel/vfs/mount_admission.rs"]
+mod mount_admission;
+mod mounts;
+
+mod protection;
+#[path = "../../../src/kernel/vfs/protection_state.rs"]
+mod protection_state;

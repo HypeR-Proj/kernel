@@ -21,6 +21,7 @@ mod smp;
 mod stage2;
 mod timer;
 mod translation_id_policy;
+mod user_contract;
 mod user_entry;
 mod user_machine;
 mod vm_interrupt;

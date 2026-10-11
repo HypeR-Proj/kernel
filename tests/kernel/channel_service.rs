@@ -591,18 +591,14 @@ fn create_process(domain: &ResourceDomain, group: &TaskGroup) -> Result<Process,
     let code_range = scratch_image(0, PAGE_SIZE)?;
     let stack_range = scratch_image(PAGE_SIZE * 2, PAGE_SIZE)?;
     let image_range = scratch_image(0, PAGE_SIZE * 3)?;
-    let pin = crate::kernel::task::scheduler::preempt_disable().map_err(|_| Error::Construction)?;
     let address_space = prepare_native_entry_self_test(
         domain.clone(),
         image_range,
         code_range,
         stack_range,
         &TEST_CODE,
-        &pin,
-    );
-    crate::kernel::task::scheduler::preempt_enable_and_reschedule(pin)
-        .map_err(|_| Error::Construction)?;
-    let address_space = address_space.map_err(|_| Error::AddressSpace)?;
+    )
+    .map_err(|_| Error::AddressSpace)?;
     let image = ProcessImage::try_native(
         MachineAbi::Aarch64,
         code_range.base(),

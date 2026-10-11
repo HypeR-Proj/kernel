@@ -274,30 +274,104 @@ fn user_descriptors_reject_writable_execute_aliases() {
 }
 
 #[test]
-fn cow_fault_classification_requires_a_user_store_permission_fault() {
-    use crate::aarch64_user_contract_model::is_user_write_page_fault;
-    let class = registers::ESR_EC_DATA_ABORT_LOWER << registers::ESR_EC_SHIFT;
-    for level in 0..4 {
-        let fault = class | registers::ESR_DATA_ABORT_WNR | (0b001100 + level);
-        assert!(is_user_write_page_fault(fault));
-        assert!(!is_user_write_page_fault(
-            fault & !registers::ESR_DATA_ABORT_WNR
-        ));
-        for excluded in [registers::ESR_DATA_ABORT_S1PTW, 1 << 8, 1 << 10] {
-            assert!(!is_user_write_page_fault(fault | excluded));
+fn user_page_faults_distinguish_translation_cow_and_unrepairable_aborts() {
+    use crate::aarch64_user_contract_model::fault_kind;
+    use hyper::hal::user::UserFaultKind;
+
+    let instruction = registers::ESR_EC_INSTRUCTION_ABORT_LOWER << registers::ESR_EC_SHIFT;
+    let data = registers::ESR_EC_DATA_ABORT_LOWER << registers::ESR_EC_SHIFT;
+    for status in 0..64 {
+        // The hardware fault-status encodings are independent of exception
+        // class: 4..7 translation, 8..11 access flag, 12..15 permission.
+        let translation = (4..=7).contains(&status);
+        let cow = (12..=15).contains(&status);
+        assert_eq!(
+            fault_kind(instruction | status),
+            if translation {
+                UserFaultKind::ExecutePageFault
+            } else {
+                UserFaultKind::InstructionAbort
+            },
+            "instruction FSC={status:#x}",
+        );
+        assert_eq!(
+            fault_kind(data | status),
+            if translation {
+                UserFaultKind::ReadPageFault
+            } else {
+                UserFaultKind::DataAbort
+            },
+            "read FSC={status:#x}",
+        );
+        assert_eq!(
+            fault_kind(data | registers::ESR_DATA_ABORT_WNR | status),
+            if translation || cow {
+                UserFaultKind::WritePageFault
+            } else {
+                UserFaultKind::DataAbort
+            },
+            "write FSC={status:#x}",
+        );
+    }
+}
+
+#[test]
+fn user_pager_rejects_invalid_addresses_table_walks_and_cache_maintenance() {
+    use crate::aarch64_user_contract_model::fault_kind;
+    use hyper::hal::user::UserFaultKind;
+
+    for class in [
+        registers::ESR_EC_DATA_ABORT_LOWER,
+        registers::ESR_EC_INSTRUCTION_ABORT_LOWER,
+    ] {
+        let abort = if class == registers::ESR_EC_DATA_ABORT_LOWER {
+            UserFaultKind::DataAbort
+        } else {
+            UserFaultKind::InstructionAbort
+        };
+        for status in [4, 5, 6, 7, 12, 13, 14, 15] {
+            for write in [0, registers::ESR_DATA_ABORT_WNR] {
+                // Exercise every excluded bit combination so a future flag
+                // mask cannot accidentally re-admit a non-memory access.
+                for flags in 1..8 {
+                    let excluded =
+                        ((flags & 1) << 7) | (((flags >> 1) & 1) << 8) | (((flags >> 2) & 1) << 10);
+                    assert_eq!(
+                        fault_kind((class << registers::ESR_EC_SHIFT) | status | write | excluded),
+                        abort,
+                    );
+                }
+            }
         }
     }
-    for status in 0..64 {
-        if !(12..=15).contains(&status) {
-            assert!(!is_user_write_page_fault(
-                class | registers::ESR_DATA_ABORT_WNR | status
+}
+
+#[test]
+fn user_pager_never_accepts_an_unrelated_exception_class() {
+    use crate::aarch64_user_contract_model::fault_kind;
+    use hyper::hal::user::UserFaultKind;
+
+    for class in 0..64 {
+        if [
+            registers::ESR_EC_DATA_ABORT_LOWER,
+            registers::ESR_EC_INSTRUCTION_ABORT_LOWER,
+        ]
+        .contains(&class)
+        {
+            continue;
+        }
+        for status in [4, 5, 6, 7, 12, 13, 14, 15] {
+            let fault = fault_kind(
+                (class << registers::ESR_EC_SHIFT) | registers::ESR_DATA_ABORT_WNR | status,
+            );
+            assert!(!matches!(
+                fault,
+                UserFaultKind::ReadPageFault
+                    | UserFaultKind::WritePageFault
+                    | UserFaultKind::ExecutePageFault
             ));
         }
     }
-    let instruction = registers::ESR_EC_INSTRUCTION_ABORT_LOWER << registers::ESR_EC_SHIFT;
-    assert!(!is_user_write_page_fault(
-        instruction | registers::ESR_DATA_ABORT_WNR | 15
-    ));
 }
 
 #[test]

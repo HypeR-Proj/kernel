@@ -142,6 +142,8 @@ runtime_contract_is_ready() {
         grep -q 'HypeR test: checked stage-2 guest-memory copies passed' "$log" &&
         grep -q 'HypeR test: stage-2 block mapping, split and revocation passed' "$log" &&
         grep -q 'HypeR test: checked application-memory copies passed' "$log" &&
+        grep -q 'HypeR test: Native file pages reclaimed and refilled; dirty pages retained' "$log" &&
+        grep -q 'HypeR test: Native execution refaulted after resident file-page retirement' "$log" &&
         grep -q 'HypeR: kallsyms resolved hyper_kallsyms_lookup at 0x[0-9a-f][0-9a-f]*' "$log" &&
         grep -q 'HypeR: kernel log ring: 65536 bytes' "$log" &&
         grep -q 'HypeR: CPU power interface version .*: on=true, off=true, suspend=true, reset=true' "$log" &&

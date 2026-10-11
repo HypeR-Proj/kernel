@@ -10,6 +10,12 @@
 extern crate alloc;
 
 #[cfg(test)]
+#[path = "../../../src/kernel/block/transfer.rs"]
+mod block_transfer;
+#[cfg(test)]
+#[path = "cases/block_transfers.rs"]
+mod block_transfers;
+#[cfg(test)]
 #[path = "cases/smmuv3.rs"]
 mod smmuv3;
 
@@ -31,6 +37,13 @@ mod riscv_devices;
 #[cfg(test)]
 #[path = "../../../hal/src/arch/riscv64/translation_id_policy.rs"]
 mod riscv_translation_id_policy;
+
+#[cfg(test)]
+#[path = "cases/riscv_user_contract.rs"]
+mod riscv_user_contract;
+#[cfg(test)]
+#[path = "../../../hal/src/arch/riscv64/user_contract.rs"]
+mod riscv_user_contract_model;
 
 #[cfg(test)]
 #[path = "cases/sharded_lock.rs"]
@@ -152,6 +165,9 @@ mod file_cache_read;
 #[cfg(test)]
 #[path = "cases/file_data_cache.rs"]
 mod file_data_cache_cases;
+#[cfg(test)]
+#[path = "cases/file_read_ahead.rs"]
+mod file_read_ahead;
 #[cfg(test)]
 #[path = "cases/foreign_memory_copy.rs"]
 mod foreign_memory_copy;
@@ -314,10 +330,6 @@ mod bootstrap_map_tests;
 #[cfg(test)]
 #[path = "cases/guest_io.rs"]
 mod guest_io;
-
-#[cfg(test)]
-#[path = "cases/fat_volume.rs"]
-mod fat_volume;
 
 #[cfg(test)]
 #[path = "../../../src/kernel/block/wire.rs"]

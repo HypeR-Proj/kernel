@@ -90,6 +90,7 @@ while [ "$attempt" -lt "$attempt_limit" ]; do
         grep -q 'HypeR test: cross-CPU thread migration passed' "$log" &&
         grep -q 'HypeR test: Native register isolation passed' "$log" &&
         grep -q 'HypeR test: Native supervisor mapping and CSR faults contained' "$log" &&
+        grep -q 'HypeR test: Native file pages reclaimed and refilled; dirty pages retained' "$log" &&
         grep -q 'HypeR test: kernel self-tests completed' "$log"; then
         echo "verified RISC-V kernel startup and self-tests on QEMU CPU $cpu"
         exit 0

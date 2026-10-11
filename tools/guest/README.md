@@ -35,7 +35,7 @@ Alpine definitions default to 256 MiB of RAM and two vCPUs on AArch64
 (one on RISC-V). Set `configuration.memory-bytes` and `configuration.vcpus`
 in the board JSON or Native `vms.json` to change these values. ITBs contain only
 payloads and can be reused without rebuilding. The `make test-guest-smp` fixture
-uses `app/init/tests/config/vms-smp-4.json`; select a different JSON definition
+uses `bootstrap/stage1/init/tests/config/vms-smp-4.json`; select a different JSON definition
 with `NATIVE_SMP_VM_CONFIG`.
 
 Use ordinary `poweroff` and `reboot` commands. BusyBox init runs the shutdown

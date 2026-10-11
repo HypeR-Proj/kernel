@@ -32,6 +32,7 @@ test = false
 bench = false
 
 [dependencies]
+hyper-filesystem = { path = "../lib/rust/hyper-filesystem" }
 hyper = { package = "hyper-core", path = "core" }
 hyper-hal = { path = "hal" }
 

@@ -33,7 +33,6 @@ pub(super) fn run(
     )?;
     verify(&reader, &original, "initial contents and length")?;
     verify(&writer, &original, "alias initial contents and length")?;
-    let snapshot = reader.readable_snapshot(domain)?;
     let mut expected = buffer(original.len() + 6, 0)?;
     expected.truncate(original.len());
     expected.copy_from_slice(&original);
@@ -84,11 +83,6 @@ pub(super) fn run(
         root.open_file_with_options("content-alias", &truncate, domain, Ok::<FileObject, Error>)?;
     verify(&reader, &[], "truncate invalidates another handle's length")?;
     verify(&truncated, &[], "new truncate handle sees empty contents")?;
-    check(
-        snapshot.bytes() == original,
-        "snapshot retains its revision across overwrite resize and truncate",
-    )?;
-
     writer.write(None, b"detached")?;
     root.rename("content-original", root, "content-moved", scratch)?;
     let moved = root.open_file("content-moved", domain)?;

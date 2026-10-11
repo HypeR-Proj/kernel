@@ -161,6 +161,7 @@ enum RunControl {
     CancelPublishedEventWait,
     CancelPublishedAtomicWait,
     ResumeAfterAsidRollover,
+    ResumeAfterFileReclaim,
 }
 
 #[derive(Clone, Copy)]
@@ -311,6 +312,22 @@ pub(crate) fn run() -> Result<(), Error> {
     }
     crate::pr_info!("HypeR test: Native execution resumed and retired after ASID rollover");
 
+    let refault = run_program(
+        &domain,
+        &group,
+        &ROLLOVER_WAIT_PROGRAM,
+        "selftest/el0-file-refault",
+        SiblingSetup::None,
+        RunControl::ResumeAfterFileReclaim,
+        ThreadAuthority::None,
+    )?;
+    if refault.thread != (TerminalReason::ThreadExited { status: 37 })
+        || refault.process != (TerminalReason::LastThreadExited { status: 37 })
+    {
+        return Err(Error::Terminal);
+    }
+    crate::pr_info!("HypeR test: Native execution refaulted after resident file-page retirement");
+
     super::atomic_wait::run(&domain, &group, &PROGRAM)?;
     verify_pending_creation_exit()?;
 
@@ -422,16 +439,40 @@ fn run_program(
             return Err(Error::Lifecycle);
         }
     }
-    if matches!(control, RunControl::ResumeAfterAsidRollover) {
+    if matches!(
+        control,
+        RunControl::ResumeAfterAsidRollover | RunControl::ResumeAfterFileReclaim
+    ) {
         let result = (|| {
             wait_for_event_registration(&process)?;
-            let bits = crate::hal::user::address_space_plan()
-                .map_err(|_| Error::AddressSpace)?
-                .asid_bits();
-            crate::kernel::mm::translation_id::test_rollover::<
-                crate::kernel::mm::translation_id::HostAsid,
-            >(bits)
-            .map_err(|_| Error::AddressSpace)?;
+            if matches!(control, RunControl::ResumeAfterFileReclaim) {
+                // The Thread has executed this code and parked in the kernel.
+                // Eviction must retire the resident CPU's translations before
+                // returning; Event wakeup then faults on the same userspace PC.
+                let address_space = process
+                    .address_space_owner()
+                    .map_err(|_| Error::AddressSpace)?;
+                let code_range = crate::kernel::mm::user_space::UserSlice::new(
+                    crate::kernel::mm::user_space::UserAddress::new(IMAGE_BASE),
+                    PAGE_SIZE,
+                )
+                .map_err(|_| Error::AddressSpace)?;
+                if address_space
+                    .reclaim_file_range(code_range)
+                    .map_err(|_| Error::AddressSpace)?
+                    != 1
+                {
+                    return Err(Error::AddressSpace);
+                }
+            } else {
+                let bits = crate::hal::user::address_space_plan()
+                    .map_err(|_| Error::AddressSpace)?
+                    .asid_bits();
+                crate::kernel::mm::translation_id::test_rollover::<
+                    crate::kernel::mm::translation_id::HostAsid,
+                >(bits)
+                .map_err(|_| Error::AddressSpace)?;
+            }
             process
                 .resolve_handle::<Event>(HandleValue::first_for_test(), Rights::SIGNAL)
                 .map_err(|_| Error::Lifecycle)?

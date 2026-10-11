@@ -27,6 +27,7 @@ case "${1:-}" in
     quality)
         # Check resolved dependencies and compiler-enforced HAL privacy.
         python3 -B tests/ci/test-hal-boundary.py
+        python3 -B tests/image/test-process-stack.py
         python3 -B tests/ci/hal-boundary.py
         sh tests/ci/test-aarch64-kaslr-geometry.sh
         cargo fmt --all -- --check
@@ -62,7 +63,7 @@ case "${1:-}" in
         ;;
     aarch64-self-test)
         make image ARCH=aarch64 CARGO_FEATURES="--features kernel-self-test"
-        make test-image ARCH=aarch64
+        make test-image ARCH=aarch64 CARGO_FEATURES="--features kernel-self-test"
         copy_aarch64_artifacts self-test
         ;;
     aarch64-compact)
@@ -74,7 +75,8 @@ case "${1:-}" in
             configs/qemu_aarch64_defconfig >"$compact_config"
         make image ARCH=aarch64 CONFIG_FILE="$compact_config" \
             CARGO_FEATURES="--features kernel-self-test"
-        make test-image ARCH=aarch64
+        make test-image ARCH=aarch64 CONFIG_FILE="$compact_config" \
+            CARGO_FEATURES="--features kernel-self-test"
         copy_aarch64_artifacts compact
         ;;
     aarch64-qemu)

@@ -50,7 +50,11 @@ not a claim that every interleaving or failure path has been exhaustively tested
 | vCPU transitions and interrupt reconciliation | `kernel/guest_entry_irq.rs`, `kernel/vcpu_migration.rs`, host `vm_interrupt_reconcile.rs` and virtual GIC tests; guest SMP/console acceptance exercises delivery. |
 | Guest unwind, VM retirement and RISC-V register state | VM registry kernel tests; Native runtime/power crash, guest SMP and VM smoke acceptance; architecture-local runtime register validation. |
 | Guest and Native address-space residency | `host/src/cases/address_space_residency.rs`, `kernel/stage2_blocks.rs`, `kernel/user_memory_access.rs` and Native user-entry tests. |
-| Native HAL boundary | HAL compile probes; host `aarch64_user_contract.rs`; Native EL0/syscall and userspace application QEMU suites. |
+| Native HAL boundary | HAL compile probes; host `aarch64_user_contract.rs` and `riscv_user_contract.rs` classify paging candidates and reject unrelated aborts; Native EL0/syscall and userspace application QEMU suites. |
+| Protected pageable file mappings | Host `user_memory.rs` covers clean eviction, dirty retention, publication rollback, quota charging and finite reclaim sweeps. `kernel/user_memory_access.rs` drives real Native root replacement and refault; Native entry probes start with absent code pages, and AArch64 additionally evicts already-executed code while its Thread waits before resuming through the production fault path. |
+| Content protection lifetime | `kernel/vfs_namespace/protection.rs` exercises aliases, multiple holders, token close, retained object pins, mapping holds and quota rejection; Loom `protection.rs` explores acquisition versus writes and independent-holder release. |
+| Selected process loader snapshot | `kernel/vfs_namespace/process_loader.rs` replaces and removes the source file after builder creation, checks that seal uses the captured bytes, and leaves application-format validation to userspace. |
+| VFS root replacement and retained capabilities | `kernel/vfs_namespace/root_switch.rs` covers fixed versus root-following directories, file/mount identity, ramfs binding and rejected transactions. A real reader races 32 root-switch round trips and rejects partially published topology. |
 | x86 stage-1 shootdown | Image instruction checks and architecture builds. There is currently no x86 runtime CI; broadcast/pinning/acknowledgement ordering remains a review and future hardware-validation obligation. |
 | Allocator invariants and local caches | Host `runtime_allocators.rs`, `allocator_local_cache.rs` and `slab_partial.rs` exercise real allocation, corruption-handler installation, ownership and pressure paths. Early fatal-policy installation and allocation-free crash entry require review. |
 | Deferred logging and crash diagnostics | Host `kernel_log.rs` and `crash_text.rs` execute ring, drain, formatting and emergency-gate mechanisms; `kernel/log_flush_barrier.rs` and console/crash QEMU acceptance exercise integration. |
@@ -66,7 +70,8 @@ cargo test --manifest-path kernel/tests/concurrency/Cargo.toml --release --locke
 
 It is also part of `make -C kernel test` and the CI `quality` suite. Its local
 build script enables `cfg(loom)` only for this test crate, which includes the
-production `DeferredWork`, `PendingReschedule` and `RunAdmission` source files.
+production `DeferredWork`, `PendingReschedule`, `RunAdmission` and VFS
+mount-admission source files.
 Only their atomic imports and non-const test constructors differ. Do not set
 global `RUSTFLAGS=--cfg loom`: the rest of the kernel is not instrumented.
 The test dependency does not enter production images.
@@ -78,6 +83,7 @@ The bounded scenarios cover the following boundaries:
 | `DeferredWork` | One or two producers racing worker sleep; one elected prompt and rearming after a completed batch; competing IRQ wake ownership after deferral; payload visibility at IRQ claim, batch start and a retained batch. |
 | `PendingReschedule` | Acquire observation and consuming requests; competing publishers electing one notifier across two reused epochs; a coalesced publication acquired by the current take or preserved as a new pending epoch. |
 | `RunAdmission` | Close racing one or two admission attempts; competing closers preserving live claims until the last release; quiescence acquiring both runners' final writes after concurrent releases. |
+| VFS mount admission | Lookup acquisition racing unmount freeze; cloning a live location prevents freeze; successful freeze rejects new admission until thaw. This covers admission, not the full namespace transaction. |
 
 Payloads are sampled before publisher joins so test synchronization cannot
 supply the missing publication edge. Assertions made after a join use those
