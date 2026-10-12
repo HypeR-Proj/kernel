@@ -386,6 +386,7 @@ fn late_publication_under_pressure(
     let pressure = Pressure::start();
     let service_workers = crate::kernel::log::permanent_worker_count_for_test()
         + crate::kernel::task::scheduler::permanent_worker_count_for_test()
+        + crate::kernel::time::permanent_worker_count_for_test()
         + worker::permanent_worker_count_for_test()
         + crate::kernel::vfs::read_ahead::permanent_worker_count_for_test()
         + crate::kernel::device::iommu::runtime::permanent_worker_count_for_test();

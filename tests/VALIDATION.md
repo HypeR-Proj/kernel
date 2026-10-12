@@ -59,6 +59,8 @@ not a claim that every interleaving or failure path has been exhaustively tested
 | Allocator invariants and local caches | Host `runtime_allocators.rs`, `allocator_local_cache.rs` and `slab_partial.rs` exercise real allocation, corruption-handler installation, ownership and pressure paths. Early fatal-policy installation and allocation-free crash entry require review. |
 | Deferred logging and crash diagnostics | Host `kernel_log.rs` and `crash_text.rs` execute ring, drain, formatting and emergency-gate mechanisms; `kernel/log_flush_barrier.rs` and console/crash QEMU acceptance exercise integration. |
 | CPU-local timer pinning | `kernel/reserved_timer.rs`, `kernel/thread_sleep.rs` and host `software_timers.rs` exercise timer ownership and cancellation. Comparator programming within the CPU pin remains a review obligation. |
+| Deadline tree and worker callouts | Host `timer_tree.rs` checks real tree balance and cached minima against a reference model, stale handles, wrapping clocks and periodic overruns. `kernel/callout.rs` exercises per-CPU dispatch, callback context, self-rearm, remote reset and concurrent shutdown. `kernel/callout_ready.rs` holds delivery windows open to check Ready cancellation/replacement, deferred-owner retirement and joining a Running callback while another CPU attempts rearm. |
+| Delayed retirement retry publication | AArch64 `kernel/reaper_retry.rs` retains a real Process address-space owner and uses a bounded test seam in the production reaper to place callback publication after its retry-condition check. It then requires retirement without another producer request. |
 
 ## Concurrent execution
 

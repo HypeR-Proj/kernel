@@ -3,7 +3,7 @@
 
 //! Exact cancellation and owner retention for movable reserved timer arms.
 
-use crate::kernel::time::ReservedTimer;
+use crate::kernel::time::IrqCallout;
 use hyper::mm::FallibleArc;
 use hyper::sync::atomic::{AtomicUsize, Ordering};
 
@@ -21,13 +21,13 @@ fn notify(_: usize) {
 
 pub(super) fn run() -> Result<(), Error> {
     CALLBACKS.store(0, Ordering::Relaxed);
-    let reservation = FallibleArc::try_new(ReservedTimer::try_new().map_err(|_| Error::Timer)?)
+    let reservation = FallibleArc::try_new(IrqCallout::try_new().map_err(|_| Error::Timer)?)
         .map_err(|_| Error::Allocation)?;
     // Cancellation returns the same reserved node for the next generation.
     for _ in 0..16 {
         let deadline =
             crate::kernel::time::deadline_after(10_000_000_000).map_err(|_| Error::Timer)?;
-        let arm = ReservedTimer::arm_owned(reservation.clone(), deadline, notify, 0)
+        let arm = IrqCallout::arm_owned(reservation.clone(), deadline, notify, 0)
             .map_err(|_| Error::Timer)?;
         arm.retire().map_err(|_| Error::Timer)?;
     }
@@ -36,7 +36,7 @@ pub(super) fn run() -> Result<(), Error> {
     }
     for expected in 1..=8 {
         let deadline = crate::kernel::time::deadline_after(100_000).map_err(|_| Error::Timer)?;
-        let arm = ReservedTimer::arm_owned(reservation.clone(), deadline, notify, 0)
+        let arm = IrqCallout::arm_owned(reservation.clone(), deadline, notify, 0)
             .map_err(|_| Error::Timer)?;
         let progress = crate::kernel::task::wait_for_test_progress(
             crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
@@ -57,8 +57,7 @@ pub(super) fn run() -> Result<(), Error> {
         }
     }
     let deadline = crate::kernel::time::deadline_after(10_000_000_000).map_err(|_| Error::Timer)?;
-    let arm =
-        ReservedTimer::arm_owned(reservation, deadline, notify, 0).map_err(|_| Error::Timer)?;
+    let arm = IrqCallout::arm_owned(reservation, deadline, notify, 0).map_err(|_| Error::Timer)?;
     // Only the armed token owns the allocation now; it remains stable through cancellation.
     arm.retire().map_err(|_| Error::Timer)?;
     Ok(())

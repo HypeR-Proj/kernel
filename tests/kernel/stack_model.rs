@@ -200,7 +200,7 @@ extern "C" fn empty_worker(_argument: usize) {}
 
 fn validate_irq_stack_switch() -> Result<(), Error> {
     IRQ_CALLBACK_SP.store(0, Ordering::Release);
-    crate::kernel::time::schedule_after(1, record_irq_stack, 0)
+    crate::kernel::time::schedule_irq_after(1, record_irq_stack, 0)
         .map_err(|_| Error::IrqCallbackMissing)?;
     let delivered = crate::kernel::task::wait_for_test_progress(
         crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,

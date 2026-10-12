@@ -94,6 +94,7 @@ extern "C" fn start_kernel() -> ! {
         #[cfg(feature = "kernel-self-test")]
         crate::kernel_tests::verify_early_startup();
         crate::kernel::cpu::initialize()?;
+        crate::kernel::time::initialize_workers()?;
         crate::kernel::mm::activate_local_allocator_caches()?;
         crate::kernel::mm::seal_address_space()?;
 

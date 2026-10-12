@@ -253,6 +253,9 @@ mod stage2_mapping;
 #[path = "cases/synchronization.rs"]
 mod synchronization;
 #[cfg(test)]
+#[path = "cases/timer_tree.rs"]
+mod timer_tree;
+#[cfg(test)]
 #[path = "cases/timestamps.rs"]
 mod timestamps;
 #[cfg(test)]

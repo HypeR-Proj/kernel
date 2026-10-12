@@ -183,7 +183,7 @@ fn owned_queue_grows_beyond_the_former_kernel_slot_limit() {
             callback,
             context,
         ));
-        let _handle = queue.insert(pending);
+        let _handle = queue.insert(pending, 0);
     }
     assert_eq!(queue.stats().active_timers, 600);
     assert_eq!(queue.stats().peak_timers, 600);
@@ -199,20 +199,16 @@ fn owned_queue_grows_beyond_the_former_kernel_slot_limit() {
 #[test]
 fn owned_queue_rejects_stale_and_foreign_handles() {
     let mut queue = OwnedDeadlineQueue::new();
-    let old = queue.insert(crate::require_ok(PendingTimer::try_new(
-        1,
-        TimerMode::OneShot,
-        callback,
+    let old = queue.insert(
+        crate::require_ok(PendingTimer::try_new(1, TimerMode::OneShot, callback, 0)),
         0,
-    )));
+    );
     let retired = crate::require_ok(queue.cancel(old));
     drop(retired);
-    let replacement = queue.insert(crate::require_ok(PendingTimer::try_new(
-        2,
-        TimerMode::OneShot,
-        callback,
+    let replacement = queue.insert(
+        crate::require_ok(PendingTimer::try_new(2, TimerMode::OneShot, callback, 0)),
         0,
-    )));
+    );
     assert_ne!(old, replacement);
     assert!(matches!(
         queue.cancel(old),
@@ -245,12 +241,21 @@ fn reserved_owned_timer_recycles_without_entering_ordinary_cancellation() {
     };
     let mut queue = OwnedDeadlineQueue::new();
     let first_node = crate::require_some(crate::require_ok(probe.node.lock()).take());
-    let first = queue.insert_reserved(first_node.prepare(10, callbacks()));
+    let first = queue.insert_reserved(first_node.prepare(10, callbacks()), 0);
     assert!(matches!(
         queue.cancel(first),
         Err(TimerQueueError::InvalidHandle)
     ));
-    crate::require_some(queue.pop_expired(10)).invoke();
+    assert_eq!(
+        queue.reschedule(first, 20, 0),
+        Err(TimerQueueError::InvalidHandle)
+    );
+    crate::require_ok(queue.reschedule_reserved(first, 20, 0));
+    assert!(queue.pop_expired(10).is_none());
+    let expired = crate::require_some(queue.pop_expired(20));
+    assert_eq!(expired.event().handle, first);
+    assert_eq!(expired.event().deadline, 20);
+    expired.invoke();
     assert_eq!(probe.claims.load(std::sync::atomic::Ordering::Relaxed), 1);
     assert_eq!(
         probe.callbacks.load(std::sync::atomic::Ordering::Relaxed),
@@ -258,7 +263,12 @@ fn reserved_owned_timer_recycles_without_entering_ordinary_cancellation() {
     );
 
     let recycled = crate::require_some(crate::require_ok(probe.node.lock()).take());
-    let second = queue.insert_reserved(recycled.prepare(20, callbacks()));
+    let second = queue.insert_reserved(recycled.prepare(20, callbacks()), 20);
+    assert_ne!(first, second);
+    assert_eq!(
+        queue.reschedule_reserved(first, 30, 20),
+        Err(TimerQueueError::InvalidHandle)
+    );
     let recovered = crate::require_ok(queue.cancel_reserved(second));
     assert!(
         crate::require_ok(probe.node.lock())
@@ -267,7 +277,7 @@ fn reserved_owned_timer_recycles_without_entering_ordinary_cancellation() {
     );
 
     let recovered = crate::require_some(crate::require_ok(probe.node.lock()).take());
-    let _third = queue.insert_reserved(recovered.prepare(30, callbacks()));
+    let _third = queue.insert_reserved(recovered.prepare(30, callbacks()), 20);
     drop(crate::require_some(queue.pop_expired(30)));
     assert_eq!(probe.claims.load(std::sync::atomic::Ordering::Relaxed), 2);
     assert_eq!(

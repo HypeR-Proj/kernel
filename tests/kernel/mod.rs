@@ -3,6 +3,8 @@
 
 //! Bare-metal integration tests compiled only by `kernel-self-test`.
 
+mod callout;
+mod callout_ready;
 mod capability_channel;
 mod capability_objects;
 mod channel;
@@ -20,6 +22,8 @@ mod native_syscall;
 mod native_user_entry;
 mod object_directory;
 mod object_wait;
+#[cfg(CONFIG_ARCH_AARCH64)]
+mod reaper_retry;
 #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_X86_64))]
 mod reschedule_ipi;
 mod reserved_timer;
@@ -77,6 +81,10 @@ pub(crate) fn run() {
     run_case("kernel stack-model tests", stack_model::run);
     run_case("kernel thread-sleep tests", thread_sleep::run);
     run_case("owned reserved timer lifetime tests", reserved_timer::run);
+    run_case("kernel callout lifecycle tests", callout::run);
+    run_case("kernel callout delivery-claim tests", callout_ready::run);
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    run_case("kernel reaper retry publication test", reaper_retry::run);
     run_case("kernel thread-migration tests", thread_migration::run);
     run_case(
         "kernel Native syscall validation tests",
