@@ -290,6 +290,44 @@ fn zero_reference_object_drop_is_deferred_and_reaped_exactly_once() {
 }
 
 #[test]
+fn boxed_publication_preserves_payload_address_and_rollback_ownership() {
+    struct BoxedObject(DropTrackedObject);
+    impl kernel::object::private::Sealed for BoxedObject {}
+    impl kernel::object::private::UserExportable for BoxedObject {}
+    impl KernelObject for BoxedObject {
+        const KIND: ObjectKind = OTHER_KIND;
+        const SUPPORTED_RIGHTS: Rights = Rights::INSPECT;
+    }
+
+    for reject_handle in [false, true] {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let payload = Box::new(BoxedObject(DropTrackedObject(drops.clone())));
+        let address = core::ptr::from_ref(payload.as_ref());
+        let publication =
+            crate::require_ok(kernel::object::ObjectPublication::try_new_boxed(payload));
+        assert_eq!(address, core::ptr::from_ref(publication.object()));
+        assert!(Arc::ptr_eq(&publication.object().0.0, &drops));
+        assert_eq!(publication.supported_rights(), Rights::INSPECT);
+        if reject_handle {
+            assert!(
+                PreparedHandle::try_from_new_object(publication, Rights::WRITE, HandleFlags::NONE,)
+                    .is_err()
+            );
+        } else {
+            drop(publication);
+        }
+        for _ in 0..4096 {
+            if drops.load(Ordering::Acquire) != 0 {
+                break;
+            }
+            let _ = kernel::object::reap_one_final_object();
+            std::thread::yield_now();
+        }
+        assert_eq!(drops.load(Ordering::Acquire), 1);
+    }
+}
+
+#[test]
 fn object_snapshot_distinguishes_unpublished_active_and_retired_authority() {
     let transitions = Arc::new(AtomicUsize::new(0));
     let object = object(9, &transitions);
