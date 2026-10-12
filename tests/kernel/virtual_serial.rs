@@ -52,6 +52,16 @@ pub(super) fn run() -> Result<(), &'static str> {
     for _ in 0..CAPACITY {
         serial.publish_guest_output(b'x');
     }
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    {
+        // A backpressured UART must retain its byte instead of counting loss.
+        // SAFETY: the aligned dropped counter shares the pinned header above.
+        let dropped =
+            unsafe { &*core::ptr::with_exposed_provenance::<AtomicU64>(producer_address + 8) };
+        if serial.try_publish_guest_output(b'y') || dropped.load(Ordering::Relaxed) != 0 {
+            return Err("full UART transport did not backpressure");
+        }
+    }
     if serial.acknowledge_output(u64::MAX).is_ok() {
         return Err("future cursor accepted");
     }
@@ -62,6 +72,11 @@ pub(super) fn run() -> Result<(), &'static str> {
     serial
         .acknowledge_output(1)
         .map_err(|_| "valid acknowledgement")?;
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    if !serial.try_publish_guest_output(b'z') {
+        return Err("UART transport did not resume");
+    }
+    #[cfg(not(CONFIG_ARCH_AARCH64))]
     serial.publish_guest_output(b'z');
     if producer.load(Ordering::Acquire) != CAPACITY + 1 {
         return Err("consumed slot not reused");
@@ -95,12 +110,22 @@ pub(super) fn run() -> Result<(), &'static str> {
         return Err("acknowledgement lost new data");
     }
     // Process handle-table retirement invokes this callback on runtime loss.
+    // Fill the transport first: closing the sink must release backpressure even
+    // when the consumer never acknowledges the remaining output.
+    for _ in 1..CAPACITY {
+        serial.publish_guest_output(b'n');
+    }
+    let produced_at_close = producer.load(Ordering::Acquire);
     serial.on_zero_active_handles(&mut ObjectRetirement::new());
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    if !serial.try_publish_guest_output(b'!') {
+        return Err("closed UART sink retained backpressure");
+    }
     serial
         .acknowledge_output(CAPACITY + 2)
         .map_err(|_| "closed acknowledgement")?;
     serial.publish_guest_output(b'!');
-    if producer.load(Ordering::Acquire) != CAPACITY + 2 {
+    if producer.load(Ordering::Acquire) != produced_at_close {
         return Err("output after runtime ownership loss");
     }
     if domain.usage().committed(ResourceKind::PinnedPages) == 0 {

@@ -229,6 +229,9 @@ mod resource_domain;
 #[path = "cases/runtime_allocators.rs"]
 mod runtime_allocators;
 #[cfg(test)]
+#[path = "cases/sbsa_uart.rs"]
+mod sbsa_uart;
+#[cfg(test)]
 #[path = "cases/scheduler_policy.rs"]
 mod scheduler_policy;
 #[cfg(test)]
@@ -284,9 +287,6 @@ mod vgic_quiesce;
 #[cfg(test)]
 #[path = "cases/virtual_legacy_pc.rs"]
 mod virtual_legacy_pc;
-#[cfg(test)]
-#[path = "cases/virtual_pl011.rs"]
-mod virtual_pl011;
 #[cfg(test)]
 #[path = "cases/vm_interrupt_reconcile.rs"]
 mod vm_interrupt_reconcile;
