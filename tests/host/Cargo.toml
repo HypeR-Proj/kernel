@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 hyper = { package = "hyper-core", path = "../../core" }
-hyper-filesystem = { path = "../../../lib/rust/hyper-filesystem" }
+hyper-filesystem = { path = "../../../stdlib/rust/hyper-filesystem" }
 
 [lints.clippy]
 expect_used = "deny"
