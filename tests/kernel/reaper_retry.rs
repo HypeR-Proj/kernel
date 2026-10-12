@@ -48,7 +48,7 @@ fn exercise(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Error> {
                 .address_space_owner()
                 .map_err(|_| Error::AddressSpace)?,
         );
-        process.request_stop(TerminalReason::Requested);
+        group.request_stop().map_err(|_| Error::Group)?;
         progress(|| process.snapshot().phase == ProcessPhase::Retiring)?;
         if !retry_test::arm() {
             return Err(Error::Interleaving);
@@ -66,11 +66,35 @@ fn exercise(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Error> {
         if process.snapshot().phase != ProcessPhase::Retiring {
             return Err(Error::Interleaving);
         }
+        if !matches!(
+            crate::kernel::object::wait_one(
+                group.signal_source(),
+                domain,
+                TaskGroup::TERMINATED.bits(),
+                0,
+                || false,
+            ),
+            Ok(crate::kernel::object::SignalWaitOutcome::TimedOut)
+        ) {
+            return Err(Error::Group);
+        }
         drop(retained.take());
         retry_test::release();
         // Observation only: no new request is allowed to rescue the worker
         // after its callback publishes in the controlled late window.
         progress(|| process.snapshot().phase == ProcessPhase::Retired)?;
+        if !matches!(
+            crate::kernel::object::wait_one(
+                group.signal_source(),
+                domain,
+                TaskGroup::TERMINATED.bits(),
+                u64::MAX,
+                || false,
+            ),
+            Ok(crate::kernel::object::SignalWaitOutcome::Observed(_))
+        ) {
+            return Err(Error::Group);
+        }
         if !retry_test::published() {
             return Err(Error::Interleaving);
         }

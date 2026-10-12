@@ -646,6 +646,67 @@ fn duplicate_can_only_attenuate_existing_authority() {
     assert_eq!(transitions.load(Ordering::Relaxed), 1);
 }
 
+/// A canonical Process identity with the same supervisor rights as production.
+struct ObservedProcess;
+impl kernel::object::private::Sealed for ObservedProcess {}
+impl kernel::object::private::UserExportable for ObservedProcess {}
+impl KernelObject for ObservedProcess {
+    const KIND: ObjectKind = ObjectKind::PROCESS;
+    fn signal_source(&self) -> Option<kernel::object::signals::SignalSource<'_>> {
+        Some(kernel::object::signals::SignalSource::for_test())
+    }
+    const SUPPORTED_RIGHTS: Rights = Rights::TRANSFER
+        .union(Rights::WAIT)
+        .union(Rights::INSPECT)
+        .union(Rights::REQUEST_STOP);
+    const TRANSFER_CLASS: TransferClass = TransferClass::RendezvousOnly;
+}
+
+#[test]
+fn supervisor_derives_same_identity_without_copying_control_authority() {
+    let object = crate::require_ok(PublishableRef::<ObservedProcess, KernelService>::try_new(
+        ObservedProcess,
+    ));
+    let mut table = HandleTable::new();
+    let reservation = crate::require_ok(table.reserve::<1>());
+    let prepared = crate::require_ok(PreparedHandle::try_from_new_object(
+        object.publication(),
+        ObservedProcess::SUPPORTED_RIGHTS,
+        HandleFlags::NONE,
+    ));
+    let supervisor = reservation.publish(&mut table, [prepared])[0];
+    let observer = crate::require_ok(table.derive_process_observer(supervisor));
+    let reservation = crate::require_ok(table.reserve::<1>());
+    let observer = reservation.publish(&mut table, [observer])[0];
+    let info = crate::require_ok(table.get_info(observer));
+    assert_eq!(info.rights, Rights::WAIT.union(Rights::TRANSFER));
+    assert_eq!(
+        info.koid,
+        crate::require_ok(table.get_info(supervisor)).koid
+    );
+    assert_eq!(
+        table.derive_process_observer(observer).err(),
+        Some(HandleError::AccessDenied)
+    );
+    assert_eq!(
+        table.duplicate(supervisor, Rights::WAIT).err(),
+        Some(HandleError::AccessDenied)
+    );
+    crate::require_ok(table.remove(supervisor)).complete();
+    assert!(
+        table
+            .resolve::<ObservedProcess>(observer, Rights::WAIT)
+            .is_ok()
+    );
+    assert_eq!(
+        table
+            .resolve::<ObservedProcess>(observer, Rights::REQUEST_STOP)
+            .err(),
+        Some(HandleError::AccessDenied)
+    );
+    remove_all(&mut table);
+}
+
 #[test]
 fn replace_moves_active_authority_in_one_infallible_commit() {
     let transitions = Arc::new(AtomicUsize::new(0));
