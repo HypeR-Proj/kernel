@@ -220,3 +220,7 @@ if [ "$kallsyms_section_size" -ne "$kallsyms_file_size" ] ||
 fi
 
 echo "verified $arch PIE relocations, kallsyms, Linux header, and runtime instruction paths"
+
+if [ "$arch" = aarch64 ] || [ "$arch" = riscv64 ]; then
+    python3 -B "$(dirname "$0")/verify-fp-ownership.py" "$arch" "$objdump" "$elf"
+fi

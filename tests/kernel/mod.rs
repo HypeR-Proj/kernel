@@ -37,7 +37,7 @@ mod thread_sleep;
 mod type_contracts;
 #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
 mod user_memory_access;
-#[cfg(CONFIG_ARCH_AARCH64)]
+#[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
 mod vcpu_migration;
 mod virtual_serial;
 mod vm_registry;
@@ -134,7 +134,7 @@ pub(crate) fn run() {
     );
     run_case("kernel VM registry tests", vm_registry::run);
     run_case("kernel vCPU endpoint wait tests", vm_wfi_wait::run);
-    #[cfg(CONFIG_ARCH_AARCH64)]
+    #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
     run_case("real guest vCPU migration tests", vcpu_migration::run);
     #[cfg(all(CONFIG_ARCH_AARCH64, feature = "kernel-smmuv3-test"))]
     run_case("SMMUv3 runtime fault handling", smmuv3::runtime::run);

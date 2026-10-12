@@ -55,9 +55,7 @@ pub struct VcpuContext {
     pub(crate) scounteren: u64,
     pub(crate) senvcfg: u64,
     virtual_count_offset: u64,
-    pub(crate) floating: [u64; 32],
-    pub(crate) fcsr: u32,
-    _floating_padding: u32,
+    pub(super) fp: super::fp::State,
     run_state: u64,
     pub(crate) supervisor: u64,
     stopped_exit: Option<GuestRunExit>,
@@ -231,9 +229,7 @@ impl VcpuContext {
             scounteren: 0,
             senvcfg: 0,
             virtual_count_offset: 0,
-            floating: [0; 32],
-            fcsr: 0,
-            _floating_padding: 0,
+            fp: super::fp::State::zeroed(),
             run_state: GUEST_RUN_READY,
             supervisor: 1,
             stopped_exit: None,
@@ -250,7 +246,7 @@ impl VcpuContext {
         // is subtracted from the physical counter.
         self.virtual_count_offset = value.wrapping_sub(physical);
     }
-    /// Loads this stopped vCPU's hart-local floating-point and timer state.
+    /// Loads this stopped vCPU's hart-local timer state.
     ///
     /// # Safety
     ///
@@ -306,8 +302,15 @@ impl VcpuContext {
             }
             // SAFETY: The run owner has exclusive access before guest entry;
             // this short reference ends before assembly or policy can borrow it.
-            if unsafe { (&mut *context).begin_run() }.is_err() {
-                return Err(GuestRunError::State);
+            unsafe {
+                let state = &mut *context;
+                state.begin_run().map_err(|_| GuestRunError::State)?;
+                // Restore once per guest run. Keep standard illegal delegation:
+                // the supported QEMU/OpenSBI pair cannot redirect VS illegal
+                // traps to HS without retaining MPV. Native first-use trapping
+                // is unaffected. Only this qualified run path touches hardware;
+                // anchor state-machine validation remains independent of it.
+                super::fp::restore_for_run(&state.fp);
             }
             // SAFETY: RUNNING publishes the exact context to the assembly
             // anchor. A typed anchor exit destroys that publication before it
@@ -347,8 +350,8 @@ impl VcpuContext {
     /// # Safety
     ///
     /// `self` must be the exact context published in the current hart's live
-    /// guest anchor. Guest floating-point state must already have been copied
-    /// by trap entry and local interrupts must remain masked.
+    /// guest anchor. Local interrupts remain masked; the outer trap dispatcher
+    /// retires FP residency before assembly can unwind this anchor.
     pub(crate) unsafe fn capture_irq_tail(
         &mut self,
         general: &[u64; 32],
@@ -359,9 +362,18 @@ impl VcpuContext {
         }
         self.general = *general;
         self.program_counter = program_counter;
-        // This state is the final publication consumed by `enter`; all guest
-        // register copies happen-before it in same-hart program order.
+        // `enter` consumes this state only after the outer trap dispatcher
+        // retires FP residency and assembly unwinds the anchor.
         self.publish_irq_tail()
+    }
+
+    pub(super) fn retire_fp(&mut self, status: &mut u64) -> Result<(), GuestAnchorError> {
+        if !matches!(self.run_state, GUEST_RUN_STOPPED | GUEST_RUN_IRQ_TAIL) {
+            return Err(GuestAnchorError::State);
+        }
+        super::fp::save(&mut self.fp, *status);
+        *status &= !registers::SSTATUS_FS_MASK;
+        Ok(())
     }
 
     fn begin_run(&mut self) -> Result<(), GuestAnchorError> {
@@ -587,8 +599,7 @@ const _: () = {
         offset_of!(VcpuContext, virtual_count_offset)
             == registers::VCPU_VIRTUAL_COUNT_OFFSET as usize
     );
-    assert!(offset_of!(VcpuContext, floating) == registers::VCPU_FLOATING_OFFSET as usize);
-    assert!(offset_of!(VcpuContext, fcsr) == registers::VCPU_FCSR_OFFSET as usize);
+    assert!(offset_of!(VcpuContext, fp) == registers::VCPU_FLOATING_OFFSET as usize);
     assert!(offset_of!(VcpuContext, run_state) == registers::VCPU_RUN_STATE_OFFSET as usize);
     assert!(offset_of!(VcpuContext, supervisor) == registers::VCPU_SUPERVISOR_OFFSET as usize);
     assert!(size_of::<GuestAnchorExit>() == 16);

@@ -15,9 +15,6 @@ pub struct ThreadContext {
     frame_pointer: u64,
     link_register: u64,
     stack_pointer: u64,
-    simd_callee_saved: [u64; 8],
-    fpcr: u64,
-    fpsr: u64,
     interrupt_mask: u64,
 }
 
@@ -28,9 +25,6 @@ impl ThreadContext {
             frame_pointer: 0,
             link_register: 0,
             stack_pointer: 0,
-            simd_callee_saved: [0; 8],
-            fpcr: 0,
-            fpsr: 0,
             // Runtime kernel Threads begin with IRQ enabled while debug,
             // SError, and FIQ remain masked, matching enable_irq().
             interrupt_mask: registers::SPSR_D | registers::SPSR_A | registers::SPSR_F,
@@ -56,18 +50,13 @@ impl ThreadContext {
 }
 
 #[repr(C, align(16))]
-pub struct GuestSimdContext([[u64; 2]; 32]);
-
-#[repr(C, align(16))]
 pub struct VcpuContext {
     pub(crate) general: [u64; 31],
     pub(crate) stack_pointer_el0: u64,
     pub(crate) stack_pointer_el1: u64,
     pub(crate) program_counter: u64,
     pub(crate) processor_state: u64,
-    pub(crate) simd: GuestSimdContext,
-    pub(crate) fpcr: u64,
-    pub(crate) fpsr: u64,
+    pub(super) fp: super::fp::State,
     pub(crate) sctlr_el1: u64,
     pub(crate) tcr_el1: u64,
     pub(crate) ttbr0_el1: u64,
@@ -235,9 +224,7 @@ impl VcpuContext {
             stack_pointer_el1: 0,
             program_counter,
             processor_state: registers::SPSR_EL1H_AND_DAIF,
-            simd: GuestSimdContext([[0; 2]; 32]),
-            fpcr: 0,
-            fpsr: 0,
+            fp: super::fp::State::zeroed(),
             sctlr_el1: registers::SCTLR_EL1_GUEST_RESET_VALUE,
             tcr_el1: 0,
             ttbr0_el1: 0,
@@ -563,9 +550,7 @@ impl VcpuContext {
         self.stack_pointer_el1 = frame.sp_el1;
         self.program_counter = frame.elr;
         self.processor_state = frame.spsr;
-        self.simd.0 = frame.simd;
-        self.fpcr = frame.fpcr;
-        self.fpsr = frame.fpsr;
+        super::fp::save(&mut self.fp, frame);
         self.terminal_kind = match cause {
             GuestTerminalCause::MemoryFault => TERMINAL_MEMORY_FAULT,
             GuestTerminalCause::Mmio => TERMINAL_MMIO,
@@ -594,9 +579,7 @@ impl VcpuContext {
         self.stack_pointer_el1 = frame.sp_el1;
         self.program_counter = frame.elr;
         self.processor_state = frame.spsr;
-        self.simd.0 = frame.simd;
-        self.fpcr = frame.fpcr;
-        self.fpsr = frame.fpsr;
+        super::fp::save(&mut self.fp, frame);
         self.terminal_kind = WAIT_FOR_INTERRUPT;
         self.terminal_syndrome = frame.esr;
         self.terminal_fault_address = frame.far;
@@ -648,9 +631,7 @@ impl VcpuContext {
         self.stack_pointer_el1 = frame.sp_el1;
         self.program_counter = frame.elr;
         self.processor_state = frame.spsr;
-        self.simd.0 = frame.simd;
-        self.fpcr = frame.fpcr;
-        self.fpsr = frame.fpsr;
+        super::fp::save(&mut self.fp, frame);
         self.terminal_kind = ADMINISTRATIVE_STOP;
         self.terminal_syndrome = frame.esr;
         self.terminal_fault_address = frame.far;
@@ -763,15 +744,9 @@ const _: () = {
         offset_of!(ThreadContext, stack_pointer) == registers::THREAD_CONTEXT_SP_OFFSET as usize
     );
     assert!(
-        offset_of!(ThreadContext, simd_callee_saved)
-            == registers::THREAD_CONTEXT_D8_OFFSET as usize
-    );
-    assert!(offset_of!(ThreadContext, fpcr) == registers::THREAD_CONTEXT_FPCR_OFFSET as usize);
-    assert!(offset_of!(ThreadContext, fpsr) == registers::THREAD_CONTEXT_FPSR_OFFSET as usize);
-    assert!(
         offset_of!(ThreadContext, interrupt_mask) == registers::THREAD_CONTEXT_DAIF_OFFSET as usize
     );
-    assert!(size_of::<ThreadContext>() == 192);
+    assert!(size_of::<ThreadContext>() == 112);
     assert!(offset_of!(VcpuContext, general) == registers::VCPU_CONTEXT_X0_OFFSET as usize);
     assert!(
         offset_of!(VcpuContext, general) + 30 * size_of::<u64>()
@@ -781,7 +756,5 @@ const _: () = {
     assert!(
         offset_of!(VcpuContext, processor_state) == registers::VCPU_CONTEXT_PSTATE_OFFSET as usize
     );
-    assert!(offset_of!(VcpuContext, simd) == registers::VCPU_CONTEXT_SIMD_OFFSET as usize);
-    assert!(offset_of!(VcpuContext, fpcr) == registers::VCPU_CONTEXT_FPCR_OFFSET as usize);
-    assert!(offset_of!(VcpuContext, fpsr) == registers::VCPU_CONTEXT_FPSR_OFFSET as usize);
+    assert!(offset_of!(VcpuContext, fp) == registers::VCPU_CONTEXT_FP_OFFSET as usize);
 };

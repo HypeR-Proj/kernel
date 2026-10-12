@@ -23,18 +23,23 @@ pub(crate) fn run() -> Result<(), Error> {
         crate::hal::user::native_register_test_program_for_test(),
         MachineAbi::Riscv64,
     )?;
-    // Sharing one hart forces ownership changes even when several harts are
-    // online. The second pass permits independent execution and migration.
-    let result = run_pair(&domain, &group, true)
-        .and_then(|()| run_pair(&domain, &group, false))
-        .and_then(|()| run_fault_probes(&domain, &group));
+    let result = (|| {
+        // Same-hart execution forces ownership changes; the second pass also
+        // permits migration. Check the direct-call count before extra probes.
+        run_pair(&domain, &group, true)?;
+        run_pair(&domain, &group, false)?;
+        run_fault_probes(&domain, &group)?;
+        if crate::hal::user::direct_native_call_count_for_test() != direct_calls.saturating_add(256)
+        {
+            return Err(Error::Terminal);
+        }
+        crate::pr_info!("HypeR test: Native register isolation passed (same-hart and migratable)");
+        integer_only(&domain, &group)?;
+        super::fp::run(&domain, &group)
+    })();
     group.request_stop().map_err(|_| Error::Group)?;
     group.finish_retirement().map_err(|_| Error::Group)?;
     result?;
-    if crate::hal::user::direct_native_call_count_for_test() != direct_calls.saturating_add(256) {
-        return Err(Error::Terminal);
-    }
-    crate::pr_info!("HypeR test: Native register isolation passed (same-hart and migratable)");
     Ok(())
 }
 
@@ -155,4 +160,34 @@ fn stop_and_retire(process: &Process) -> Result<(), Error> {
         }
     }
     retire_process(process)
+}
+
+fn integer_only(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Error> {
+    let before = crate::hal::user::fp_state_counts_for_test();
+    // li a0,0; li a7,7 (thread_exit); ecall. No F/D or illegal instructions.
+    let code: [u8; 12] = [0x13, 0x05, 0, 0, 0x93, 0x08, 0x70, 0, 0x73, 0, 0, 0];
+    let process = prepare_process(domain, group, &code, MachineAbi::Riscv64)?;
+    let result = (|| {
+        let thread = process
+            .create_initial_user_thread("selftest/integer-only", CpuMask::ALL)
+            .map_err(|_| Error::Construction)?;
+        thread.ready().map_err(|_| Error::Scheduler)?;
+        if !crate::kernel::task::wait_for_test_progress(REGISTER_TIMEOUT_NS, || {
+            Ok::<_, Error>(process.try_join().is_some())
+        })? {
+            return Err(Error::Lifecycle);
+        }
+        if process.try_join() != Some(TerminalReason::LastThreadExited { status: 0 }) {
+            return Err(Error::Terminal);
+        }
+        Ok(())
+    })();
+    stop_and_retire(&process)?;
+    super::super::support::quiesce_workers().map_err(|_| Error::Lifecycle)?;
+    result?;
+    if crate::hal::user::fp_state_counts_for_test() != before {
+        return Err(Error::Terminal);
+    }
+    crate::pr_info!("HypeR test: integer-only Native run skipped FP restore/save");
+    Ok(())
 }

@@ -7,6 +7,7 @@ mod barrier;
 mod cache;
 mod context;
 mod exception;
+mod fp;
 mod guest;
 mod interrupt_controller;
 mod interrupts;
@@ -46,6 +47,8 @@ pub(crate) use exception::{
     install_local_runtime_vectors, install_runtime_vectors, run_on_emergency_stack,
     validate_local_runtime_vectors, validate_runtime_vectors,
 };
+#[cfg(feature = "kernel-self-test")]
+pub(crate) use fp::fp_state_counts_for_test;
 pub use guest::ValidationError as GuestValidationError;
 pub(crate) use guest::handle_guest_sync;
 pub use guest::{GuestSyncAction, GuestSyncExit, UnsupportedGuestExit};

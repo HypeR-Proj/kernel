@@ -407,6 +407,39 @@ const _: () = {
 
 #[unsafe(no_mangle)]
 extern "C" fn riscv64_trap_dispatch(frame: &mut TrapFrame) -> TrapAction {
+    let action = dispatch_on_stack(frame);
+    if matches!(
+        action.kind,
+        super::registers::TRAP_ACTION_ANCHOR_STOPPED
+            | super::registers::TRAP_ACTION_ANCHOR_IRQ_TAIL
+    ) {
+        let context = guest_fp_context(frame);
+        // SAFETY: The live masked anchor retains this exact context. Dispatch
+        // returned, so all previous context borrows have ended; no scheduling
+        // occurs until the typed assembly anchor unwind after this function.
+        if unsafe { &mut *context }
+            .retire_fp(&mut frame.sstatus)
+            .is_err()
+        {
+            fatal_trap(frame);
+        }
+    }
+    action
+}
+
+fn guest_fp_context(frame: &TrapFrame) -> *mut super::context::VcpuContext {
+    let address = frame.guest_context_address();
+    if frame.guest_origin == 0
+        || frame.guest_anchor_return == 0
+        || address == 0
+        || !address.is_multiple_of(align_of::<super::context::VcpuContext>())
+    {
+        fatal_trap(frame);
+    }
+    core::ptr::with_exposed_provenance_mut(address)
+}
+
+fn dispatch_on_stack(frame: &mut TrapFrame) -> TrapAction {
     const INTERRUPT: u64 = 1 << 63;
     if frame.scause & INTERRUPT != 0 {
         let cpu = super::current_cpu_index();
@@ -528,7 +561,7 @@ fn stop_guest(frame: &TrapFrame, exit: super::context::GuestRunExit) -> TrapActi
     if context.is_null() || !context.is_aligned() {
         fatal_trap(frame);
     }
-    // SAFETY: Assembly published this exact live owner, captured its CSR/FP
+    // SAFETY: Assembly published this exact live owner, captured its CSR
     // bank, and masked interrupts. No reference survives policy dispatch.
     if unsafe { (&mut *context).stop(&frame.general, frame.sepc, exit) }.is_err() {
         fatal_trap(frame);
@@ -545,8 +578,8 @@ fn capture_guest_irq_tail(frame: &mut TrapFrame) {
         crate::arch::irq::stop_entry(trap_crash_context(frame))
     }
     // SAFETY: Assembly copied this pointer from the complete live HS anchor.
-    // Guest entry retains no Rust reference, all guest floating state is
-    // already stored, and local interrupts remain masked.
+    // Guest entry retains no Rust reference and local interrupts remain masked.
+    // The outer dispatcher saves FP before the returned action can unwind.
     if unsafe { (&mut *context).capture_irq_tail(&frame.general, frame.sepc) }.is_err() {
         crate::arch::irq::stop_entry(trap_crash_context(frame))
     }

@@ -76,9 +76,9 @@ def check_graph(root):
 
 
 def check_privacy(root):
-    target = os.environ.get('HYPER_HAL_BOUNDARY_TARGET', 'aarch64-unknown-none')
+    target = os.environ.get('HYPER_HAL_BOUNDARY_TARGET', 'aarch64-unknown-none-softfloat')
     configs = {
-        'aarch64-unknown-none': 'qemu_aarch64_defconfig',
+        'aarch64-unknown-none-softfloat': 'qemu_aarch64_defconfig',
         'riscv64imac-unknown-none-elf': 'qemu_riscv64_defconfig',
         'x86_64-unknown-none': 'qemu_x86_64_defconfig',
     }

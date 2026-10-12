@@ -9,6 +9,7 @@ mod cache;
 mod context;
 mod exception;
 mod exposed_copy;
+mod fp;
 mod gic_cpu_interface;
 mod guest_cpu_contract;
 mod guest_cpu_model;
@@ -203,7 +204,11 @@ pub fn register_secondary_hardware_id(cpu_index: usize, hardware_id: u64) -> boo
     smp::register_cpu(cpu_index, hardware_id)
 }
 
-pub fn mark_current_cpu_online() {}
+pub fn mark_current_cpu_online() {
+    // SAFETY: Secondary compatibility admission validated FP/SIMD support;
+    // this CPU has not run lower-world code and still masks local exceptions.
+    unsafe { fp::initialize_cpu() };
+}
 
 pub fn prepare_timekeeping(_platform: &EssentialPlatformInfo) -> Result<(), TimerError> {
     Ok(())
@@ -367,6 +372,9 @@ pub(crate) unsafe fn prepare_boot(
     if !guest_cpu_model::initialize_boot_cpu() {
         halt()
     }
+    // SAFETY: The frozen model requires FP/SIMD. Boot still masks exceptions
+    // and has not admitted any lower-world owner on this CPU.
+    unsafe { fp::initialize_cpu() };
     if !smp::initialize_boot_cpu() {
         halt()
     }
@@ -434,3 +442,6 @@ pub(crate) fn guest_translation_identifier_bits() -> u8 {
 }
 
 pub(crate) use stage2::invalidate_namespace_local as invalidate_guest_translation_namespace_local;
+
+#[cfg(all(target_arch = "aarch64", feature = "kernel-self-test"))]
+pub(crate) use fp::fp_state_counts_for_test;

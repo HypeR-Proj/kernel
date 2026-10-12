@@ -23,14 +23,6 @@ aarch64_switch_context:
     stp     x29, x30, [x0, #THREAD_CONTEXT_X29_OFFSET]
     mov     x2, sp
     str     x2, [x0, #THREAD_CONTEXT_SP_OFFSET]
-    stp     d8, d9, [x0, #(THREAD_CONTEXT_D8_OFFSET + 0)]
-    stp     d10, d11, [x0, #(THREAD_CONTEXT_D8_OFFSET + 16)]
-    stp     d12, d13, [x0, #(THREAD_CONTEXT_D8_OFFSET + 32)]
-    stp     d14, d15, [x0, #(THREAD_CONTEXT_D8_OFFSET + 48)]
-    mrs     x2, fpcr
-    str     x2, [x0, #THREAD_CONTEXT_FPCR_OFFSET]
-    mrs     x2, fpsr
-    str     x2, [x0, #THREAD_CONTEXT_FPSR_OFFSET]
     // Run completion on the incoming stack before restoring its interrupt
     // state. x19 is already saved above and the callback preserves it.
     mov     x19, x1
@@ -46,14 +38,6 @@ aarch64_switch_context:
     ldp     x25, x26, [x1, #(THREAD_CONTEXT_X19_OFFSET + 48)]
     ldp     x27, x28, [x1, #(THREAD_CONTEXT_X19_OFFSET + 64)]
     ldp     x29, x30, [x1, #THREAD_CONTEXT_X29_OFFSET]
-    ldp     d8, d9, [x1, #(THREAD_CONTEXT_D8_OFFSET + 0)]
-    ldp     d10, d11, [x1, #(THREAD_CONTEXT_D8_OFFSET + 16)]
-    ldp     d12, d13, [x1, #(THREAD_CONTEXT_D8_OFFSET + 32)]
-    ldp     d14, d15, [x1, #(THREAD_CONTEXT_D8_OFFSET + 48)]
-    ldr     x2, [x1, #THREAD_CONTEXT_FPCR_OFFSET]
-    msr     fpcr, x2
-    ldr     x2, [x1, #THREAD_CONTEXT_FPSR_OFFSET]
-    msr     fpsr, x2
     ldr     x2, [x1, #THREAD_CONTEXT_DAIF_OFFSET]
     msr     daif, x2
     ret
@@ -206,6 +190,7 @@ aarch64_run_native_user:
     msr     mdcr_el2, x2
     mrs     x2, cptr_el2
     str     x2, [sp, #USER_RUN_FRAME_CPTR_EL2_OFFSET]
+    bic     x2, x2, #CPTR_EL2_FPEN_ENABLED
     orr     x2, x2, #CPTR_EL2_TAM
     msr     cptr_el2, x2
     mrs     x2, sp_el0
@@ -216,14 +201,6 @@ aarch64_run_native_user:
     stp     x25, x26, [sp, #(USER_RUN_FRAME_X19_OFFSET + 48)]
     stp     x27, x28, [sp, #(USER_RUN_FRAME_X19_OFFSET + 64)]
     stp     x29, x30, [sp, #USER_RUN_FRAME_X29_OFFSET]
-    stp     d8, d9, [sp, #(USER_RUN_FRAME_D8_OFFSET + 0)]
-    stp     d10, d11, [sp, #(USER_RUN_FRAME_D8_OFFSET + 16)]
-    stp     d12, d13, [sp, #(USER_RUN_FRAME_D8_OFFSET + 32)]
-    stp     d14, d15, [sp, #(USER_RUN_FRAME_D8_OFFSET + 48)]
-    mrs     x1, fpcr
-    str     x1, [sp, #USER_RUN_FRAME_FPCR_OFFSET]
-    mrs     x1, fpsr
-    str     x1, [sp, #USER_RUN_FRAME_FPSR_OFFSET]
 
     mov     x30, x0
     ldr     x1, [x30, #USER_CONTEXT_PC_OFFSET]
@@ -236,26 +213,6 @@ aarch64_run_native_user:
     msr     tpidr_el0, x1
     ldr     x1, [x30, #USER_CONTEXT_TPIDRRO_EL0_OFFSET]
     msr     tpidrro_el0, x1
-    ldr     x1, [x30, #USER_CONTEXT_FPCR_OFFSET]
-    msr     fpcr, x1
-    ldr     x1, [x30, #USER_CONTEXT_FPSR_OFFSET]
-    msr     fpsr, x1
-    ldp     q0, q1, [x30, #(USER_CONTEXT_SIMD_OFFSET + 0)]
-    ldp     q2, q3, [x30, #(USER_CONTEXT_SIMD_OFFSET + 32)]
-    ldp     q4, q5, [x30, #(USER_CONTEXT_SIMD_OFFSET + 64)]
-    ldp     q6, q7, [x30, #(USER_CONTEXT_SIMD_OFFSET + 96)]
-    ldp     q8, q9, [x30, #(USER_CONTEXT_SIMD_OFFSET + 128)]
-    ldp     q10, q11, [x30, #(USER_CONTEXT_SIMD_OFFSET + 160)]
-    ldp     q12, q13, [x30, #(USER_CONTEXT_SIMD_OFFSET + 192)]
-    ldp     q14, q15, [x30, #(USER_CONTEXT_SIMD_OFFSET + 224)]
-    ldp     q16, q17, [x30, #(USER_CONTEXT_SIMD_OFFSET + 256)]
-    ldp     q18, q19, [x30, #(USER_CONTEXT_SIMD_OFFSET + 288)]
-    ldp     q20, q21, [x30, #(USER_CONTEXT_SIMD_OFFSET + 320)]
-    ldp     q22, q23, [x30, #(USER_CONTEXT_SIMD_OFFSET + 352)]
-    ldp     q24, q25, [x30, #(USER_CONTEXT_SIMD_OFFSET + 384)]
-    ldp     q26, q27, [x30, #(USER_CONTEXT_SIMD_OFFSET + 416)]
-    ldp     q28, q29, [x30, #(USER_CONTEXT_SIMD_OFFSET + 448)]
-    ldp     q30, q31, [x30, #(USER_CONTEXT_SIMD_OFFSET + 480)]
 
     // Keep the complete HCR value in the host frame. ESR_EL2 is not a
     // general-purpose scratch register: its reserved upper bits cannot
@@ -300,14 +257,6 @@ aarch64_unwind_native_user:
     ldp     x25, x26, [sp, #(USER_RUN_FRAME_X19_OFFSET + 48)]
     ldp     x27, x28, [sp, #(USER_RUN_FRAME_X19_OFFSET + 64)]
     ldp     x29, x30, [sp, #USER_RUN_FRAME_X29_OFFSET]
-    ldp     d8, d9, [sp, #(USER_RUN_FRAME_D8_OFFSET + 0)]
-    ldp     d10, d11, [sp, #(USER_RUN_FRAME_D8_OFFSET + 16)]
-    ldp     d12, d13, [sp, #(USER_RUN_FRAME_D8_OFFSET + 32)]
-    ldp     d14, d15, [sp, #(USER_RUN_FRAME_D8_OFFSET + 48)]
-    ldr     x0, [sp, #USER_RUN_FRAME_FPCR_OFFSET]
-    msr     fpcr, x0
-    ldr     x0, [sp, #USER_RUN_FRAME_FPSR_OFFSET]
-    msr     fpsr, x0
     ldr     x0, [sp, #USER_RUN_FRAME_TPIDR_EL0_OFFSET]
     msr     tpidr_el0, x0
     ldr     x0, [sp, #USER_RUN_FRAME_TPIDRRO_EL0_OFFSET]
@@ -337,6 +286,10 @@ aarch64_run_guest:
     // This frame is the only legal target of a typed guest vector unwind. Save
     // the complete AAPCS64 host callee set before any guest register load.
     sub     sp, sp, #GUEST_RUN_FRAME_SIZE
+    mrs     x2, cptr_el2
+    str     x2, [sp, #GUEST_RUN_FRAME_CPTR_EL2_OFFSET]
+    bic     x2, x2, #CPTR_EL2_FPEN_ENABLED
+    msr     cptr_el2, x2
     // Keep the Rust-computed guest HCR in this host frame until all guest
     // registers have been loaded and the context pointer is no longer needed.
     str     x1, [sp, #GUEST_RUN_FRAME_ENTRY_HCR_OFFSET]
@@ -346,14 +299,6 @@ aarch64_run_guest:
     stp     x25, x26, [sp, #(GUEST_RUN_FRAME_X19_OFFSET + 48)]
     stp     x27, x28, [sp, #(GUEST_RUN_FRAME_X19_OFFSET + 64)]
     stp     x29, x30, [sp, #GUEST_RUN_FRAME_X29_OFFSET]
-    stp     d8, d9, [sp, #(GUEST_RUN_FRAME_D8_OFFSET + 0)]
-    stp     d10, d11, [sp, #(GUEST_RUN_FRAME_D8_OFFSET + 16)]
-    stp     d12, d13, [sp, #(GUEST_RUN_FRAME_D8_OFFSET + 32)]
-    stp     d14, d15, [sp, #(GUEST_RUN_FRAME_D8_OFFSET + 48)]
-    mrs     x1, fpcr
-    str     x1, [sp, #GUEST_RUN_FRAME_FPCR_OFFSET]
-    mrs     x1, fpsr
-    str     x1, [sp, #GUEST_RUN_FRAME_FPSR_OFFSET]
 
     mov     x30, x0
 
@@ -366,26 +311,6 @@ aarch64_run_guest:
     msr     elr_el2, x1
     ldr     x1, [x30, #VCPU_CONTEXT_PSTATE_OFFSET]
     msr     spsr_el2, x1
-    ldr     x1, [x30, #VCPU_CONTEXT_FPCR_OFFSET]
-    msr     fpcr, x1
-    ldr     x1, [x30, #VCPU_CONTEXT_FPSR_OFFSET]
-    msr     fpsr, x1
-    ldp     q0, q1, [x30, #(VCPU_CONTEXT_SIMD_OFFSET + 0)]
-    ldp     q2, q3, [x30, #(VCPU_CONTEXT_SIMD_OFFSET + 32)]
-    ldp     q4, q5, [x30, #(VCPU_CONTEXT_SIMD_OFFSET + 64)]
-    ldp     q6, q7, [x30, #(VCPU_CONTEXT_SIMD_OFFSET + 96)]
-    ldp     q8, q9, [x30, #(VCPU_CONTEXT_SIMD_OFFSET + 128)]
-    ldp     q10, q11, [x30, #(VCPU_CONTEXT_SIMD_OFFSET + 160)]
-    ldp     q12, q13, [x30, #(VCPU_CONTEXT_SIMD_OFFSET + 192)]
-    ldp     q14, q15, [x30, #(VCPU_CONTEXT_SIMD_OFFSET + 224)]
-    ldp     q16, q17, [x30, #(VCPU_CONTEXT_SIMD_OFFSET + 256)]
-    ldp     q18, q19, [x30, #(VCPU_CONTEXT_SIMD_OFFSET + 288)]
-    ldp     q20, q21, [x30, #(VCPU_CONTEXT_SIMD_OFFSET + 320)]
-    ldp     q22, q23, [x30, #(VCPU_CONTEXT_SIMD_OFFSET + 352)]
-    ldp     q24, q25, [x30, #(VCPU_CONTEXT_SIMD_OFFSET + 384)]
-    ldp     q26, q27, [x30, #(VCPU_CONTEXT_SIMD_OFFSET + 416)]
-    ldp     q28, q29, [x30, #(VCPU_CONTEXT_SIMD_OFFSET + 448)]
-    ldp     q30, q31, [x30, #(VCPU_CONTEXT_SIMD_OFFSET + 480)]
     ldp     x0, x1, [x30, #(VCPU_CONTEXT_X0_OFFSET + 0)]
     ldp     x2, x3, [x30, #(VCPU_CONTEXT_X0_OFFSET + 16)]
     ldp     x4, x5, [x30, #(VCPU_CONTEXT_X0_OFFSET + 32)]
@@ -423,14 +348,9 @@ aarch64_unwind_guest:
     ldp     x25, x26, [sp, #(GUEST_RUN_FRAME_X19_OFFSET + 48)]
     ldp     x27, x28, [sp, #(GUEST_RUN_FRAME_X19_OFFSET + 64)]
     ldp     x29, x30, [sp, #GUEST_RUN_FRAME_X29_OFFSET]
-    ldp     d8, d9, [sp, #(GUEST_RUN_FRAME_D8_OFFSET + 0)]
-    ldp     d10, d11, [sp, #(GUEST_RUN_FRAME_D8_OFFSET + 16)]
-    ldp     d12, d13, [sp, #(GUEST_RUN_FRAME_D8_OFFSET + 32)]
-    ldp     d14, d15, [sp, #(GUEST_RUN_FRAME_D8_OFFSET + 48)]
-    ldr     x0, [sp, #GUEST_RUN_FRAME_FPCR_OFFSET]
-    msr     fpcr, x0
-    ldr     x0, [sp, #GUEST_RUN_FRAME_FPSR_OFFSET]
-    msr     fpsr, x0
+    ldr     x0, [sp, #GUEST_RUN_FRAME_CPTR_EL2_OFFSET]
+    msr     cptr_el2, x0
+    isb
     add     sp, sp, #GUEST_RUN_FRAME_SIZE
     mov     x0, #GUEST_RUN_RETURN_STOPPED
     ret

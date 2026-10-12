@@ -15,7 +15,7 @@ usage() {
 
 copy_aarch64_artifacts() {
     kind=$1
-    output=target/aarch64-unknown-none/kernel
+    output=target/aarch64-unknown-none-softfloat/kernel
     destination=target/ci/aarch64
     mkdir -p "$destination"
     cp "$output/hyper" "$destination/hyper.$kind"
@@ -56,9 +56,9 @@ case "${1:-}" in
         make release ARCH=aarch64
         make test-image ARCH=aarch64
         copy_aarch64_artifacts production
-        cp target/aarch64-unknown-none/kernel/hyper.stripped \
+        cp target/aarch64-unknown-none-softfloat/kernel/hyper.stripped \
             target/ci/aarch64/hyper.production.stripped
-        cp target/aarch64-unknown-none/kernel/hyper.stripped.img \
+        cp target/aarch64-unknown-none-softfloat/kernel/hyper.stripped.img \
             target/ci/aarch64/hyper.production.stripped.img
         ;;
     aarch64-self-test)

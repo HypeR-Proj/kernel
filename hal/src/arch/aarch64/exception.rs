@@ -117,10 +117,8 @@ pub(super) struct ExceptionFrame {
     pub(super) vector: u64,
     pub(super) sp_el0: u64,
     pub(super) sp_el1: u64,
-    pub(super) simd: [[u64; 2]; 32],
-    pub(super) fpcr: u64,
-    pub(super) fpsr: u64,
     pub(super) return_hcr: u64,
+    pub(super) return_cptr: u64,
 }
 
 const _: () = {
@@ -146,12 +144,13 @@ const _: () = {
     assert!(
         offset_of!(ExceptionFrame, sp_el1) == registers::EXCEPTION_FRAME_SP_EL1_OFFSET as usize
     );
-    assert!(offset_of!(ExceptionFrame, simd) == registers::EXCEPTION_FRAME_SIMD_OFFSET as usize);
-    assert!(offset_of!(ExceptionFrame, fpcr) == registers::EXCEPTION_FRAME_FPCR_OFFSET as usize);
-    assert!(offset_of!(ExceptionFrame, fpsr) == registers::EXCEPTION_FRAME_FPSR_OFFSET as usize);
     assert!(
         offset_of!(ExceptionFrame, return_hcr)
             == registers::EXCEPTION_FRAME_RETURN_HCR_OFFSET as usize
+    );
+    assert!(
+        offset_of!(ExceptionFrame, return_cptr)
+            == registers::EXCEPTION_FRAME_RETURN_CPTR_OFFSET as usize
     );
     assert!(size_of::<ExceptionFrame>() == registers::EXCEPTION_FRAME_SIZE as usize);
 };
@@ -557,6 +556,20 @@ fn dispatch_synchronous(
         return VectorAction::RESUME;
     }
 
+    if exception_class == registers::ESR_EC_FP_ASIMD {
+        let restored = match owner {
+            Some(LowerAarch64Owner::Native { generation }) => {
+                super::user_entry::restore_fp(frame, generation).map_err(|_| ())
+            }
+            Some(LowerAarch64Owner::Guest { generation }) => restore_guest_fp(frame, generation),
+            None => Err(()),
+        };
+        return match restored {
+            Ok(()) => VectorAction::RESUME,
+            Err(()) => fatal_exception(frame, entry, exception_class),
+        };
+    }
+
     match owner {
         Some(LowerAarch64Owner::Native { generation }) => {
             match super::user_entry::handle_synchronous(frame, generation) {
@@ -655,11 +668,25 @@ fn dispatch_irq(
             // Registry dispatch completed the acknowledged interrupt exactly
             // once before returning this action. The optional scheduling tail
             // therefore runs after GIC EOI/deactivation.
-            if let (Some(generation), Some(_)) = (native_generation, postlude) {
-                // The raw vector frame must not outlive this stack.
+            if let (Some(generation), Some(target)) = (native_generation, postlude) {
+                // Native entry must unwind, never resume this frame after its
+                // register image is saved and physical FP state is scrubbed.
+                let unwind = super::user_entry::unwind_callback() as usize;
+                if target as usize != unwind {
+                    super::user_entry::fail_stop();
+                }
                 if super::user_entry::capture_interrupt(frame, generation).is_err() {
                     super::user_entry::fail_stop();
                 }
+                return VectorAction::unwind(unwind);
+            }
+            if let (Some(LowerAarch64Owner::Guest { generation }), Some(_)) = (owner, postlude) {
+                // The postlude may detach, migrate, or destroy the vCPU without
+                // unwinding this frame. Retire FP residency before it can do so.
+                if save_guest_fp(frame, generation).is_err() {
+                    fatal_exception(frame, entry, 0)
+                }
+                frame.return_cptr &= !registers::CPTR_EL2_FPEN_ENABLED;
             }
             VectorAction::postlude(postlude)
         }
@@ -678,6 +705,23 @@ fn dispatch_irq(
             crate::arch::irq::stop_entry(context)
         }
     }
+}
+
+fn restore_guest_fp(frame: &mut ExceptionFrame, generation: u64) -> Result<(), ()> {
+    let context = super::lower_el::guest_context(generation).map_err(|_| ())?;
+    // SAFETY: The exact published guest generation is exclusively pinned; IRQs
+    // are masked and the guest run holds no live Rust context reference.
+    let context = unsafe { context.as_ref() };
+    super::fp::restore(&context.fp, frame)
+}
+
+fn save_guest_fp(frame: &ExceptionFrame, generation: u64) -> Result<(), ()> {
+    let mut context = super::lower_el::guest_context(generation).map_err(|_| ())?;
+    // SAFETY: The generation-qualified guest is stopped on this masked CPU.
+    // Save completes before the postlude can detach or migrate its owner.
+    let context = unsafe { context.as_mut() };
+    super::fp::save(&mut context.fp, frame);
+    Ok(())
 }
 
 fn capture_administratively_stopped_guest(

@@ -178,6 +178,7 @@ struct ProgramOutcome {
 }
 
 pub(crate) fn run() -> Result<(), Error> {
+    let fp_counts = crate::hal::user::fp_state_counts_for_test();
     let direct_calls = crate::hal::user::direct_native_call_count_for_test();
     let domain =
         ResourceDomain::try_new_root(ResourceLimits::UNLIMITED).map_err(|_| Error::Construction)?;
@@ -204,6 +205,11 @@ pub(crate) fn run() -> Result<(), Error> {
     {
         return Err(Error::Terminal);
     }
+
+    if crate::hal::user::fp_state_counts_for_test() != fp_counts {
+        return Err(Error::Terminal);
+    }
+    super::fp::run(&domain, &group)?;
 
     let outcome = run_program(
         &domain,

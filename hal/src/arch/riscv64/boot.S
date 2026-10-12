@@ -25,6 +25,8 @@ _start:
 .Lboot_entry:
     rdtime s11
     csrw sie, zero
+    li t0, ((3 << 13) | (3 << 9))
+    csrc sstatus, t0
     csrci sstatus, 2
     mv s8, a0
     mv s9, a1
@@ -133,6 +135,8 @@ riscv64_activate_final_address_space:
 riscv64_secondary_entry:
     csrci sstatus, 2
     csrw sie, zero
+    li t0, ((3 << 13) | (3 << 9))
+    csrc sstatus, t0
     mv t6, a1
     ld t0, 0(t6)
     ld sp, 8(t6)

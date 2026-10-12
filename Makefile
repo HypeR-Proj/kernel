@@ -3,7 +3,7 @@
 
 ARCH ?= aarch64
 ifeq ($(ARCH),aarch64)
-TARGET := aarch64-unknown-none
+TARGET := aarch64-unknown-none-softfloat
 QEMU ?= qemu-system-aarch64
 QEMU_CPU ?= max
 QEMU_MACHINE := virt,virtualization=on,gic-version=3,dtb-randomness=on

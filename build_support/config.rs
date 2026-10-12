@@ -151,7 +151,7 @@ fn validate_architecture_configuration(
         .into());
     }
     let matches_target = match target {
-        "aarch64-unknown-none" => aarch64,
+        "aarch64-unknown-none-softfloat" => aarch64,
         "riscv64imac-unknown-none-elf" => riscv64,
         "x86_64-unknown-none" => x86_64,
         _ => true,

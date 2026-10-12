@@ -6,7 +6,7 @@
 /*
  * Runtime AArch64 EL2 exception vectors.
  *
- * Each slot preserves the interrupted integer and SIMD state before entering
+ * Each slot preserves the interrupted integer state and gates FP before entering
  * Rust. Frame layout constants are generated from registers.rs.
  */
 
@@ -103,26 +103,13 @@ aarch64_runtime_vectors:
     isb
 .Lhost_regime_active:
 
-    stp     q0, q1, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 0)]
-    stp     q2, q3, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 32)]
-    stp     q4, q5, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 64)]
-    stp     q6, q7, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 96)]
-    stp     q8, q9, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 128)]
-    stp     q10, q11, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 160)]
-    stp     q12, q13, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 192)]
-    stp     q14, q15, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 224)]
-    stp     q16, q17, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 256)]
-    stp     q18, q19, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 288)]
-    stp     q20, q21, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 320)]
-    stp     q22, q23, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 352)]
-    stp     q24, q25, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 384)]
-    stp     q26, q27, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 416)]
-    stp     q28, q29, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 448)]
-    stp     q30, q31, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 480)]
-    mrs     x1, fpcr
-    str     x1, [sp, #EXCEPTION_FRAME_FPCR_OFFSET]
-    mrs     x1, fpsr
-    str     x1, [sp, #EXCEPTION_FRAME_FPSR_OFFSET]
+    // Kernel code is built for the soft-float ABI. Keep lower-world state
+    // resident but inaccessible until its exact owner returns or saves it.
+    mrs     x1, cptr_el2
+    str     x1, [sp, #EXCEPTION_FRAME_RETURN_CPTR_OFFSET]
+    bic     x1, x1, #CPTR_EL2_FPEN_ENABLED
+    msr     cptr_el2, x1
+    isb
 
     // IRQ handlers run on a private per-CPU stack. The architectural frame
     // remains on the interrupted context so ERET and crash diagnostics retain
@@ -175,6 +162,8 @@ aarch64_runtime_vectors:
     // Restore the exact world captured before VHE entry switched into the host
     // register regime. A lower-EL vector alone cannot distinguish a guest from
     // Native EL0: guest return clears TGE, while Native return keeps it set.
+    ldr     x1, [sp, #EXCEPTION_FRAME_RETURN_CPTR_OFFSET]
+    msr     cptr_el2, x1
     ldr     x1, [sp, #EXCEPTION_FRAME_RETURN_HCR_OFFSET]
     msr     hcr_el2, x1
     isb
@@ -187,26 +176,6 @@ aarch64_runtime_vectors:
     msr     sp_el0, x1
     ldr     x1, [sp, #EXCEPTION_FRAME_SP_EL1_OFFSET]
     msr     sp_el1, x1
-    ldr     x1, [sp, #EXCEPTION_FRAME_FPCR_OFFSET]
-    msr     fpcr, x1
-    ldr     x1, [sp, #EXCEPTION_FRAME_FPSR_OFFSET]
-    msr     fpsr, x1
-    ldp     q0, q1, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 0)]
-    ldp     q2, q3, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 32)]
-    ldp     q4, q5, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 64)]
-    ldp     q6, q7, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 96)]
-    ldp     q8, q9, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 128)]
-    ldp     q10, q11, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 160)]
-    ldp     q12, q13, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 192)]
-    ldp     q14, q15, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 224)]
-    ldp     q16, q17, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 256)]
-    ldp     q18, q19, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 288)]
-    ldp     q20, q21, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 320)]
-    ldp     q22, q23, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 352)]
-    ldp     q24, q25, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 384)]
-    ldp     q26, q27, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 416)]
-    ldp     q28, q29, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 448)]
-    ldp     q30, q31, [sp, #(EXCEPTION_FRAME_SIMD_OFFSET + 480)]
 
     ldp     x2, x3, [sp, #(EXCEPTION_FRAME_X0_OFFSET + 16)]
     ldp     x4, x5, [sp, #(EXCEPTION_FRAME_X0_OFFSET + 32)]

@@ -69,6 +69,11 @@ riscv64_trap_vector:
     sd t4, TRAP_FRAME_T4_OFFSET(sp)
     sd t5, TRAP_FRAME_T5_OFFSET(sp)
     sd t6, TRAP_FRAME_T6_OFFSET(sp)
+    # Preserve the incoming residency bit before disabling FP for all Rust.
+    csrr t1, sstatus
+    sd t1, TRAP_FRAME_SSTATUS_OFFSET(sp)
+    li t1, SSTATUS_FS_MASK
+    csrc sstatus, t1
     beqz t0, .Lhost_origin
     li t1, 1
     sd t1, TRAP_FRAME_GUEST_ANCHOR_RETURN_OFFSET(sp)
@@ -113,16 +118,7 @@ riscv64_trap_vector:
     sd t1, VCPU_VSTIMECMP_OFFSET(a0)
     li t1, -1
     csrw 0x24d, t1
-    # No Rust code may run while guest floating state is live. Save it through
-    # the exact anchor context, then restore the complete host floating image.
-    call riscv64_save_guest_floating_point
-    addi a0, sp, TRAP_FRAME_SIZE
-    call riscv64_restore_host_floating_point
     addi t0, sp, TRAP_FRAME_SIZE
-    ld t1, GUEST_HS_ANCHOR_FS_OFFSET(t0)
-    li t2, (3 << 13)
-    csrc sstatus, t2
-    csrs sstatus, t1
     ld t1, GUEST_HS_ANCHOR_SCOUNTEREN_OFFSET(t0)
     csrw scounteren, t1
     ld t1, GUEST_HS_ANCHOR_SENVCFG_OFFSET(t0)
@@ -142,8 +138,6 @@ riscv64_trap_vector:
 .Ldispatch:
     csrr t0, sepc
     sd t0, TRAP_FRAME_SEPC_OFFSET(sp)
-    csrr t0, sstatus
-    sd t0, TRAP_FRAME_SSTATUS_OFFSET(sp)
     csrr t0, scause
     sd t0, TRAP_FRAME_SCAUSE_OFFSET(sp)
     csrr t0, stval
@@ -180,7 +174,7 @@ riscv64_trap_vector:
     j .Lresume_trap
 .Lanchor_irq_tail:
     beqz a1, .Linvalid_trap_action
-    # The dispatcher captured all guest state and published IRQ_TAIL last.
+    # The dispatcher captured guest state and retired FP before this unwind.
     # Destroy the sscratch anchor before any host continuation can trap, then
     # restore the complete host callee ABI and return the opaque callback.
     li t5, GUEST_ANCHOR_EXIT_IRQ_TAIL
@@ -211,13 +205,9 @@ riscv64_trap_vector:
     mv a1, t6
     ret
 .Lresume_trap:
-    # Guest trap entry saved its floating image before Rust policy. Reload it
-    # after the optional policy callback and before restoring guest GPRs.
+    # Direct returns retain the exact run's bank; only restore guest CSRs.
     ld t0, TRAP_FRAME_GUEST_ANCHOR_RETURN_OFFSET(sp)
     beqz t0, .Lrestore_trap
-    addi t0, sp, TRAP_FRAME_SIZE
-    ld a0, GUEST_HS_ANCHOR_CONTEXT_OFFSET(t0)
-    call riscv64_load_guest_floating_point
     addi t0, sp, TRAP_FRAME_SIZE
     ld t0, GUEST_HS_ANCHOR_CONTEXT_OFFSET(t0)
     ld t1, VCPU_VSSTATUS_OFFSET(t0)
@@ -294,12 +284,7 @@ riscv64_trap_vector:
     ld sp, TRAP_FRAME_SP_OFFSET(sp)
     sret
 .Lguest_return:
-    # Guest-anchor entries must undo the reserved HS anchor swap regardless of
-    # whether hardware still reports SPV in the saved trap state. HS FS must
-    # remain enabled while V=1 so the restored guest floating state is usable;
-    # host-origin returns above retain their exact saved SSTATUS value.
-    li t0, (3 << 13)
-    csrs sstatus, t0
+    # Undo the anchor swap; saved HS FS alone authorizes the resident bank.
     addi t0, sp, TRAP_FRAME_SIZE
     csrw sscratch, t0
     ld t0, TRAP_FRAME_T0_OFFSET(sp)

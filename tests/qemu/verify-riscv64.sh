@@ -40,6 +40,13 @@ case "$timeout_seconds" in
         ;;
 esac
 attempt_limit=$((timeout_seconds * 10))
+if [ "$cpus" -eq 1 ]; then
+    migration='HypeR test: cross-CPU thread migration skipped (one CPU online)'
+    guest_migration='HypeR test: vCPU migration skipped (requires guest execution and two CPUs)'
+else
+    migration='HypeR test: cross-CPU thread migration passed'
+    guest_migration='HypeR test: guest FP preemption, timer wait and migration passed'
+fi
 
 magic=$(dd if="$image" bs=1 skip=56 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')
 if [ "$magic" != "52534305" ]; then
@@ -87,8 +94,11 @@ while [ "$attempt" -lt "$attempt_limit" ]; do
         exit 1
     fi
     if grep -q 'HypeR: transition identity mappings retired' "$log" &&
-        grep -q 'HypeR test: cross-CPU thread migration passed' "$log" &&
+        grep -Fq "$migration" "$log" &&
+        grep -Fq "$guest_migration" "$log" &&
         grep -q 'HypeR test: Native register isolation passed' "$log" &&
+        grep -q 'HypeR test: integer-only Native run skipped FP restore/save' "$log" &&
+        grep -q 'HypeR test: Native lazy FP and guest register isolation passed' "$log" &&
         grep -q 'HypeR test: Native supervisor mapping and CSR faults contained' "$log" &&
         grep -q 'HypeR test: Native file pages reclaimed and refilled; dirty pages retained' "$log" &&
         grep -q 'HypeR test: kernel self-tests completed' "$log"; then

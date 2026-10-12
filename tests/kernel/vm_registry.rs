@@ -436,7 +436,7 @@ fn verify_observed_vm_retirement() -> Result<(), Error> {
 }
 
 /// Shares the dormant lifecycle fixture while installing a real executable guest.
-#[cfg(CONFIG_ARCH_AARCH64)]
+#[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
 pub(super) fn prepare_migration_guest(
     code: &[u8],
 ) -> Result<

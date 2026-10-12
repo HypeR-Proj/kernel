@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [build]
-target = "aarch64-unknown-none"
+target = "aarch64-unknown-none-softfloat"
 
-[target.aarch64-unknown-none]
+[target.aarch64-unknown-none-softfloat]
 rustflags = [
     "-C", "link-arg=-Thal/src/arch/aarch64/linker.ld",
     "-C", "link-arg=--gc-sections",

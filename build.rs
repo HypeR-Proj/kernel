@@ -26,11 +26,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-changed=hal/src/arch/aarch64/boot.S");
     println!("cargo:rerun-if-changed=hal/src/arch/aarch64/vectors.S");
     println!("cargo:rerun-if-changed=hal/src/arch/aarch64/context.S");
+    println!("cargo:rerun-if-changed=hal/src/arch/aarch64/fp.S");
     println!("cargo:rerun-if-changed=hal/src/arch/aarch64/registers.rs");
     println!("cargo:rerun-if-changed=hal/src/arch/aarch64/linker.ld");
     println!("cargo:rerun-if-changed=hal/src/arch/riscv64/boot.S");
     println!("cargo:rerun-if-changed=hal/src/arch/riscv64/trap.S");
     println!("cargo:rerun-if-changed=hal/src/arch/riscv64/context.S");
+    println!("cargo:rerun-if-changed=hal/src/arch/riscv64/fp.S");
     println!("cargo:rerun-if-changed=hal/src/arch/riscv64/guest.S");
     println!("cargo:rerun-if-changed=hal/src/arch/riscv64/user.S");
     println!("cargo:rerun-if-changed=hal/src/arch/riscv64/cache.S");
@@ -55,13 +57,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let header_path = output_directory.join("asm_constants.h");
     let (clang_target, constants, sources): ArchitectureBuild<'_> = match target.as_str() {
-        "aarch64-unknown-none" => (
+        "aarch64-unknown-none-softfloat" => (
             "aarch64-none-elf",
             aarch64_registers::ASM_CONSTANTS,
             &[
                 ("hal/src/arch/aarch64/boot.S", "aarch64_boot.o"),
                 ("hal/src/arch/aarch64/vectors.S", "aarch64_vectors.o"),
                 ("hal/src/arch/aarch64/context.S", "aarch64_context.o"),
+                ("hal/src/arch/aarch64/fp.S", "aarch64_fp.o"),
             ],
         ),
         "riscv64imac-unknown-none-elf" => (
@@ -71,6 +74,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ("hal/src/arch/riscv64/boot.S", "riscv64_boot.o"),
                 ("hal/src/arch/riscv64/trap.S", "riscv64_trap.o"),
                 ("hal/src/arch/riscv64/context.S", "riscv64_context.o"),
+                ("hal/src/arch/riscv64/fp.S", "riscv64_fp.o"),
                 ("hal/src/arch/riscv64/guest.S", "riscv64_guest.o"),
                 ("hal/src/arch/riscv64/user.S", "riscv64_user.o"),
                 ("hal/src/arch/riscv64/cache.S", "riscv64_cache.o"),
@@ -105,6 +109,28 @@ fn main() -> Result<(), Box<dyn Error>> {
             &object_path,
         )?;
         println!("cargo:rustc-link-arg-bin=hyper={}", object_path.display());
+    }
+    if matches!(
+        target.as_str(),
+        "aarch64-unknown-none-softfloat" | "riscv64imac-unknown-none-elf"
+    ) && env::var_os("CARGO_FEATURE_KERNEL_SELF_TEST").is_some()
+    {
+        let source = if target == "riscv64imac-unknown-none-elf" {
+            "tests/kernel/native_user_entry/fp-riscv64.S"
+        } else {
+            "tests/kernel/native_user_entry/fp.S"
+        };
+        println!("cargo:rerun-if-changed={source}");
+        let object = output_directory.join("fp_probes.o");
+        compile_assembly(
+            clang_target,
+            (target == "riscv64imac-unknown-none-elf")
+                .then_some("rv64imafdc_h_zicsr_zifencei_zicbom"),
+            source,
+            &output_directory,
+            &object,
+        )?;
+        println!("cargo:rustc-link-arg-bin=hyper={}", object.display());
     }
     Ok(())
 }
