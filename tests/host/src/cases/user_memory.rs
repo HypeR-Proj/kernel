@@ -104,6 +104,7 @@ struct Page {
 }
 
 struct BackendState {
+    guest_pages: AtomicU64,
     next_physical: AtomicU64,
     allocation_calls: AtomicU64,
     read_calls: AtomicU64,
@@ -120,6 +121,7 @@ struct BackendState {
 impl Default for BackendState {
     fn default() -> Self {
         Self {
+            guest_pages: AtomicU64::new(0),
             next_physical: AtomicU64::new(PAGE_SIZE),
             allocation_calls: AtomicU64::new(0),
             read_calls: AtomicU64::new(0),
@@ -155,6 +157,20 @@ impl PageBackend for Backend {
     type Page = Page;
     type Error = PageError;
     type InstructionPublicationContext = ();
+
+    fn retain_guest_pages(&self, pages: usize) {
+        self.0
+            .guest_pages
+            .fetch_add(pages as u64, Ordering::Relaxed);
+    }
+
+    fn release_guest_pages(&self, pages: usize) {
+        let previous = self
+            .0
+            .guest_pages
+            .fetch_sub(pages as u64, Ordering::Relaxed);
+        assert!(previous >= pages as u64);
+    }
 
     fn allocate_zeroed(&self) -> Result<Self::Page, Self::Error> {
         let call = self.0.allocation_calls.fetch_add(1, Ordering::Relaxed) + 1;
@@ -3183,4 +3199,62 @@ fn protected_file_exit_releases_source_without_quota_or_mapping_allocation() {
         Err(AddressSpaceError::BackingIo)
     ));
     assert_eq!(account.0.pages.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn guest_accounting_tracks_one_lease_and_late_population() {
+    let (backend, account) = fixtures();
+    let stats = backend.0.clone();
+    let usage = account.0.clone();
+    let vmo = crate::require_ok(WritableVmo::try_new(4 * PAGE_SIZE, backend, account));
+    crate::require_ok(vmo.populate(0, PAGE_SIZE));
+    usage.fail_next.store(true, Ordering::Relaxed);
+    assert!(vmo.try_exclusive_hardware_write_lease().is_err());
+    assert_eq!(stats.guest_pages.load(Ordering::Relaxed), 0);
+    let lease = crate::require_ok(vmo.try_exclusive_hardware_write_lease());
+    assert_eq!(stats.guest_pages.load(Ordering::Relaxed), 1);
+    let alias = lease.clone();
+    crate::require_ok(vmo.populate(0, 3 * PAGE_SIZE));
+    assert_eq!(stats.guest_pages.load(Ordering::Relaxed), 3);
+    assert!(vmo.try_exclusive_hardware_write_lease().is_err());
+    drop(lease);
+    assert_eq!(stats.guest_pages.load(Ordering::Relaxed), 3);
+    drop(alias);
+    assert_eq!(stats.guest_pages.load(Ordering::Relaxed), 0);
+    // Source pages can outlive the guest. A new lease counts them once again.
+    let lease = crate::require_ok(vmo.try_exclusive_hardware_write_lease());
+    drop(vmo);
+    assert_eq!(stats.guest_pages.load(Ordering::Relaxed), 3);
+    drop(lease);
+    assert_eq!(stats.guest_pages.load(Ordering::Relaxed), 0);
+    assert_eq!(usage.pages.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn concurrent_guest_leasing_and_first_touch_do_not_lose_or_duplicate_pages() {
+    let (backend, account) = fixtures();
+    let stats = backend.0.clone();
+    let vmo = crate::require_ok(WritableVmo::try_new(64 * PAGE_SIZE, backend, account));
+    std::thread::scope(|scope| {
+        let barrier = Arc::new(Barrier::new(3));
+        for _ in 0..2 {
+            let vmo = vmo.clone();
+            let barrier = barrier.clone();
+            scope.spawn(move || {
+                barrier.wait();
+                crate::require_ok(vmo.populate(0, 64 * PAGE_SIZE));
+            });
+        }
+        barrier.wait();
+        for _ in 0..64 {
+            let lease = crate::require_ok(vmo.try_exclusive_hardware_write_lease());
+            std::thread::yield_now();
+            drop(lease);
+        }
+    });
+    assert_eq!(stats.guest_pages.load(Ordering::Relaxed), 0);
+    let lease = crate::require_ok(vmo.try_exclusive_hardware_write_lease());
+    assert_eq!(stats.guest_pages.load(Ordering::Relaxed), 64);
+    drop(lease);
+    assert_eq!(stats.guest_pages.load(Ordering::Relaxed), 0);
 }

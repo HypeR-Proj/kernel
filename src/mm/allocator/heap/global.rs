@@ -568,6 +568,22 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
         None
     }
 
+    /// Counts guest-loaned User pages under the same lock as physical totals.
+    /// The VMO owner serializes first publication and final lease retirement.
+    pub fn retain_guest_pages(&self, pages: usize) {
+        self.state.with(|state| match state.heap.as_mut() {
+            Some(heap) => heap.retain_guest_pages(pages),
+            None => allocator_fault(AllocatorFault::PageOwnerUnderflow),
+        });
+    }
+
+    pub fn release_guest_pages(&self, pages: usize) {
+        self.state.with(|state| match state.heap.as_mut() {
+            Some(heap) => heap.release_guest_pages(pages),
+            None => allocator_fault(AllocatorFault::PageOwnerUnderflow),
+        });
+    }
+
     pub fn allocate_pages(&self, order: usize) -> Result<PhysicalAddress, BuddyError> {
         self.allocate_pages_for(order, PageOwner::Kernel)
     }

@@ -327,10 +327,13 @@ fn accounts_direct_pages_by_owner() {
     let user = crate::require_ok(allocator.allocate_pages_for(1, PageOwner::User));
     let cache =
         crate::require_ok(allocator.allocate_pages_above_reserve(0, PageOwner::FileCache, 4));
+    allocator.retain_guest_pages(1);
     let stats = crate::require_some(allocator.stats());
     assert_eq!(stats.guest_pages.pages, 8);
     assert_eq!(stats.page_table_pages.pages, 1);
     assert_eq!(stats.user_pages.pages, 2);
+    assert_eq!(stats.guest_loaned_pages, 1);
+    allocator.release_guest_pages(1);
     assert_eq!(stats.file_cache_pages.pages, 1);
     assert_eq!(stats.buddy.allocated_pages, 12);
 
@@ -346,6 +349,7 @@ fn accounts_direct_pages_by_owner() {
     assert_eq!(stats.guest_pages.peak_pages, 8);
     assert_eq!(stats.page_table_pages.pages, 0);
     assert_eq!(stats.user_pages.pages, 0);
+    assert_eq!(stats.guest_loaned_pages, 0);
     assert_eq!(stats.user_pages.peak_pages, 2);
     assert_eq!(stats.file_cache_pages.pages, 0);
     assert_eq!(stats.file_cache_pages.peak_pages, 1);
