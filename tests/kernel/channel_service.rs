@@ -105,6 +105,7 @@ pub(super) fn run() -> Result<(), Error> {
     let process = create_process(&domain, &group)?;
 
     verify_memory_authority_attenuation(&process, &domain)?;
+    verify_guest_memory_authority(&process, &domain)?;
     verify_handle_accounting_churn(&process)?;
     verify_partial_charge_records(&process)?;
     verify_handle_quota_rollback(&process, ResourceLimits::UNLIMITED)?;
@@ -207,6 +208,53 @@ fn verify_memory_authority_attenuation(
     set_memory_residency(process, lock_only, 0, 0, true, false).map_err(|_| Error::State(84))?;
     for handle in [lock_only, allowed_child, child, ordinary, root] {
         process.close_handle(handle)?;
+    }
+    Ok(())
+}
+
+/// Device payload authority is independent from mapping authority and cannot
+/// be restored through a stale or reduced handle.
+fn verify_guest_memory_authority(process: &Process, domain: &ResourceDomain) -> Result<(), Error> {
+    use crate::kernel::mm::user_space::VmoObject;
+    use crate::kernel::vm::objects::{GuestMemoryObject, guest_memory_access};
+    use crate::kernel::vm::service::Error as VmError;
+
+    let vmo = VmoObject::try_new_writable(PAGE_SIZE, domain).map_err(|_| Error::Construction)?;
+    let grant = GuestMemoryObject::try_new(&vmo, domain).map_err(|_| Error::Construction)?;
+    let full = process.create_object(grant, GuestMemoryObject::SUPPORTED_RIGHTS)?;
+    let read_only = process.duplicate_handle(full, Rights::READ)?;
+    let write_only = process.duplicate_handle(full, Rights::WRITE)?;
+    let map_only = process.duplicate_handle(full, Rights::MAP)?;
+    let payload = write_user(process, 0, b"ring")?;
+    if guest_memory_access::scalar(process, map_only, false, 0, 2, 0) != Err(VmError::AccessDenied)
+        || guest_memory_access::scalar(process, read_only, true, 0, 2, 1)
+            != Err(VmError::AccessDenied)
+        || guest_memory_access::scalar(process, write_only, false, 0, 2, 0)
+            != Err(VmError::AccessDenied)
+        || guest_memory_access::transfer(process, read_only, true, 0, payload)
+            != Err(VmError::AccessDenied)
+        || guest_memory_access::transfer(process, write_only, false, 0, payload)
+            != Err(VmError::AccessDenied)
+    {
+        return Err(Error::State(90));
+    }
+    if guest_memory_access::transfer(process, write_only, true, 4094, payload)
+        != Err(VmError::InvalidArgument)
+    {
+        return Err(Error::State(91));
+    }
+    guest_memory_access::transfer(process, write_only, true, 0, payload)
+        .map_err(|_| Error::State(92))?;
+    if guest_memory_access::scalar(process, read_only, false, 0, 4, 0)
+        != Ok(u64::from(u32::from_le_bytes(*b"ring")))
+    {
+        return Err(Error::State(93));
+    }
+    for handle in [read_only, write_only, map_only, full] {
+        process.close_handle(handle)?;
+    }
+    if guest_memory_access::scalar(process, full, false, 0, 2, 0) != Err(VmError::BadHandle) {
+        return Err(Error::State(94));
     }
     Ok(())
 }

@@ -37,6 +37,8 @@ pub(super) fn run() -> Result<(), Error> {
         crate::kernel::accounting::ResourceLimits::UNLIMITED,
     )
     .map_err(Error::Resource)?;
+    crate::kernel::vm::objects::guest_memory_access::verify_for_test(&domain)
+        .map_err(Error::ResidentMemory)?;
     GuestAddressSpace::verify_resident_memory_for_test(&domain).map_err(Error::ResidentMemory)?;
     GuestAddressSpace::verify_resident_blocks_for_test().map_err(Error::ResidentMemory)?;
     let mut memory =

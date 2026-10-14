@@ -24,7 +24,16 @@ pub(super) fn run(front: PreparedVm, back: PreparedVm, domain: &ResourceDomain) 
         .map(|installed| installed.publish_handle_lifecycle())
         .map_err(|_| "install back VM");
     let result = match &back {
-        Ok(back) => exercise(&front, back, domain),
+        Ok(back) => (|| {
+            exercise(&front, back, domain)?;
+            let source = crate::kernel::vm::io::Interrupt::prepare(front.clone(), 122, domain)
+                .map_err(|_| "retirement source")?;
+            source.install().map_err(|_| "retirement source install")?;
+            source
+                .set_level(true)
+                .map_err(|_| "retirement source assert")?;
+            Ok(source)
+        })(),
         Err(error) => Err(*error),
     };
     // Every exit retires both dormant vCPU scheduler objects. The caller also
@@ -49,7 +58,12 @@ pub(super) fn run(front: PreparedVm, back: PreparedVm, domain: &ResourceDomain) 
     {
         return Err("notification VM retirement timeout");
     }
-    result
+    if let Ok(source) = &result
+        && source.set_level(true).is_ok()
+    {
+        return Err("retired VM accepted source update");
+    }
+    result.map(|_| ())
 }
 
 fn exercise(
@@ -74,6 +88,10 @@ fn exercise(
             .map_err(|_| "initial reconcile")?;
     }
     let epoch = notification.control(1).map_err(|_| "enable notification")?;
+    verify_guest_interrupt(front, domain)?;
+    front_binding
+        .take_interrupt_reconcile(0)
+        .map_err(|_| "source reconcile cleanup")?;
     verify_noop(&notification, &back_binding)?;
     verify_ack(&notification, &front_binding, epoch)?;
     verify_pci(&notification, front, &front_binding, &back_binding, epoch)?;
@@ -391,6 +409,36 @@ fn verify_pci(
         binding
             .take_interrupt_reconcile(0)
             .map_err(|_| "PCI final reconcile")?;
+    }
+    Ok(())
+}
+
+fn verify_guest_interrupt(
+    machine: &FallibleArc<InstalledMachine>,
+    domain: &ResourceDomain,
+) -> Result {
+    use crate::kernel::object::{KernelObject, ObjectRetirement};
+    use crate::kernel::vm::io::Interrupt;
+    if Interrupt::prepare(machine.clone(), 33, domain).is_ok() {
+        return Err("userspace reserved built-in serial IRQ");
+    }
+    let collision =
+        Interrupt::prepare(machine.clone(), IRQ, domain).map_err(|_| "collision source")?;
+    if collision.install().is_ok() {
+        return Err("notification IRQ collision admitted");
+    }
+    let source = Interrupt::prepare(machine.clone(), 120, domain).map_err(|_| "source")?;
+    source.install().map_err(|_| "source installation")?;
+    source.set_level(true).map_err(|_| "source assert")?;
+    source.set_level(false).map_err(|_| "source deassert")?;
+    let duplicate =
+        Interrupt::prepare(machine.clone(), 120, domain).map_err(|_| "duplicate source")?;
+    if duplicate.install().is_ok() {
+        return Err("duplicate source admitted");
+    }
+    source.on_zero_active_handles(&mut ObjectRetirement::new());
+    if source.set_level(true).is_ok() || duplicate.install().is_ok() {
+        return Err("closed source was reasserted or its reservation reused");
     }
     Ok(())
 }
