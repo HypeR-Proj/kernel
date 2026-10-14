@@ -37,6 +37,7 @@ impl MemoryHandoff {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BuddyError {
     AddressOverflow,
+    InvalidReservation,
     InvalidOrder,
     OutOfMemory,
     Unaddressable,
@@ -45,7 +46,7 @@ pub enum BuddyError {
 /// A consistent snapshot of the physical page pool.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BuddyStats {
-    /// Pages initially handed to the runtime allocator after boot reservations.
+    /// Pages in the runtime pool, including retired boot reservations.
     pub managed_pages: usize,
     pub free_pages: usize,
     pub allocated_pages: usize,
@@ -82,6 +83,70 @@ pub struct BuddyAllocator {
 }
 
 impl BuddyAllocator {
+    /// Admits a no-longer-referenced boot reservation to the runtime pool.
+    /// Validation and reservation splitting finish before any free-list write.
+    /// Allocations already in the pool are never accepted a second time.
+    ///
+    /// # Safety
+    ///
+    /// The caller exclusively owns every page in `range`, has retired every
+    /// reference/DMA access to it, and has excluded overlapping firmware or
+    /// other live reservations. The original writable direct map still exists.
+    pub unsafe fn reclaim_reservation(
+        &mut self,
+        range: PhysicalRange,
+    ) -> Result<usize, BuddyError> {
+        if range.size() == 0
+            || (range.start() | range.end()) & (PAGE_SIZE - 1) != 0
+            || !self
+                .handoff
+                .memory()
+                .iter()
+                .any(|memory| memory.start() <= range.start() && range.end() <= memory.end())
+            || !self
+                .handoff
+                .reserved()
+                .iter()
+                .any(|reserved| reserved.start() <= range.start() && range.end() <= reserved.end())
+        {
+            return Err(BuddyError::InvalidReservation);
+        }
+        // Check the complete interval, including platforms whose physical
+        // address space is wider than usize, before changing pool ownership.
+        self.pointer(range.start())?;
+        self.pointer(range.end() - 1)?;
+        let pages =
+            usize::try_from(range.size() / PAGE_SIZE).map_err(|_| BuddyError::AddressOverflow)?;
+        let managed = self
+            .managed_pages
+            .checked_add(pages)
+            .ok_or(BuddyError::AddressOverflow)?;
+        let mut reserved = RegionList::new();
+        for &old in self.handoff.reserved() {
+            if !old.overlaps(range) {
+                reserved
+                    .insert(old)
+                    .map_err(|_| BuddyError::InvalidReservation)?;
+                continue;
+            }
+            for part in [
+                PhysicalRange::new(old.start(), range.start() - old.start()),
+                PhysicalRange::new(range.end(), old.end() - range.end()),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                reserved
+                    .insert(part)
+                    .map_err(|_| BuddyError::InvalidReservation)?;
+            }
+        }
+        self.handoff.reserved = reserved;
+        self.managed_pages = managed;
+        self.add_interval(range.start(), range.end())?;
+        Ok(pages)
+    }
+
     /// Builds free lists from RAM minus every boot reservation.
     ///
     /// # Safety
@@ -169,20 +234,9 @@ impl BuddyAllocator {
         if order > MAX_ORDER {
             return Err(BuddyError::InvalidOrder);
         }
-        let mut block = address.get();
-        let mut current_order = order;
         self.free_pages += 1usize << order;
         self.deallocations = self.deallocations.saturating_add(1);
-
-        while current_order < MAX_ORDER {
-            let buddy = block ^ block_size(current_order);
-            if !self.remove(current_order, buddy)? {
-                break;
-            }
-            block = block.min(buddy);
-            current_order += 1;
-        }
-        self.push(current_order, block)
+        self.insert_free_block(address.get(), order)
     }
 
     pub const fn free_pages(&self) -> usize {
@@ -206,7 +260,7 @@ impl BuddyAllocator {
         self.direct_map_base
     }
 
-    /// Resolves one complete page from the allocator's original managed set.
+    /// Resolves one complete page from the allocator's current managed set.
     ///
     /// This checks physical topology before intrusive metadata is read. It
     /// does not prove the page's current ownership; allocator-maintained links
@@ -250,13 +304,28 @@ impl BuddyAllocator {
                 ((start.trailing_zeros() as usize).saturating_sub(12)).min(MAX_ORDER)
             };
             let order = alignment_order.min(size_order.min(MAX_ORDER));
-            self.push(order, start)?;
+            // Admission may bridge a retired reservation to an existing free
+            // interval. Merge now rather than stranding large contiguous RAM
+            // until both neighboring blocks happen to be allocated and freed.
+            self.insert_free_block(start, order)?;
             self.free_pages += 1usize << order;
             start = start
                 .checked_add(block_size(order))
                 .ok_or(BuddyError::AddressOverflow)?;
         }
         Ok(())
+    }
+
+    fn insert_free_block(&mut self, mut block: u64, mut order: usize) -> Result<(), BuddyError> {
+        while order < MAX_ORDER {
+            let buddy = block ^ block_size(order);
+            if !self.remove(order, buddy)? {
+                break;
+            }
+            block = block.min(buddy);
+            order += 1;
+        }
+        self.push(order, block)
     }
 
     fn push(&mut self, order: usize, address: u64) -> Result<(), BuddyError> {

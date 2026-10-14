@@ -104,6 +104,7 @@ pub(super) fn run() -> Result<(), Error> {
     let group = TaskGroup::try_new(&domain).map_err(|_| Error::Group)?;
     let process = create_process(&domain, &group)?;
 
+    verify_memory_authority_attenuation(&process, &domain)?;
     verify_handle_accounting_churn(&process)?;
     verify_partial_charge_records(&process)?;
     verify_handle_quota_rollback(&process, ResourceLimits::UNLIMITED)?;
@@ -129,6 +130,85 @@ pub(super) fn run() -> Result<(), Error> {
     }
     group.request_stop().map_err(|_| Error::Group)?;
     group.finish_retirement().map_err(|_| Error::Group)
+}
+
+/// Exercise actual handle resolution and VMAR creation: ordinary mapping
+/// authority must never mint residency authority on a derived VMAR.
+fn verify_memory_authority_attenuation(
+    process: &Process,
+    domain: &ResourceDomain,
+) -> Result<(), Error> {
+    use crate::kernel::capability::HandleError;
+    use crate::kernel::mm::user_space::{VmarObject, allocate_vmar, set_memory_residency};
+    use crate::kernel::process::TaskFactory;
+
+    let factory = process.create_object(
+        TaskFactory::try_new(domain).map_err(|_| Error::Construction)?,
+        TaskFactory::SUPPORTED_RIGHTS,
+    )?;
+    let reduced_factory =
+        process.duplicate_handle(factory, Rights::CREATE_PROCESS.union(Rights::DUPLICATE))?;
+    if !matches!(
+        process.resolve_handle::<TaskFactory>(reduced_factory, Rights::LOCK_MEMORY),
+        Err(ProcessError::Handle(HandleError::AccessDenied))
+    ) || !matches!(
+        process.duplicate_handle(
+            reduced_factory,
+            Rights::CREATE_PROCESS.union(Rights::LOCK_MEMORY)
+        ),
+        Err(ProcessError::Handle(HandleError::AccessDenied))
+    ) {
+        return Err(Error::State(80));
+    }
+    process.close_handle(reduced_factory)?;
+    process.close_handle(factory)?;
+
+    let publication = VmarObject::try_root_publication(process.address_space_owner()?, domain)
+        .map_err(|_| Error::Construction)?;
+    let prepared = PreparedHandle::try_from_new_object(
+        publication,
+        VmarObject::ROOT_RIGHTS.union(Rights::LOCK_MEMORY),
+        HandleFlags::NONE,
+    )
+    .map_err(|_| Error::Construction)?;
+    let reservation = process.reserve_handles::<1>()?;
+    let [root] = process
+        .publish_handles(reservation, [prepared])
+        .map_err(|failure| failure.error)?;
+    let ordinary = process.duplicate_handle(root, VmarObject::ROOT_RIGHTS)?;
+    let (child, _) = allocate_vmar(
+        process,
+        ordinary,
+        IMAGE_BASE + PAGE_SIZE * 3,
+        PAGE_SIZE,
+        true,
+    )
+    .map_err(|_| Error::State(85))?;
+    if !matches!(
+        process.resolve_handle::<VmarObject>(child, Rights::LOCK_MEMORY),
+        Err(ProcessError::Handle(HandleError::AccessDenied))
+    ) || set_memory_residency(process, child, 0, 0, true, true).is_ok()
+    {
+        return Err(Error::State(81));
+    }
+    let (allowed_child, _) =
+        allocate_vmar(process, root, IMAGE_BASE + PAGE_SIZE * 4, PAGE_SIZE, true)
+            .map_err(|_| Error::State(86))?;
+    process.resolve_handle::<VmarObject>(allowed_child, Rights::LOCK_MEMORY)?;
+    // Restrict a child to only residency operations; MAP is independent.
+    let lock_only = process.duplicate_handle(allowed_child, Rights::LOCK_MEMORY)?;
+    if !matches!(
+        process.resolve_handle::<VmarObject>(lock_only, Rights::MAP),
+        Err(ProcessError::Handle(HandleError::AccessDenied))
+    ) {
+        return Err(Error::State(82));
+    }
+    set_memory_residency(process, lock_only, 0, 0, true, true).map_err(|_| Error::State(83))?;
+    set_memory_residency(process, lock_only, 0, 0, true, false).map_err(|_| Error::State(84))?;
+    for handle in [lock_only, allowed_child, child, ordinary, root] {
+        process.close_handle(handle)?;
+    }
+    Ok(())
 }
 
 const CAPABILITY_RECORD_BYTES: usize =
@@ -590,7 +670,8 @@ fn verify_read(
 fn create_process(domain: &ResourceDomain, group: &TaskGroup) -> Result<Process, Error> {
     let code_range = scratch_image(0, PAGE_SIZE)?;
     let stack_range = scratch_image(PAGE_SIZE * 2, PAGE_SIZE)?;
-    let image_range = scratch_image(0, PAGE_SIZE * 3)?;
+    // Two empty pages are reserved for child-VMAR capability attenuation probes.
+    let image_range = scratch_image(0, PAGE_SIZE * 5)?;
     let address_space = prepare_native_entry_self_test(
         domain.clone(),
         image_range,

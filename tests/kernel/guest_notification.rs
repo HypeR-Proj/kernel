@@ -61,6 +61,9 @@ fn exercise(
         .map_err(|_| "front binding")?;
     let back_binding = registry::acquire_binding(back.io_install_id().map_err(|_| "back ID")?)
         .map_err(|_| "back binding")?;
+    front
+        .register_mmio(BASE, 8192, 1)
+        .map_err(|_| "frontend MMIO reservation")?;
     let notification = install(front, back, domain)?;
     // Controller construction may leave initial reconcile work. Consume it
     // before the interleavings, rather than letting it satisfy assertions.
@@ -73,6 +76,7 @@ fn exercise(
     let epoch = notification.control(1).map_err(|_| "enable notification")?;
     verify_noop(&notification, &back_binding)?;
     verify_ack(&notification, &front_binding, epoch)?;
+    verify_pci(&notification, front, &front_binding, &back_binding, epoch)?;
     verify_replacement(&notification, front, back, &back_binding, domain)?;
     verify_native_close(back, &back_binding, domain)
 }
@@ -248,6 +252,145 @@ fn verify_native_close(
         || read(&native, 0x10) != MmioAction::CompleteRead(0)
     {
         return Err("Native close lost terminal state");
+    }
+    Ok(())
+}
+
+fn verify_pci(
+    notification: &Notification,
+    machine: &InstalledMachine,
+    front: &VmBinding,
+    back: &VmBinding,
+    epoch: u32,
+) -> Result {
+    let relocated = BASE + 4096;
+    machine
+        .configure_notification(BASE, relocated, 1 | 2 | 8)
+        .map_err(|_| "configure PCI notification")?;
+    if machine.configure_notification(BASE, BASE + 8192, 3).is_ok() {
+        return Err("PCI route escaped userspace reservation");
+    }
+    let access = |address, width, operation| {
+        MmioAccess::new(GuestPhysicalAddress::new(address), width, operation)
+    };
+    if front
+        .route_io_mmio(access(
+            BASE + 0x50,
+            AccessWidth::HalfWord,
+            MmioOperation::Write(1),
+        ))
+        .is_some()
+    {
+        return Err("relocated BAR retained old doorbell");
+    }
+    if front.route_io_mmio(access(
+        relocated + 0x50,
+        AccessWidth::HalfWord,
+        MmioOperation::Write(1),
+    )) != Some(MmioAction::CompleteWrite)
+    {
+        return Err("PCI 16-bit queue notify");
+    }
+    if read(notification, 0x10) != MmioAction::CompleteRead(2) {
+        return Err("PCI queue kick lost");
+    }
+    back.publish_changed_interrupts();
+    back.take_interrupt_reconcile(0)
+        .map_err(|_| "PCI kick reconcile")?;
+    notification
+        .shared
+        .mutate(|state| state.call((u64::from(epoch) << 32) | 3));
+    front
+        .take_interrupt_reconcile(0)
+        .map_err(|_| "PCI interrupt reconcile")?;
+    machine
+        .configure_notification(BASE, relocated, 1 | 2 | 4 | 8)
+        .map_err(|_| "mask INTx")?;
+    if notification
+        .shared
+        .state
+        .with(|state| state.front_irq() || state.status != 3)
+    {
+        return Err("INTx mask discarded status");
+    }
+    machine
+        .configure_notification(BASE, relocated, 1 | 2 | 8)
+        .map_err(|_| "unmask INTx")?;
+    if !notification.shared.state.with(|state| state.front_irq()) {
+        return Err("INTx unmask lost pending level");
+    }
+    if front.route_io_mmio(access(
+        relocated + 0x60,
+        AccessWidth::Byte,
+        MmioOperation::Read,
+    )) != Some(MmioAction::CompleteRead(3))
+        || front.route_io_mmio(access(
+            relocated + 0x60,
+            AccessWidth::Byte,
+            MmioOperation::Read,
+        )) != Some(MmioAction::CompleteRead(0))
+    {
+        return Err("PCI ISR did not consume status exactly once");
+    }
+    machine
+        .configure_notification(BASE, relocated, 1)
+        .map_err(|_| "disable PCI decode")?;
+    if front
+        .route_io_mmio(access(
+            relocated + 0x50,
+            AccessWidth::HalfWord,
+            MmioOperation::Write(1),
+        ))
+        .is_some()
+    {
+        return Err("disabled PCI memory remained decoded");
+    }
+    // The explicit transport fallback bypasses MEM decoding, but not BME or
+    // connection lifetime. Both access paths share interrupt/kick state.
+    machine
+        .access_notification(BASE, 2, 1)
+        .map_err(|_| "disabled BME fallback")?;
+    if read(notification, 0x10) != MmioAction::CompleteRead(0) {
+        return Err("configuration access bypassed bus-master disable");
+    }
+    machine
+        .configure_notification(BASE, relocated, 1 | 8)
+        .map_err(|_| "enable fallback BME")?;
+    machine
+        .access_notification(BASE, 2, 1)
+        .map_err(|_| "fallback notify")?;
+    if read(notification, 0x10) != MmioAction::CompleteRead(2) {
+        return Err("configuration notification lost while MEM disabled");
+    }
+    notification
+        .shared
+        .mutate(|state| state.call((u64::from(epoch) << 32) | 3));
+    if machine
+        .access_notification(BASE, 0, 0)
+        .map_err(|_| "fallback status")?
+        != 3
+        || machine
+            .access_notification(BASE, 1, 0)
+            .map_err(|_| "fallback ISR")?
+            != 3
+        || machine
+            .access_notification(BASE, 0, 0)
+            .map_err(|_| "fallback cleared status")?
+            != 0
+        || machine.access_notification(BASE, 3, 0).is_ok()
+        || machine.access_notification(BASE, 2, 32).is_ok()
+        || machine.access_notification(BASE + 4096, 0, 0).is_ok()
+    {
+        return Err("configuration notification contract");
+    }
+    machine
+        .configure_notification(BASE, BASE, 0)
+        .map_err(|_| "restore MMIO transport")?;
+    for binding in [front, back] {
+        binding.publish_changed_interrupts();
+        binding
+            .take_interrupt_reconcile(0)
+            .map_err(|_| "PCI final reconcile")?;
     }
     Ok(())
 }

@@ -91,6 +91,132 @@ fn buddy_splits_and_coalesces_blocks() {
 }
 
 #[test]
+fn retired_reservation_coalesces_without_changing_live_allocation_accounting() {
+    let buffer = AlignedMemory::new(64);
+    let mut memory = RegionList::<MAX_MEMORY_REGIONS>::new();
+    crate::require_ok(memory.insert(crate::require_some(PhysicalRange::new(0, 64 * PAGE_SIZE))));
+    let mut boot = crate::require_ok(BootAllocator::new(
+        &memory,
+        &RegionList::new(),
+        64 * PAGE_SIZE,
+    ));
+    let reservation = crate::require_some(PhysicalRange::new(16 * PAGE_SIZE, 32 * PAGE_SIZE));
+    crate::require_ok(boot.reserve(reservation));
+    // SAFETY: The test buffer provides the complete exclusive direct map.
+    let mut buddy = crate::require_ok(unsafe {
+        BuddyAllocator::from_handoff(&boot.handoff(), buffer.pointer as u64)
+    });
+    assert_eq!(buddy.stats().managed_pages, 32);
+    let live = crate::require_ok(buddy.allocate(0));
+    let before = buddy.stats();
+    assert_eq!(
+        // SAFETY: No user of the exclusively reserved test pages exists.
+        crate::require_ok(unsafe { buddy.reclaim_reservation(reservation) }),
+        32
+    );
+    let after = buddy.stats();
+    assert_eq!(after.managed_pages, 64);
+    assert_eq!(after.free_pages, before.free_pages + 32);
+    assert_eq!(after.allocated_pages, before.allocated_pages);
+    assert_eq!(after.peak_allocated_pages, before.peak_allocated_pages);
+    assert_eq!(after.deallocations, before.deallocations);
+    // SAFETY: The live block still has its original allocation and order.
+    crate::require_ok(unsafe { buddy.deallocate(live, 0) });
+    assert_eq!(buddy.stats().free_blocks[6], 1);
+    assert_eq!(crate::require_ok(buddy.allocate(6)).get(), 0);
+}
+
+#[test]
+fn reservation_release_rejects_invalid_or_repeated_ranges_without_mutation() {
+    let buffer = AlignedMemory::new(16);
+    let mut memory = RegionList::<MAX_MEMORY_REGIONS>::new();
+    crate::require_ok(memory.insert(crate::require_some(PhysicalRange::new(0, 16 * PAGE_SIZE))));
+    let mut boot = crate::require_ok(BootAllocator::new(
+        &memory,
+        &RegionList::new(),
+        16 * PAGE_SIZE,
+    ));
+    let reservation = crate::require_some(PhysicalRange::new(4 * PAGE_SIZE, 8 * PAGE_SIZE));
+    crate::require_ok(boot.reserve(reservation));
+    // SAFETY: The test buffer provides the complete exclusive direct map.
+    let mut buddy = crate::require_ok(unsafe {
+        BuddyAllocator::from_handoff(&boot.handoff(), buffer.pointer as u64)
+    });
+    for invalid in [
+        PhysicalRange::EMPTY,
+        crate::require_some(PhysicalRange::new(4 * PAGE_SIZE + 1, PAGE_SIZE)),
+        crate::require_some(PhysicalRange::new(3 * PAGE_SIZE, 2 * PAGE_SIZE)),
+        crate::require_some(PhysicalRange::new(16 * PAGE_SIZE, PAGE_SIZE)),
+    ] {
+        let before = buddy.stats();
+        assert_eq!(
+            // SAFETY: Invalid topology is rejected before memory access; no external users.
+            unsafe { buddy.reclaim_reservation(invalid) },
+            Err(BuddyError::InvalidReservation)
+        );
+        assert_eq!(buddy.stats(), before);
+    }
+    let middle = crate::require_some(PhysicalRange::new(6 * PAGE_SIZE, 2 * PAGE_SIZE));
+    // SAFETY: All reserved test bytes are exclusive and quiescent.
+    crate::require_ok(unsafe { buddy.reclaim_reservation(middle) });
+    let before = buddy.stats();
+    assert_eq!(
+        // SAFETY: Tests double-release rejection before free-list writes; no external user.
+        unsafe { buddy.reclaim_reservation(middle) },
+        Err(BuddyError::InvalidReservation)
+    );
+    assert_eq!(buddy.stats(), before);
+    for remaining in [
+        crate::require_some(PhysicalRange::new(4 * PAGE_SIZE, 2 * PAGE_SIZE)),
+        crate::require_some(PhysicalRange::new(8 * PAGE_SIZE, 4 * PAGE_SIZE)),
+    ] {
+        // SAFETY: These are the still-reserved disjoint exclusive test intervals.
+        crate::require_ok(unsafe { buddy.reclaim_reservation(remaining) });
+    }
+    assert_eq!(buddy.stats().managed_pages, 16);
+    assert_eq!(buddy.stats().free_blocks[4], 1);
+}
+
+#[test]
+fn reservation_split_capacity_failure_preserves_the_pool() {
+    use hyper::mm::boot::MAX_BOOT_RESERVATIONS;
+    let pages = MAX_BOOT_RESERVATIONS * 4;
+    let buffer = AlignedMemory::new(pages);
+    let mut memory = RegionList::<MAX_MEMORY_REGIONS>::new();
+    crate::require_ok(memory.insert(crate::require_some(PhysicalRange::new(
+        0,
+        pages as u64 * PAGE_SIZE,
+    ))));
+    let mut boot = crate::require_ok(BootAllocator::new(
+        &memory,
+        &RegionList::new(),
+        pages as u64 * PAGE_SIZE,
+    ));
+    for index in 0..MAX_BOOT_RESERVATIONS {
+        crate::require_ok(boot.reserve(crate::require_some(PhysicalRange::new(
+            index as u64 * 4 * PAGE_SIZE,
+            3 * PAGE_SIZE,
+        ))));
+    }
+    // SAFETY: The test buffer covers the complete direct map.
+    let mut buddy = crate::require_ok(unsafe {
+        BuddyAllocator::from_handoff(&boot.handoff(), buffer.pointer as u64)
+    });
+    let before = buddy.stats();
+    let middle = crate::require_some(PhysicalRange::new(PAGE_SIZE, PAGE_SIZE));
+    assert_eq!(
+        // SAFETY: Reserved bytes are quiescent, but metadata capacity rejects splitting.
+        unsafe { buddy.reclaim_reservation(middle) },
+        Err(BuddyError::InvalidReservation)
+    );
+    assert_eq!(buddy.stats(), before);
+    let first = crate::require_some(PhysicalRange::new(0, 3 * PAGE_SIZE));
+    // SAFETY: The complete first reservation remains exclusively owned after failure.
+    crate::require_ok(unsafe { buddy.reclaim_reservation(first) });
+    assert_eq!(buddy.stats().managed_pages, before.managed_pages + 3);
+}
+
+#[test]
 fn slab_reuses_small_objects_and_returns_empty_pages() {
     let (memory, handoff) = handoff(128);
     // SAFETY: The aligned test buffer is a stable writable direct map.

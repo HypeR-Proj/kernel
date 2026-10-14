@@ -79,7 +79,7 @@ extern "C" fn start_kernel() -> ! {
         crate::kernel::device::early_initialize(&boot)?;
 
         crate::kernel::mm::initialize()?;
-        crate::kernel::vfs::initialize(&boot)?;
+        crate::kernel::vfs::initialize(&mut boot)?;
         crate::kernel::debug::initialize()?;
         crate::kernel::task::initialize()?;
         crate::kernel::reaper::initialize()?;

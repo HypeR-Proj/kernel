@@ -17,6 +17,7 @@ mod promotion;
 
 pub(super) fn run(domain: &ResourceDomain) -> Result<(), TestError> {
     promotion::run(domain)?;
+    reversible_root(domain)?;
     let root = new_namespace(domain)?;
     let scratch = ScratchBudget::new(domain);
     for path in [".next", "data", "system", "ordinary"] {
@@ -105,6 +106,72 @@ pub(super) fn run(domain: &ResourceDomain) -> Result<(), TestError> {
     crate::pr_info!(
         "HypeR test: VFS root replacement preserves capabilities and concurrent lookup"
     );
+    Ok(())
+}
+
+/// Abort owns the original topology rather than reconstructing an inverse
+/// switch. Mount identities and child edges therefore survive owner loss.
+fn reversible_root(domain: &ResourceDomain) -> Result<(), TestError> {
+    let root = new_namespace(domain)?;
+    let scratch = ScratchBudget::new(domain);
+    root.create("next", NodeKind::Directory, 0o755, &scratch)?;
+    root.mount_ramfs("next", domain)?;
+    for path in ["next/old", "next/tmp", "next/spare"] {
+        root.create(path, NodeKind::Directory, 0o755, &scratch)?;
+    }
+    root.mount_ramfs("next/tmp", domain)?;
+    let original = root.info()?.location;
+    let target = root.metadata("next", true, &scratch)?.location;
+    let child = root.metadata("next/tmp", true, &scratch)?.location;
+    let token = root.prepare_root_transition("next", "old", &[], domain)?;
+    check(
+        root.info()?.location == original,
+        "preparation does not publish root",
+    )?;
+    token.activate()?;
+    check(
+        root.info()?.location == target && root.metadata("tmp", true, &scratch)?.location == child,
+        "provisional switch retains mounted child identity",
+    )?;
+    check(
+        root.mount_ramfs("spare", domain) == Err(Error::Busy),
+        "provisional root blocks competing mount publication",
+    )?;
+    check(
+        root.unmount("tmp", domain) == Err(Error::Busy),
+        "provisional root blocks competing detach",
+    )?;
+    token.finish(false)?;
+    check(
+        root.info()?.location == original
+            && root.metadata("next/tmp", true, &scratch)?.location == child,
+        "abort restores original topology and child identity",
+    )?;
+    check(
+        token.finish(true) == Err(Error::InvalidInput),
+        "root transition finishes once",
+    )?;
+    {
+        let token = root.prepare_root_transition("next", "old", &[], domain)?;
+        token.activate()?;
+    }
+    check(
+        root.info()?.location == original,
+        "uncommitted owner drop restores root",
+    )?;
+    let token = root.prepare_root_transition("next", "old", &[], domain)?;
+    token.activate()?;
+    token.finish(true)?;
+    drop(token);
+    check(
+        root.info()?.location == target,
+        "committed token drop retains new root",
+    )?;
+    root.mount_ramfs("spare", domain)?;
+    check(
+        root.unmount("/", domain) == Err(Error::InvalidInput),
+        "active root cannot detach",
+    )?;
     Ok(())
 }
 

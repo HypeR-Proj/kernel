@@ -109,6 +109,7 @@ def main():
             for line in (source / 'modules.dep').read_text().splitlines():
                 module, needed = line.split(':', 1)
                 dependencies[module] = needed.split()
+            builtins = {Path(p).stem for p in (source / 'modules.builtin').read_text().splitlines()}
             selected = set()
             def include(module):
                 if module in selected:
@@ -116,7 +117,9 @@ def main():
                 selected.add(module)
                 for dep in dependencies[module]:
                     include(dep)
-            for name in ('virtio_mmio', 'virtio_scsi', 'virtio_net', 'sd_mod', 'ext4'):
+            for name in ('virtio_mmio', 'virtio_pci', 'virtio_scsi', 'virtio_net', 'sd_mod', 'ext4'):
+                if name in builtins:
+                    continue
                 matches = [p for p in dependencies if Path(p).stem == name]
                 if len(matches) != 1:
                     raise ValueError(f'missing module {name}')
@@ -128,6 +131,7 @@ def main():
                 shutil.copyfile(source / module, target)
             # BusyBox modprobe consumes the text dependency table.
             shutil.copyfile(source / 'modules.dep', destination / 'modules.dep')
+            shutil.copyfile(source / 'modules.builtin', destination / 'modules.builtin')
         shutil.copyfile(Path(__file__).with_name('init'), root / 'init')
         (root / 'init').chmod(0o755)
         # A tar preserves Linux mode/ownership independently of host uid/gid.

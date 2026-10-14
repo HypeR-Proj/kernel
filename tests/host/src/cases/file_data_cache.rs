@@ -791,3 +791,91 @@ fn a_reclaim_cursor_finishes_when_maintenance_changes_its_table() {
     assert_eq!(scan.detached, 0);
     assert_eq!(cache.usage().clean, 1);
 }
+
+#[test]
+fn mapped_page_retains_canonical_key_across_pressure_replacement_and_growth() {
+    let cache = crate::require_ok(FileDataCache::try_new(1));
+    let selected = key(45, 3, 0);
+    let load = require_load(crate::require_ok(cache.access(selected)));
+    drop(crate::require_ok(
+        load.fill_and_publish(|| Ok(77u64), |_| Refill::Recreate),
+    ));
+    let a = crate::require_some(crate::require_ok(cache.lookup_mapping(selected)));
+    assert_eq!(*a.value(), 77);
+    assert!(matches!(
+        crate::require_ok(cache.access(key(45, 4, 0))),
+        CacheAccess::CapacityBusy
+    ));
+    assert_eq!(cache.reclaim_batch(64), 0);
+    let mut cursor = ReclaimCursor::new();
+    assert_eq!(cache.reclaim_scan(&mut cursor, 64, |_| true).detached, 0);
+    assert_eq!(cache.maintain_capacity(4), Ok(Maintenance::Resized));
+    let b = crate::require_some(crate::require_ok(cache.lookup_mapping(selected)));
+    assert!(core::ptr::eq(a.value(), b.value()));
+    drop(a);
+    assert_eq!(cache.reclaim_batch(64), 0);
+    assert_eq!(cache.maintain_capacity(1), Ok(Maintenance::Busy));
+    drop(b);
+    assert_eq!(cache.reclaim_batch(64), 1);
+    assert!(crate::require_ok(cache.lookup(selected)).is_none());
+}
+
+#[test]
+fn mapping_pin_publication_and_eviction_race_never_detach_a_live_mapped_key() {
+    for _ in 0..64 {
+        let cache = crate::require_ok(FileDataCache::try_new(1));
+        let selected = key(48, 1, 0);
+        let load = require_load(crate::require_ok(cache.access(selected)));
+        drop(crate::require_ok(
+            load.fill_and_publish(|| Ok(88u64), |_| Refill::Recreate),
+        ));
+        let start = Barrier::new(2);
+        let after = Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                start.wait();
+                let mapped = crate::require_ok(cache.lookup_mapping(selected));
+                after.wait();
+                if let Some(mapped) = mapped {
+                    let ordinary = crate::require_some(crate::require_ok(cache.lookup(selected)));
+                    assert!(core::ptr::eq(mapped.value(), ordinary.value()));
+                }
+            });
+            scope.spawn(|| {
+                start.wait();
+                cache.reclaim_batch(64);
+                after.wait();
+            });
+        });
+    }
+}
+
+#[test]
+fn immutable_instruction_publication_is_once_per_payload_under_racing_aliases() {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    let mut page = crate::require_ok(crate::file_data_cache::FilePage::try_copy(b"code", ()));
+    let calls = AtomicUsize::new(0);
+    let start = Barrier::new(2);
+    std::thread::scope(|scope| {
+        for _ in 0..2 {
+            let page = &page;
+            let calls = &calls;
+            let start = &start;
+            scope.spawn(move || {
+                start.wait();
+                crate::require_ok(page.publish_instructions(|| {
+                    calls.fetch_add(1, Ordering::Relaxed);
+                    Ok::<_, ()>(())
+                }));
+            });
+        }
+    });
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    page.refill(b"different code", ());
+    assert_eq!(page.publish_instructions(|| Err::<(), _>(9)), Err(9));
+    crate::require_ok(page.publish_instructions(|| {
+        calls.fetch_add(1, Ordering::Relaxed);
+        Ok::<_, ()>(())
+    }));
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+}

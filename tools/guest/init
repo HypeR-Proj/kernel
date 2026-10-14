@@ -22,7 +22,7 @@ if [ "${1:-}" != root-mounted ]; then
         esac
     done
     if [ -n "${root_device:-}" ]; then
-        for module in virtio_mmio virtio_scsi sd_mod ext4; do
+        for module in virtio_mmio virtio_pci virtio_scsi sd_mod ext4; do
             /bin/busybox modprobe "$module" || exit 1
         done
         attempts=0
@@ -42,7 +42,7 @@ fi
 # Start networking only after the final root is mounted. Keep DHCP alive for
 # lease renewal, but never wait for a link or server before opening the shell.
 /bin/busybox ip link set lo up
-for module in virtio_mmio virtio_net; do
+for module in virtio_mmio virtio_pci virtio_net; do
     /bin/busybox modprobe "$module" >/dev/null 2>&1 || :
 done
 /bin/busybox mkdir -p /run /var/log

@@ -632,6 +632,28 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
         unsafe { self.deallocate_pages_for(address, order, PageOwner::Kernel) }
     }
 
+    /// Return an exclusively owned boot reservation after all borrowers retire.
+    /// These pages were excluded from the managed pool, so they have no runtime
+    /// page-owner charge to release.
+    ///
+    /// # Safety
+    ///
+    /// See `BuddyAllocator::reclaim_reservation`. In particular, a firmware
+    /// reservation overlapping the same bytes must not be released here.
+    pub unsafe fn reclaim_reservation(
+        &self,
+        range: crate::platform::PhysicalRange,
+    ) -> Result<usize, BuddyError> {
+        self.state.with(|state| {
+            let heap = state.heap.as_mut().ok_or(BuddyError::OutOfMemory)?;
+            // SAFETY: The caller supplies exclusive, quiescent reserved pages;
+            // the central lock serializes reservation and free-list changes.
+            let pages = unsafe { heap.buddy.reclaim_reservation(range)? };
+            state.observe_release::<P>();
+            Ok(pages)
+        })
+    }
+
     /// # Safety
     ///
     /// The address, order, and owner must exactly match a live allocation.
