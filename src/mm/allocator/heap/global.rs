@@ -460,6 +460,35 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
         Some(stats)
     }
 
+    /// Allocates globally deallocatable storage in the file-cache heap pool.
+    /// No CPU magazine or reclaim callback is entered: cache construction must
+    /// not recurse into its own eviction path. The caller admits metadata first.
+    pub fn allocate_file_cache(&self, layout: Layout) -> *mut u8 {
+        self.logical.record_request();
+        let class = super::slab_class_for_layout(layout);
+        let pointer = self.state.with(|state| {
+            let Some(heap) = state.heap.as_mut() else {
+                return null_mut();
+            };
+            let pointer = match class {
+                Some(class) => heap
+                    .reserve_slab_object_in(class, super::HeapPool::FileCache)
+                    .map_or(null_mut(), CachedObject::into_caller_pointer),
+                None => heap
+                    .allocate_large_in(layout, super::HeapPool::FileCache)
+                    .unwrap_or(null_mut()),
+            };
+            state.observe_pressure::<P>();
+            pointer
+        });
+        if pointer.is_null() {
+            self.logical.record_failure();
+        } else {
+            self.logical.record_allocation(layout, class.is_some());
+        }
+        pointer
+    }
+
     pub fn page_availability(&self) -> Option<PageAvailability> {
         self.state.with(|state| state.availability())
     }
@@ -1032,9 +1061,13 @@ unsafe impl<P: CpuLocalCachePolicy> GlobalAlloc for KernelGlobalAllocator<P> {
         };
         let class = super::slab_class_for_layout(layout);
         self.logical.record_deallocation(layout, class.is_some());
+        // SAFETY: GlobalAlloc requires a live allocation with this exact layout.
+        let cache_owned = unsafe { super::allocation_pool(pointer.as_ptr(), layout) }
+            == super::HeapPool::FileCache;
         match class {
             Some(class)
-                if class.index() < CACHED_CLASS_COUNT
+                if !cache_owned
+                    && class.index() < CACHED_CLASS_COUNT
                     && self.caches_enabled.load(Ordering::Acquire) =>
             {
                 // SAFETY: GlobalAlloc requires the exact live pointer/layout.

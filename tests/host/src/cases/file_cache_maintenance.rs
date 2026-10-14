@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use core::num::NonZeroU64;
 
 use super::super::{
-    CacheAccess, CacheKey, ContentRevision, FileDataCache, FileIdentity, FilePageIndex,
+    CacheAccess, CacheError, CacheKey, ContentRevision, FileDataCache, FileIdentity, FilePageIndex,
     FilesystemGeneration, NodeIdentity, Refill, index,
 };
 use super::Maintenance;
@@ -78,4 +78,67 @@ fn shrinking_merged_buckets_discards_excess_without_losing_a_reader_pin() {
             .unwrap_or_else(|error| panic!("lookup: {error:?}"))
             .is_none()
     );
+}
+
+#[test]
+fn shrinking_preserves_mapped_keys_even_when_buckets_merge() {
+    let keys: Vec<_> = (0..65536)
+        .map(key)
+        .filter(|key| key.bucket(255) == 0)
+        .take(index::MAX_CHAIN + 6)
+        .collect();
+    let cache = crate::require_ok(FileDataCache::try_new(256));
+    let mut mappings = Vec::new();
+    for (value, &key) in keys.iter().enumerate() {
+        let load = match crate::require_ok(cache.access(key)) {
+            CacheAccess::Load(load) => load,
+            _ => panic!("old buckets unexpectedly saturated"),
+        };
+        drop(crate::require_ok(
+            load.fill_and_publish(|| Ok(value), |_| Refill::Recreate),
+        ));
+        mappings.push(crate::require_some(crate::require_ok(
+            cache.lookup_mapping(key),
+        )));
+    }
+    assert_eq!(cache.maintain_capacity(128), Ok(Maintenance::Busy));
+    for (value, &key) in keys.iter().enumerate() {
+        let mapped = crate::require_some(crate::require_ok(cache.lookup_mapping(key)));
+        assert!(core::ptr::eq(mapped.value(), mappings[value].value()));
+    }
+    // One old bucket can now shrink while the still mapped canonical page survives.
+    let retained = mappings.remove(mappings.len() - 1);
+    drop(mappings);
+    assert_eq!(cache.maintain_capacity(128), Ok(Maintenance::Resized));
+    let mapped = crate::require_some(crate::require_ok(
+        cache.lookup_mapping(keys[keys.len() - 1]),
+    ));
+    assert!(core::ptr::eq(mapped.value(), retained.value()));
+    assert_eq!(cache.usage().capacity, 128);
+}
+
+#[test]
+fn fully_mapped_table_does_not_allocate_an_identical_replacement() {
+    let cache = crate::require_ok(FileDataCache::try_new(2));
+    let mut mappings = Vec::new();
+    for i in 0..2 {
+        let load = match crate::require_ok(cache.access(key(i))) {
+            CacheAccess::Load(load) => load,
+            _ => panic!("empty cache did not admit a page"),
+        };
+        drop(crate::require_ok(
+            load.fill_and_publish(|| Ok(i), |_| Refill::Recreate),
+        ));
+        mappings.push(crate::require_some(crate::require_ok(
+            cache.lookup_mapping(key(i)),
+        )));
+    }
+    cache.fail_next_maintenance_for_test();
+    assert_eq!(cache.maintain_capacity(1), Ok(Maintenance::Unchanged));
+    assert_eq!(cache.usage().capacity, 2);
+    assert_eq!(cache.maintain_capacity(4), Err(CacheError::Allocation));
+    for (i, mapped) in mappings.iter().enumerate() {
+        let current = crate::require_some(crate::require_ok(cache.lookup_mapping(key(i as u64))));
+        assert!(core::ptr::eq(current.value(), mapped.value()));
+    }
 }

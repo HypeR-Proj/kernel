@@ -274,6 +274,42 @@ pub(super) fn run() -> Result<(), Error> {
         BASE + 3 * BLOCK + PAGE_SIZE,
         Some((physical + PAGE_SIZE, BLOCK, RWX)),
     )?;
+    // A separate subtree can be detached without disturbing device/normal
+    // mappings above. Detachment transfers no physical ownership to the HAL.
+    let distant = BASE + (1 << 30);
+    // SAFETY: Private test root, owned backing and retained table allocations.
+    unsafe { space.map_normal_page(distant, physical, RW, &mut allocate) }
+        .map_err(Error::Stage2)?;
+    // SAFETY: Same private serialized hierarchy; retain all pages until inspection completes.
+    unsafe { space.clear_normal_range(distant, PAGE_SIZE) }.map_err(Error::Stage2)?;
+    let mut detached = Vec::new();
+    detached
+        .try_reserve_exact(12)
+        .map_err(|_| Error::Allocation)?;
+    // SAFETY: The callback only records addresses; all table owners remain retained.
+    unsafe { space.detach_empty_tables(&mut |page| detached.push(page)) }.map_err(Error::Stage2)?;
+    if detached.len() != 2
+        || detached
+            .iter()
+            .any(|page| page.get() == space.root_address())
+    {
+        return Err(Error::Invariant(
+            "empty subtree did not detach exactly its two child tables",
+        ));
+    }
+    expect_leaf(&space, BASE, Some((physical, PAGE_SIZE, RW)))?;
+    expect_leaf(&space, distant, None)?;
+    // SAFETY: Never-activated root; detachment is idempotent and keeps nonempty tables.
+    unsafe {
+        space.detach_empty_tables(&mut |_| {
+            detached.push(PhysicalAddress::new(0));
+        })
+    }
+    .map_err(Error::Stage2)?;
+    if detached.len() != 2 {
+        return Err(Error::Invariant("empty-table detach was not idempotent"));
+    }
+
     // All storage can be reclaimed without a retirement rendezvous because no
     // guest ever selected this root. BBM restored the prior hardware selection.
     drop(lease);

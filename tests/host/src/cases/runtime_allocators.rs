@@ -1460,3 +1460,54 @@ fn partial_emergency_reclaim_does_not_loop_until_a_large_request_succeeds() {
         }
     }
 }
+
+#[test]
+fn file_cache_heap_is_separate_and_returns_all_backing_without_magazine_drain() {
+    let (memory, handoff) = handoff(256);
+    let allocator = ManuallyDrop::new(KernelGlobalAllocator::<TestInterruptMask>::new());
+    // SAFETY: This owned direct-map buffer outlives every allocation below.
+    crate::require_ok(unsafe { allocator.initialize(&handoff, memory.pointer as u64) });
+    crate::require_ok(allocator.activate_local_caches(2));
+    select_test_cpu(0);
+    let small = crate::require_ok(Layout::from_size_align(96, 8));
+    let large = crate::require_ok(Layout::from_size_align(32768, 4096));
+    // SAFETY: The live ordinary object is freed with this exact layout below.
+    let permanent = unsafe { allocator.alloc(small) };
+    assert!(!permanent.is_null());
+    let baseline = crate::require_some(allocator.stats());
+    for _ in 0..16 {
+        let mut cache = Vec::new();
+        for _ in 0..100 {
+            let pointer = allocator.allocate_file_cache(small);
+            assert!(!pointer.is_null());
+            assert_ne!((pointer as usize) / 4096, (permanent as usize) / 4096);
+            cache.push(pointer);
+        }
+        let big = allocator.allocate_file_cache(large);
+        assert!(!big.is_null());
+        let populated = crate::require_some(allocator.stats());
+        assert!(populated.file_cache_slab_pages > 0);
+        assert!(populated.file_cache_large_pages > 0);
+        select_test_cpu(1);
+        for pointer in cache {
+            // SAFETY: Tagged allocations use the same global deallocation contract.
+            unsafe { allocator.dealloc(pointer, small) };
+        }
+        // SAFETY: The last live large allocation is relinquished with its exact layout.
+        unsafe { allocator.dealloc(big, large) };
+        let retired = crate::require_some(allocator.stats());
+        assert_eq!(retired.file_cache_slab_pages, 0);
+        assert_eq!(retired.file_cache_large_pages, 0);
+        assert_eq!(retired.buddy.free_pages, baseline.buddy.free_pages);
+        assert_eq!(retired.cache.cached_objects, baseline.cache.cached_objects);
+        assert_eq!(retired.live_allocations, baseline.live_allocations);
+        select_test_cpu(0);
+    }
+    // SAFETY: The retained kernel object is no longer used.
+    unsafe { allocator.dealloc(permanent, small) };
+    allocator.reclaim_local_caches();
+    assert_eq!(
+        crate::require_some(allocator.stats()).buddy.allocated_pages,
+        0
+    );
+}

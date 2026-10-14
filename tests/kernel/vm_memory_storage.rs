@@ -68,7 +68,7 @@ impl GuestAddressSpace {
             .map_err(|_| "live pool retry quota")?;
         pool.with(|pool| pool.reserve_live(4))
             .map_err(|_| "live pool retry after quota release")?;
-        let expected = 4 * core::mem::size_of::<super::PageBlock>() as u64;
+        let expected = 4 * core::mem::size_of::<super::TablePage>() as u64;
         if !pool.with(|pool| {
             pool.pages.is_empty()
                 && pool.pages.capacity() == 4
@@ -85,6 +85,40 @@ impl GuestAddressSpace {
             .map_err(|_| "live pool repeat preparation")?;
         if domain.usage().committed(ResourceKind::KernelMemoryBytes) != domain_baseline + expected {
             return Err("live pool repeat preparation charged twice");
+        }
+        let first = pool
+            .with(|pool| pool.allocate_zeroed(1, 1))
+            .ok_or("live pool first table")?;
+        let survivor = pool
+            .with(|pool| pool.allocate_zeroed(1, 1))
+            .ok_or("live pool second table")?;
+        pool.with(|pool| pool.detach(first));
+        if domain.usage().committed(ResourceKind::PinnedPages) != 2 {
+            return Err("detachment released an unacknowledged table charge");
+        }
+        let retired = pool.with(|pool| {
+            // SAFETY: These owned tables were never linked into a hierarchy
+            // or published to hardware, so there are no remote consumers.
+            unsafe { pool.take_retired() }
+        });
+        drop(retired.ok_or("detached table was not returned")?);
+        if domain.usage().committed(ResourceKind::PinnedPages) != 1
+            || domain.usage().committed(ResourceKind::CommittedPages) != 1
+            || domain.usage().committed(ResourceKind::KernelMemoryBytes)
+                != domain_baseline + expected + hyper::mm::PAGE_SIZE
+            || !pool.with(|pool| pool.pages.len() == 1 && pool.pages[0].page.physical() == survivor)
+        {
+            return Err("table retirement retained its charge or removed a live table");
+        }
+        let spare = pool.with(|pool| pool.compact_live(0));
+        drop(spare.ok_or("retired grant metadata was not compacted")?);
+        if !pool.with(|pool| pool.pages.capacity() == 1 && pool.pages.len() == 1)
+            || domain.usage().committed(ResourceKind::KernelMemoryBytes)
+                != domain_baseline
+                    + core::mem::size_of::<super::TablePage>() as u64
+                    + hyper::mm::PAGE_SIZE
+        {
+            return Err("live pool compaction retained unused metadata charges");
         }
         drop(pool);
         if domain.usage().committed(ResourceKind::KernelMemoryBytes) != domain_baseline

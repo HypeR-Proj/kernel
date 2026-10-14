@@ -814,7 +814,11 @@ fn mapped_page_retains_canonical_key_across_pressure_replacement_and_growth() {
     assert!(core::ptr::eq(a.value(), b.value()));
     drop(a);
     assert_eq!(cache.reclaim_batch(64), 0);
-    assert_eq!(cache.maintain_capacity(1), Ok(Maintenance::Busy));
+    assert_eq!(cache.maintain_capacity(1), Ok(Maintenance::Resized));
+    assert_eq!(cache.usage().capacity, 1);
+    let c = crate::require_some(crate::require_ok(cache.lookup_mapping(selected)));
+    assert!(core::ptr::eq(b.value(), c.value()));
+    drop(c);
     drop(b);
     assert_eq!(cache.reclaim_batch(64), 1);
     assert!(crate::require_ok(cache.lookup(selected)).is_none());

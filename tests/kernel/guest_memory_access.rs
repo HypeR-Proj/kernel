@@ -43,6 +43,9 @@ pub(super) fn run() -> Result<(), Error> {
     GuestAddressSpace::verify_resident_blocks_for_test().map_err(Error::ResidentMemory)?;
     let mut memory =
         GuestAddressSpace::new(identifier, BASE, 4 * PAGE_SIZE, &domain).map_err(Error::Copy)?;
+    memory
+        .verify_table_maintenance_for_test()
+        .map_err(Error::ResidentMemory)?;
     let (_, expected_metadata_bytes) =
         GuestAddressSpace::metadata_requirements_for_test(BASE, 4 * PAGE_SIZE)
             .map_err(Error::Copy)?;
