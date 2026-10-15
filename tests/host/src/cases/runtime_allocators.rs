@@ -1511,3 +1511,121 @@ fn file_cache_heap_is_separate_and_returns_all_backing_without_magazine_drain() 
         0
     );
 }
+
+#[test]
+fn heap_profiling_distinguishes_callers_magazines_and_file_cache_backing() {
+    let (memory, handoff) = handoff(512);
+    let allocator = ManuallyDrop::new(KernelGlobalAllocator::<TestInterruptMask>::new());
+    // SAFETY: The owned direct-map buffer survives all allocations below.
+    crate::require_ok(unsafe { allocator.initialize(&handoff, memory.pointer as u64) });
+    crate::require_ok(allocator.activate_local_caches(2));
+    select_test_cpu(0);
+    let small = crate::require_ok(Layout::from_size_align(96, 8));
+    let large = crate::require_ok(Layout::from_size_align(32768, 4096));
+    // SAFETY: Both allocations are freed with their original layout below.
+    let ordinary = unsafe { allocator.alloc(small) };
+    let cache = allocator.allocate_file_cache(small);
+    let big_cache = allocator.allocate_file_cache(large);
+    assert!(!ordinary.is_null() && !cache.is_null() && !big_cache.is_null());
+    let baseline = crate::require_some(allocator.accounting_stats());
+    if hyper::config::HEAP_PROFILING {
+        let kernel = crate::require_some(allocator.heap_class_stats(3));
+        assert_eq!((kernel.live, kernel.requested_bytes), (1, 96));
+        assert!(kernel.cached > 0);
+        assert_eq!(kernel.reserved, kernel.live as usize + kernel.cached);
+        let file = crate::require_some(allocator.heap_class_stats(12));
+        assert_eq!((file.live, file.cached, file.reserved), (1, 0, 1));
+        let big = crate::require_some(allocator.heap_class_stats(17));
+        assert_eq!((big.live, big.requested_bytes), (1, 32768));
+        assert_eq!((big.object_size, big.capacity, big.reserved), (0, 0, 0));
+        assert!(big.pages >= 8);
+        // Repeated reads never flush the magazines or reclaim an empty slab.
+        for index in 0..hyper::mm::allocator::heap::profile::BUCKETS {
+            assert!(allocator.heap_class_stats(index).is_some());
+        }
+        assert!(allocator.heap_class_stats(18).is_none());
+    } else {
+        assert!(allocator.heap_class_stats(0).is_none());
+        assert!(allocator.heap_class_stats(3).is_none());
+    }
+    assert_eq!(crate::require_some(allocator.accounting_stats()), baseline);
+    select_test_cpu(1);
+    // SAFETY: Tagged pool ownership survives a remote CPU free.
+    unsafe {
+        allocator.dealloc(ordinary, small);
+        allocator.dealloc(cache, small);
+        allocator.dealloc(big_cache, large);
+    }
+    if hyper::config::HEAP_PROFILING {
+        for index in [3, 12, 17] {
+            let row = crate::require_some(allocator.heap_class_stats(index));
+            assert_eq!((row.live, row.requested_bytes), (0, 0));
+            assert_eq!((row.allocations, row.deallocations), (1, 1));
+            if index != 3 {
+                assert_eq!(row.pages, 0);
+            }
+        }
+    }
+    allocator.reclaim_local_caches();
+    assert_eq!(
+        crate::require_some(allocator.accounting_stats())
+            .buddy
+            .allocated_pages,
+        0
+    );
+    if hyper::config::HEAP_PROFILING {
+        let row = crate::require_some(allocator.heap_class_stats(3));
+        assert_eq!(
+            (row.pages, row.capacity, row.reserved, row.cached),
+            (0, 0, 0, 0)
+        );
+    }
+}
+
+#[test]
+fn heap_profiling_survives_concurrent_allocation_and_sampling() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (memory, handoff) = handoff(512);
+    let allocator = ManuallyDrop::new(KernelGlobalAllocator::<TestInterruptMask>::new());
+    // SAFETY: The direct-map allocation outlives the scoped worker threads.
+    crate::require_ok(unsafe { allocator.initialize(&handoff, memory.pointer as u64) });
+    crate::require_ok(allocator.activate_local_caches(3));
+    let allocator = &*allocator;
+    let done = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for cpu in 0..2 {
+            let done = &done;
+            scope.spawn(move || {
+                select_test_cpu(cpu);
+                let layout = crate::require_ok(Layout::from_size_align(96, 8));
+                for _ in 0..1000 {
+                    // SAFETY: This thread exclusively owns the returned object.
+                    let pointer = unsafe { allocator.alloc(layout) };
+                    assert!(!pointer.is_null());
+                    // SAFETY: The matching layout and allocator release it once.
+                    unsafe { allocator.dealloc(pointer, layout) };
+                }
+                done.fetch_add(1, Ordering::Release);
+            });
+        }
+        select_test_cpu(2);
+        while done.load(Ordering::Acquire) != 2 {
+            let sample = allocator.heap_class_stats(3);
+            assert_eq!(sample.is_some(), hyper::config::HEAP_PROFILING);
+            std::thread::yield_now();
+        }
+    });
+    if hyper::config::HEAP_PROFILING {
+        let row = crate::require_some(allocator.heap_class_stats(3));
+        assert_eq!((row.live, row.requested_bytes), (0, 0));
+        assert_eq!((row.allocations, row.deallocations), (2000, 2000));
+        assert_eq!(row.reserved, row.cached);
+    }
+    allocator.reclaim_local_caches();
+    assert_eq!(
+        crate::require_some(allocator.accounting_stats())
+            .buddy
+            .allocated_pages,
+        0
+    );
+}

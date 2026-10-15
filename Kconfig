@@ -116,4 +116,8 @@ config LOG_LINE_MAX
     range 128 2048
     default 512
 
+config HEAP_PROFILING
+    bool "Track heap occupancy and allocation traffic by size class"
+    default n
+
 endmenu

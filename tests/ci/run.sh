@@ -36,6 +36,13 @@ case "${1:-}" in
         cargo fmt --manifest-path tools/kconfig/Cargo.toml -- --check
         cargo fmt --manifest-path tools/kallsyms/Cargo.toml -- --check
         make test ARCH=aarch64
+        # Exercise actual allocator code with optional accounting compiled in.
+        profile_config=$(mktemp)
+        trap 'rm -f "$profile_config"' EXIT HUP INT TERM
+        cat configs/qemu_aarch64_defconfig >"$profile_config"
+        printf '\nCONFIG_HEAP_PROFILING=y\n' >>"$profile_config"
+        HYPER_CONFIG="$profile_config" cargo test --manifest-path tests/host/Cargo.toml \
+            --target "$(rustc -vV | sed -n 's/^host: //p')" runtime_allocators::
         ;;
     scripts)
         command -v shellcheck >/dev/null 2>&1 || {

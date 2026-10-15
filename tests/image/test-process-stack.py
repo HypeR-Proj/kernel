@@ -19,6 +19,7 @@ SYMBOLS = (
     '15PreparedProcess7try_new',
     '7Process17finish_retirement',
     '24sys_process_builder_seal23DeferredProcessServices',
+    '36sys_memory_inspector_read_statistics23DeferredProcessServices',
     '6loader11load_native',
     '6loader20create_address_space',
     '6loader21prepare_address_space',

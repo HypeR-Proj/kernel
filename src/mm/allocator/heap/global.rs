@@ -363,6 +363,8 @@ impl CacheAccounting {
 }
 
 pub struct KernelGlobalAllocator<P: CpuLocalCachePolicy> {
+    #[cfg(CONFIG_HEAP_PROFILING)]
+    profile: [super::profile::Traffic; super::profile::BUCKETS],
     state: InterruptSpinLock<AllocatorState, P>,
     caches: PerCpu<CacheSlot>,
     initialized: AtomicBool,
@@ -376,6 +378,8 @@ pub struct KernelGlobalAllocator<P: CpuLocalCachePolicy> {
 impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
     pub const fn new() -> Self {
         Self {
+            #[cfg(CONFIG_HEAP_PROFILING)]
+            profile: [const { super::profile::Traffic::new() }; super::profile::BUCKETS],
             state: InterruptSpinLock::new(AllocatorState::uninitialized()),
             caches: PerCpu::new([const { CacheSlot::new() }; crate::cpu::MAX_CPUS]),
             initialized: AtomicBool::new(false),
@@ -460,6 +464,23 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
         Some(stats)
     }
 
+    /// Existing counters without the cross-CPU magazine reclaimability census.
+    /// Backing counts share one central lock; traffic counters are independent
+    /// observations and must not be treated as a global allocation transaction.
+    pub fn accounting_stats(&self) -> Option<HeapStats> {
+        let mut stats = self
+            .state
+            .with(|state| state.heap.as_ref().map(SlabAllocator::stats))?;
+        self.logical.apply(&mut stats);
+        let cpus = if self.caches_enabled.load(Ordering::Acquire) {
+            self.participating_cpus.load(Ordering::Relaxed)
+        } else {
+            0
+        };
+        stats.cache = self.cache_accounting.snapshot(cpus);
+        Some(stats)
+    }
+
     /// Allocates globally deallocatable storage in the file-cache heap pool.
     /// No CPU magazine or reclaim callback is entered: cache construction must
     /// not recurse into its own eviction path. The caller admits metadata first.
@@ -485,12 +506,60 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
             self.logical.record_failure();
         } else {
             self.logical.record_allocation(layout, class.is_some());
+            #[cfg(CONFIG_HEAP_PROFILING)]
+            self.profile[super::profile::bucket(super::HeapPool::FileCache, class)]
+                .allocate(layout.size());
         }
         pointer
     }
 
     pub fn page_availability(&self) -> Option<PageAvailability> {
         self.state.with(|state| state.availability())
+    }
+
+    /// Does not drain magazines or allocate. None means profiling is disabled,
+    /// initialization is incomplete, or the bucket index is outside the schema.
+    pub fn heap_class_stats(&self, index: usize) -> Option<super::profile::HeapClassStats> {
+        #[cfg(not(CONFIG_HEAP_PROFILING))]
+        {
+            let _ = index;
+            None
+        }
+        #[cfg(CONFIG_HEAP_PROFILING)]
+        {
+            let traffic = self.profile.get(index)?;
+            let pool = index / (super::SLAB_CLASS_COUNT + 1);
+            let class = index % (super::SLAB_CLASS_COUNT + 1);
+            let backing = self
+                .state
+                .with(|state| state.heap.as_ref().map(|heap| heap.profile_backing[index]))?;
+            let mut row = super::profile::HeapClassStats {
+                pool,
+                object_size: super::CLASS_SIZES.get(class).copied().unwrap_or(0),
+                pages: backing.pages,
+                capacity: backing.capacity,
+                reserved: backing.reserved,
+                ..super::profile::HeapClassStats::default()
+            };
+            if pool == 0
+                && class < CACHED_CLASS_COUNT
+                && self.caches_enabled.load(Ordering::Acquire)
+            {
+                for cpu in 0..self.participating_cpus.load(Ordering::Relaxed) {
+                    let pin = P::pin()?;
+                    // SAFETY: Pinning prevents migration; masking excludes
+                    // reentrant same-CPU allocator access during the slot read.
+                    let mask = unsafe { InterruptMaskGuard::<P>::acquire() };
+                    row.cached += self.caches[CpuIndex::new(cpu)?]
+                        .cache
+                        .with(|cache| cache.magazines[class].len());
+                    drop(mask);
+                    drop(pin);
+                }
+            }
+            traffic.snapshot(&mut row);
+            Some(row)
+        }
     }
 
     /// Reserves metadata headroom atomically against cache pages and other
@@ -1037,6 +1106,9 @@ unsafe impl<P: CpuLocalCachePolicy> GlobalAlloc for KernelGlobalAllocator<P> {
             self.logical.record_failure();
         } else {
             self.logical.record_allocation(layout, class.is_some());
+            #[cfg(CONFIG_HEAP_PROFILING)]
+            self.profile[super::profile::bucket(super::HeapPool::Kernel, class)]
+                .allocate(layout.size());
         }
         pointer
     }
@@ -1062,8 +1134,10 @@ unsafe impl<P: CpuLocalCachePolicy> GlobalAlloc for KernelGlobalAllocator<P> {
         let class = super::slab_class_for_layout(layout);
         self.logical.record_deallocation(layout, class.is_some());
         // SAFETY: GlobalAlloc requires a live allocation with this exact layout.
-        let cache_owned = unsafe { super::allocation_pool(pointer.as_ptr(), layout) }
-            == super::HeapPool::FileCache;
+        let pool = unsafe { super::allocation_pool(pointer.as_ptr(), layout) };
+        let cache_owned = pool == super::HeapPool::FileCache;
+        #[cfg(CONFIG_HEAP_PROFILING)]
+        self.profile[super::profile::bucket(pool, class)].deallocate(layout.size());
         match class {
             Some(class)
                 if !cache_owned
