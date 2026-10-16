@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-use super::services::DeferredProcessServices;
+use super::services::ProcessServices;
 use crate::kernel::abi::native::{InspectServices, IpcServices};
 use crate::kernel::capability::{HandleError, Rights};
 use crate::kernel::inspect::{Error, ObjectInspector};
@@ -14,7 +14,7 @@ pub(crate) fn verify_object_details_for_test(
     process: &Process,
     caller: &UserThread,
 ) -> Result<(), &'static str> {
-    let services = DeferredProcessServices::new(process, caller);
+    let services = ProcessServices::new(process, caller);
     let domain = process.resource_domain();
     let basic = process
         .create_object(

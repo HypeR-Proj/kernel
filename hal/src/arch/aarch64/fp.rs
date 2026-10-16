@@ -5,9 +5,10 @@
 //!
 //! The soft-float kernel never borrows FP registers. Vector entry gates access
 //! but retains the active lower-world register image across direct returns.
-//! First use restores the exact pinned owner; every scheduling or ownership
-//! boundary saves that image and scrubs physical registers. No pointer or lazy
-//! state survives outside the run publication, including guest IRQ postludes.
+//! First use restores the exact owner; actual scheduling or ownership changes
+//! save that image and scrub physical registers. A suspended Native syscall
+//! retains only its saved Thread context and a frame with FP return disabled.
+//! No physical bank residency survives withdrawn CPU publication.
 
 use super::{exception::ExceptionFrame, registers};
 
@@ -84,7 +85,7 @@ pub(super) fn restore(state: &State, frame: &mut ExceptionFrame) -> Result<(), (
     Ok(())
 }
 
-/// Retires residency before a run unwinds or a guest IRQ postlude can schedule.
+/// Retires residency before unwind, Native suspension, or guest IRQ scheduling.
 pub(super) fn save(state: &mut State, frame: &ExceptionFrame) {
     if frame.return_cptr & registers::CPTR_EL2_FPEN_ENABLED == 0 {
         return;

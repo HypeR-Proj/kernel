@@ -123,11 +123,15 @@ pub(crate) use user::{copy_from_exposed, copy_to_exposed};
 pub use user_entry::Error as UserEntryError;
 #[cfg(feature = "kernel-self-test")]
 pub(crate) use user_entry::direct_native_call_count_for_test;
-pub(crate) use user_entry::run_user;
+#[cfg(feature = "kernel-self-test")]
+pub(crate) use user_entry::native_run_counts_for_test;
+#[cfg(feature = "kernel-self-test")]
+pub(crate) use user_entry::syscall_fp_resident_for_test;
 pub(crate) use user_entry::{
     CompletionFailure as UserCompletionFailure, ReturnCapability as UserReturnCapability,
     UserContext, UserExit,
 };
+pub(crate) use user_entry::{run_user, suspend_current_user};
 pub use user_machine::Error as UserAddressSpaceError;
 pub(crate) use user_machine::{
     LocalActivation as UserLocalActivation, LocalIdentity as UserLocalIdentity,

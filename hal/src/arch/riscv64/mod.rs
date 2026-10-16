@@ -92,7 +92,8 @@ pub use timer::{
     SupervisorTimer as ArchitectureTimer,
 };
 pub use user_entry::Error as UserEntryError;
-pub(crate) use user_entry::run_user;
+#[cfg(feature = "kernel-self-test")]
+pub(crate) use user_entry::native_run_counts_for_test;
 pub(crate) use user_entry::{
     CompletionFailure as UserCompletionFailure, ReturnCapability as UserReturnCapability,
     UserContext, UserExit,
@@ -102,6 +103,7 @@ pub(crate) use user_entry::{
     direct_native_call_count_for_test, native_fault_test_programs_for_test,
     native_register_test_program_for_test,
 };
+pub(crate) use user_entry::{run_user, suspend_current_user};
 pub use user_machine::{ContractError as UserMachineContractError, Error as UserAddressSpaceError};
 pub(crate) use user_machine::{
     LocalActivation as UserLocalActivation, LocalIdentity as UserLocalIdentity,

@@ -77,7 +77,7 @@
     li a7, 0
     ecall                        /* Direct ABI query. */
     li a7, -1
-    ecall                        /* Deferred unknown call. */
+    ecall                        /* Direct unsupported result. */
     li a7, 6
     ecall                        /* Yield to another owner. */
     .endif

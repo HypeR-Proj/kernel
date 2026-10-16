@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-use super::services::DeferredProcessServices;
+use super::services::ProcessServices;
 use crate::kernel::abi::native::TaskServices;
 use crate::kernel::capability::{HandleValue, Rights};
 use crate::kernel::mm::user_space::{UserAddress, UserSlice};
@@ -16,7 +16,7 @@ pub(crate) fn verify_thread_affinity_creation_for_test(
 ) -> Result<(), &'static str> {
     const WORDS: usize = hyper::abi::native::HYPER_NATIVE_PROCESS_AFFINITY_MAX_WORDS as usize;
     const BYTES: usize = WORDS * core::mem::size_of::<u64>();
-    let services = DeferredProcessServices::new(process, caller);
+    let services = ProcessServices::new(process, caller);
     let caller_id = caller.scheduler_id().ok_or("caller scheduler identity")?;
     let (cpu, _) = crate::kernel::task::scheduler::thread_placement(caller_id)
         .map_err(|_| "caller placement")?;

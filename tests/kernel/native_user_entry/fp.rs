@@ -17,6 +17,10 @@ unsafe extern "C" {
     #[cfg_attr(CONFIG_ARCH_AARCH64, link_name = "aarch64_native_fp_probe_end")]
     #[cfg_attr(CONFIG_ARCH_RISCV64, link_name = "riscv64_native_fp_probe_end")]
     static native_fp_probe_end: u8;
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    static aarch64_native_blocking_fp_probe_start: u8;
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    static aarch64_native_blocking_fp_probe_end: u8;
     #[cfg_attr(CONFIG_ARCH_AARCH64, link_name = "aarch64_guest_fp_probe_start")]
     #[cfg_attr(CONFIG_ARCH_RISCV64, link_name = "riscv64_guest_fp_probe_start")]
     static guest_fp_probe_start: u8;
@@ -57,6 +61,12 @@ struct Probe {
     thread: UserThread,
 }
 
+enum ProbeMode {
+    Yielding,
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    Blocking,
+}
+
 impl Probe {
     fn progress(&self) -> Result<u64, Error> {
         if self.thread.snapshot().terminal.is_some() {
@@ -92,12 +102,20 @@ fn with_probe(
     domain: &ResourceDomain,
     group: &TaskGroup,
     seed: u16,
+    mode: ProbeMode,
     test: impl FnOnce(&Probe) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    let source = program(
-        &raw const native_fp_probe_start,
-        &raw const native_fp_probe_end,
-    );
+    let source = match mode {
+        ProbeMode::Yielding => program(
+            &raw const native_fp_probe_start,
+            &raw const native_fp_probe_end,
+        ),
+        #[cfg(CONFIG_ARCH_AARCH64)]
+        ProbeMode::Blocking => program(
+            &raw const aarch64_native_blocking_fp_probe_start,
+            &raw const aarch64_native_blocking_fp_probe_end,
+        ),
+    };
     let mut code = [0u8; PAGE_SIZE as usize];
     if source.len() > code.len() || source.len() < 4 {
         return Err(Error::Image);
@@ -121,6 +139,16 @@ fn with_probe(
     };
     let process = prepare_process(domain, group, &code[..source.len()], abi)?;
     let result = (|| {
+        #[cfg(CONFIG_ARCH_AARCH64)]
+        if matches!(mode, ProbeMode::Blocking) {
+            let output = UserSlice::new(UserAddress::new(IMAGE_BASE + PAGE_SIZE), PAGE_SIZE)
+                .map_err(|_| Error::Construction)?;
+            process
+                .address_space_owner()
+                .map_err(|_| Error::AddressSpace)?
+                .prepare_cow_output_for_test(output)
+                .map_err(|_| Error::AddressSpace)?;
+        }
         let cpu = CpuIndex::new(0).ok_or(Error::Scheduler)?;
         let thread = process
             .create_initial_user_thread("selftest/fp-owner", scheduler::CpuMask::single(cpu))
@@ -172,8 +200,8 @@ fn guest_progress(counter: &core::sync::atomic::AtomicU64) -> Result<u64, Error>
 
 pub(super) fn run(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Error> {
     let before = crate::hal::user::fp_state_counts_for_test();
-    let result = with_probe(domain, group, 0x1235, |first| {
-        with_probe(domain, group, 0x678a, |second| {
+    let result = with_probe(domain, group, 0x1235, ProbeMode::Yielding, |first| {
+        with_probe(domain, group, 0x678a, ProbeMode::Yielding, |second| {
             with_guest(|guest| {
                 wait(|| {
                     Ok(first.progress()? > 0
@@ -205,6 +233,15 @@ pub(super) fn run(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Erro
             })
         })
     });
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    let result = result
+        .and_then(|()| blocking_probe(domain, group))
+        .and_then(|()| {
+            with_guest(|guest| {
+                irq_tail_probe(domain, group, guest)?;
+                busy_detach_probe(domain, group)
+            })
+        });
     super::super::support::quiesce_workers().map_err(|_| Error::Scheduler)?;
     result?;
     let after = crate::hal::user::fp_state_counts_for_test();
@@ -212,5 +249,157 @@ pub(super) fn run(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Erro
         return Err(Error::Terminal);
     }
     crate::pr_info!("HypeR test: Native lazy FP and guest register isolation passed");
+    Ok(())
+}
+
+#[cfg(CONFIG_ARCH_AARCH64)]
+fn blocking_probe(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Error> {
+    use crate::kernel::capability::{HandleValue, Rights};
+    use crate::kernel::object::Event;
+
+    with_probe(domain, group, 0x3456, ProbeMode::Blocking, |probe| {
+        for round in 0..8 {
+            wait(|| {
+                Ok(probe.progress()? > round
+                    && probe
+                        .process
+                        .resolve_handle::<Event>(HandleValue::first_for_test(), Rights::WAIT)
+                        .is_ok_and(|event| event.object().waiter_count() == 1))
+            })?;
+            let index = if crate::kernel::cpu::online_cpu_count() > 1 {
+                (round as usize + 1) % 2
+            } else {
+                0
+            };
+            let cpu = CpuIndex::new(index).ok_or(Error::Scheduler)?;
+            probe.move_to(cpu)?;
+            probe
+                .process
+                .resolve_handle::<Event>(HandleValue::first_for_test(), Rights::SIGNAL)
+                .map_err(|_| Error::Lifecycle)?
+                .object()
+                .signal(0, Event::SIGNALED.bits())
+                .map_err(|_| Error::Lifecycle)?;
+            wait(|| Ok(probe.progress()? > round + 1 && probe.on_cpu(cpu)?))?;
+        }
+        Ok(())
+    })?;
+    crate::pr_info!("HypeR test: Native COW copyout and blocked syscall FP/TLS migration passed");
+    Ok(())
+}
+
+#[cfg(CONFIG_ARCH_AARCH64)]
+fn irq_tail_probe(
+    domain: &ResourceDomain,
+    group: &TaskGroup,
+    guest: &core::sync::atomic::AtomicU64,
+) -> Result<(), Error> {
+    use crate::kernel::entry::user::self_test::Gate;
+
+    with_probe(domain, group, 0x4567, ProbeMode::Yielding, |probe| {
+        let thread = probe.thread.scheduler_id().ok_or(Error::Scheduler)?;
+        // Drop releases the spin before with_probe stops/retires the Thread,
+        // including timeout and every early error from the controller.
+        let gate = Gate::arm(thread).ok_or(Error::Lifecycle)?;
+        wait(|| {
+            if gate.timed_out() {
+                return Err(Error::Lifecycle);
+            }
+            Ok(gate.entered_cpu().is_some())
+        })?;
+        let source = gate.entered_cpu().ok_or(Error::Lifecycle)?;
+        if source != CpuIndex::BOOT {
+            return Err(Error::Scheduler);
+        }
+        let progress = probe.progress()?;
+        let competing_progress = guest_progress(guest)?;
+        let destination = if crate::kernel::cpu::online_cpu_count() > 1 {
+            CpuIndex::new(1).ok_or(Error::Scheduler)?
+        } else {
+            source
+        };
+        probe.move_to(destination)?;
+        wait(|| {
+            if gate.timed_out() {
+                return Err(Error::Lifecycle);
+            }
+            // The hook publishes this only after this exact syscall has
+            // suspended and resumed inside its noncooperative spin. On UP a
+            // timer must schedule both the controller and the callback again.
+            Ok(gate.resumed_cpu() == Some(destination)
+                && guest_progress(guest)? > competing_progress)
+        })?;
+        gate.release();
+        wait(|| {
+            if gate.timed_out() {
+                return Err(Error::Lifecycle);
+            }
+            // The next progress store follows every FP lane, FPCR/FPSR, and
+            // TLS comparison in the original EL0 program.
+            Ok(probe.progress()? > progress)
+        })
+    })?;
+    crate::pr_info!("HypeR test: Native syscall IRQ-tail FP/TLS suspension passed");
+    Ok(())
+}
+
+#[cfg(CONFIG_ARCH_AARCH64)]
+fn busy_detach_probe(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Error> {
+    use crate::kernel::entry::user::self_test::Gate;
+
+    if crate::kernel::cpu::online_cpu_count() < 2 {
+        return Ok(());
+    }
+    with_probe(domain, group, 0x5678, ProbeMode::Yielding, |probe| {
+        let source = CpuIndex::new(1).ok_or(Error::Scheduler)?;
+        let destination = CpuIndex::BOOT;
+        probe.move_to(source)?;
+        wait(|| probe.on_cpu(source))?;
+        let thread = probe.thread.scheduler_id().ok_or(Error::Scheduler)?;
+        let gate = Gate::arm_busy(thread).ok_or(Error::Lifecycle)?;
+        wait(|| {
+            if gate.timed_out() {
+                return Err(Error::Lifecycle);
+            }
+            Ok(gate.entered_cpu() == Some(source))
+        })?;
+        // The source's setup pin now excludes every other Thread from CPU1,
+        // including this updater, until its root's residency cut is closed.
+        // The MM hook also validates the actual pinned updater CPU at the cut.
+        if crate::kernel::cpu::current_index() == Some(source) {
+            return Err(Error::Scheduler);
+        }
+        let progress = probe.progress()?;
+        let address_space = probe
+            .process
+            .address_space_owner()
+            .map_err(|_| Error::AddressSpace)?;
+        let busy = address_space
+            .arm_busy_detach_for_test(thread, source, destination)
+            .ok_or(Error::Lifecycle)?;
+        let output = UserSlice::new(UserAddress::new(IMAGE_BASE + PAGE_SIZE), PAGE_SIZE)
+            .map_err(|_| Error::Construction)?;
+        address_space
+            .prepare_cow_output_for_test(output)
+            .map_err(|_| Error::AddressSpace)?;
+        busy.result().map_err(|error| {
+            crate::pr_err!("HypeR test: Native contended detach failed: {error:?}");
+            Error::Lifecycle
+        })?;
+        wait(|| {
+            if gate.timed_out() {
+                return Err(Error::Lifecycle);
+            }
+            Ok(gate.resumed_cpu() == Some(destination))
+        })?;
+        gate.release();
+        wait(|| {
+            if gate.timed_out() {
+                return Err(Error::Lifecycle);
+            }
+            Ok(probe.progress()? > progress)
+        })
+    })?;
+    crate::pr_info!("HypeR test: Native syscall contended MM detach and FP/TLS migration passed");
     Ok(())
 }

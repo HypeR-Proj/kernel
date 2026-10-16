@@ -45,9 +45,7 @@ assert_not_impl!(hyper::mm::RetirementCut<4>: Clone);
 assert_not_impl!(exception::IrqTailCapability: Clone, Send, Sync);
 assert_not_impl!(user::PreparedKernelAccess<'static>: Clone, Send, Sync);
 assert_not_impl!(user::ActiveAddressSpace<'static>: Clone, Send, Sync);
-assert_not_impl!(user::StoppedUser<'static, 'static>: Clone, Send, Sync);
 assert_not_impl!(scheduler::PreemptionGuard: Clone, Send, Sync);
-assert_not_impl!(scheduler::UserRunGuard: Clone, Send, Sync);
 assert_not_impl!(scheduler::WaitRegistration: Clone, Send, Sync);
 
 // Check error recovery consumes the token and returns that same token type.

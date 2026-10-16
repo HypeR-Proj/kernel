@@ -164,10 +164,9 @@ aarch64_capture_crash_context:
 /*
  * Runs a native EL0 context as a call-like machine operation.
  *
- * A lower-EL exception which requires scheduling, blocking, or termination
- * copies the raw vector frame into the supplied context and branches to
- * aarch64_unwind_native_user. Never-blocking Native calls complete in the
- * vector and ERET directly without returning through this call frame.
+ * Syscalls retain their vector frame on the Thread stack while ordinary
+ * kernel dispatch may block or migrate. Faults, lower-EL IRQ preemption, and
+ * stop copy owned state and branch to aarch64_unwind_native_user.
  */
 .global aarch64_run_native_user
 .type aarch64_run_native_user, %function
@@ -189,6 +188,8 @@ aarch64_run_native_user:
     orr     x2, x2, #MDCR_EL2_TPM
     msr     mdcr_el2, x2
     mrs     x2, cptr_el2
+    // Every admitted kernel continuation has FPEN disabled. This portable
+    // host baseline remains valid when a syscall continuation migrates.
     str     x2, [sp, #USER_RUN_FRAME_CPTR_EL2_OFFSET]
     bic     x2, x2, #CPTR_EL2_FPEN_ENABLED
     orr     x2, x2, #CPTR_EL2_TAM
@@ -244,6 +245,48 @@ aarch64_run_native_user:
     mrs     x30, far_el2
     eret
 .size aarch64_run_native_user, . - aarch64_run_native_user
+
+.global aarch64_suspend_native_registers
+.type aarch64_suspend_native_registers, %function
+aarch64_suspend_native_registers:
+    // x0 is the original syscall frame, immediately below its Thread-owned
+    // run anchor. TLS and FP have already been saved with local IRQs masked.
+    add     x1, x0, #EXCEPTION_FRAME_SIZE
+    ldr     x2, [x1, #USER_RUN_FRAME_TPIDR_EL0_OFFSET]
+    msr     tpidr_el0, x2
+    ldr     x2, [x1, #USER_RUN_FRAME_TPIDRRO_EL0_OFFSET]
+    msr     tpidrro_el0, x2
+    ldr     x2, [x1, #USER_RUN_FRAME_MDCR_EL2_OFFSET]
+    msr     mdcr_el2, x2
+    ldr     x2, [x1, #USER_RUN_FRAME_CPTR_EL2_OFFSET]
+    msr     cptr_el2, x2
+    ldr     x2, [x1, #USER_RUN_FRAME_SP_EL0_OFFSET]
+    msr     sp_el0, x2
+    isb
+    ret
+.size aarch64_suspend_native_registers, . - aarch64_suspend_native_registers
+
+.global aarch64_resume_native_registers
+.type aarch64_resume_native_registers, %function
+aarch64_resume_native_registers:
+    // CPU identity uses TPIDR_EL2, which is never part of the Native anchor.
+    // These snapshots belong to the portable kernel continuation. Keep FP
+    // gated until the first-use trap restores this Thread's saved bank.
+    ldr     x2, [x0, #USER_CONTEXT_TPIDR_EL0_OFFSET]
+    msr     tpidr_el0, x2
+    ldr     x2, [x0, #USER_CONTEXT_TPIDRRO_EL0_OFFSET]
+    msr     tpidrro_el0, x2
+    add     x1, x1, #EXCEPTION_FRAME_SIZE
+    ldr     x2, [x1, #USER_RUN_FRAME_MDCR_EL2_OFFSET]
+    orr     x2, x2, #MDCR_EL2_TPM
+    msr     mdcr_el2, x2
+    ldr     x2, [x1, #USER_RUN_FRAME_CPTR_EL2_OFFSET]
+    bic     x2, x2, #CPTR_EL2_FPEN_ENABLED
+    orr     x2, x2, #CPTR_EL2_TAM
+    msr     cptr_el2, x2
+    isb
+    ret
+.size aarch64_resume_native_registers, . - aarch64_resume_native_registers
 
 .global aarch64_unwind_native_user
 .type aarch64_unwind_native_user, %function

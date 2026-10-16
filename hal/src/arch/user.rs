@@ -18,13 +18,8 @@ pub use super::imp::UserAddressSpaceError;
 pub use super::imp::UserEntryError;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub use super::imp::UserMachineContractError;
-#[cfg(all(
-    any(target_arch = "aarch64", target_arch = "riscv64"),
-    feature = "kernel-self-test"
-))]
-pub(crate) use super::imp::direct_native_call_count_for_test;
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-pub(crate) use super::imp::run_user;
+#[cfg(all(target_arch = "aarch64", feature = "kernel-self-test"))]
+pub(crate) use super::imp::syscall_fp_resident_for_test;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub(crate) use super::imp::{
     PreparedUserAddressSpace, UserLocalActivation, UserLocalIdentity, UserLocalOperation,
@@ -41,6 +36,13 @@ pub(crate) use super::imp::{
 pub(crate) use super::imp::{
     application_address_limit, copy_from_exposed, copy_to_exposed, user_address_limit,
 };
+#[cfg(all(
+    any(target_arch = "aarch64", target_arch = "riscv64"),
+    feature = "kernel-self-test"
+))]
+pub(crate) use super::imp::{direct_native_call_count_for_test, native_run_counts_for_test};
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub(crate) use super::imp::{run_user, suspend_current_user};
 
 #[cfg(target_arch = "riscv64")]
 pub(crate) use super::imp::{assert_kernel_access, user_translation_identifier_bits};

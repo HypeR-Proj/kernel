@@ -12,10 +12,10 @@ use crate::kernel::object::{Event, ObjectHandleState, ObjectKind, SignalWaitOutc
 use crate::kernel::process::{MachineAbi, Process, TaskGroup, TerminalReason};
 use crate::kernel::task::scheduler::CpuMask;
 
-const DIRECT_CALL_COUNT: usize = 64;
+const DIRECT_CALL_COUNT: usize = 65;
 
 // Query the ABI repeatedly within one machine run and validate x0/x1/x2 after
-// every direct return. An unknown call then exercises deferred unwind/re-entry
+// every direct return. An unknown call uses the same Thread-context dispatcher
 // and must return NOT_SUPPORTED before brk #0 reports success. Any comparison
 // failure branches to brk #1 so its syndrome identifies a return-path error.
 const PROGRAM: [u8; 64] = [
@@ -30,7 +30,7 @@ const PROGRAM: [u8; 64] = [
     0x29, 0x05, 0x00, 0xf1, // subs x9, x9, #1.
     0x01, 0xff, 0xff, 0x54, // b.ne svc loop.
     0x08, 0x00, 0x80, 0x92, // mov x8, #-1; unknown syscall number.
-    0x01, 0x00, 0x00, 0xd4, // svc #0; deferred slow path.
+    0x01, 0x00, 0x00, 0xd4, // svc #0; ordinary unsupported call.
     0x1f, 0x10, 0x00, 0xb1, // cmn x0, #4; status == NOT_SUPPORTED (-4).
     0x41, 0x00, 0x00, 0x54, // b.ne failure.
     0x00, 0x00, 0x20, 0xd4, // brk #0; success.
@@ -42,7 +42,7 @@ const PROGRAM: [u8; 64] = [
 // no-return contract was violated.
 const THREAD_EXIT_PROGRAM: [u8; 36] = [
     0xc8, 0x00, 0x80, 0xd2, // mov x8, #6; thread_yield.
-    0x01, 0x00, 0x00, 0xd4, // svc #0; deferred scheduling path.
+    0x01, 0x00, 0x00, 0xd4, // svc #0; yielding Thread continuation.
     0x1f, 0x00, 0x00, 0xf1, // cmp x0, #0; status == OK.
     0xa1, 0x00, 0x00, 0x54, // b.ne result_mismatch.
     0x00, 0x02, 0x80, 0x92, // mov x0, #-17; exit status.
@@ -61,7 +61,7 @@ const PROCESS_EXIT_PROGRAM: [u8; 16] = [
     0x20, 0x00, 0x20, 0xd4, // brk #1; no-return contract failed.
 ];
 
-// Create an Event, assert its level through the deferred signal path, observe
+// Create an Event, assert its level through ordinary Thread context, observe
 // it with an infinite-deadline wait, then exit normally. This proves the
 // generated ABI numbers, Process handle publication, rights checks, object
 // dispatch, and the signal snapshot return convention through real EL0 entry.
@@ -179,6 +179,7 @@ struct ProgramOutcome {
 
 pub(crate) fn run() -> Result<(), Error> {
     let fp_counts = crate::hal::user::fp_state_counts_for_test();
+    let runs = crate::hal::user::native_run_counts_for_test();
     let direct_calls = crate::hal::user::direct_native_call_count_for_test();
     let domain =
         ResourceDomain::try_new_root(ResourceLimits::UNLIMITED).map_err(|_| Error::Construction)?;
@@ -209,6 +210,13 @@ pub(crate) fn run() -> Result<(), Error> {
     if crate::hal::user::fp_state_counts_for_test() != fp_counts {
         return Err(Error::Terminal);
     }
+    let after = crate::hal::user::native_run_counts_for_test();
+    crate::pr_info!(
+        "HypeR test: Native integer burst: returns={} machine-runs={} syscall-suspensions={} FP-copies=0",
+        DIRECT_CALL_COUNT,
+        after.0.saturating_sub(runs.0),
+        after.1.saturating_sub(runs.1),
+    );
     super::fp::run(&domain, &group)?;
 
     let outcome = run_program(

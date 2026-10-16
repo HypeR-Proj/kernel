@@ -22,15 +22,15 @@ def check(disassembly, *, self_test=False):
         # mapping/rollback call chain, and off the syscall coordinator itself.
         # Generic handlers also have self-test-only service implementations.
         # Bound the actual syscall path, not those additional instantiations.
-        '24sys_process_builder_seal.*23DeferredProcessServices': 2048,
+        '24sys_process_builder_seal.*15ProcessServices': 2048,
         # Diagnostic output is bounded scratch, never a heap-allocated snapshot.
-        '36sys_memory_inspector_read_statistics.*23DeferredProcessServices': 2048,
+        '36sys_memory_inspector_read_statistics.*15ProcessServices': 2048,
         '6loader11load_native': 2048,
         '6loader20create_address_space': 6144,
         '6loader21prepare_address_space': 2048,
         # Guest SMP previously kept two full architectural contexts plus
         # execution temporaries in nested seal/preparation frames (>13 KiB).
-        '32sys_pending_virtual_machine_seal.*23DeferredProcessServices': 3072,
+        '32sys_pending_virtual_machine_seal.*15ProcessServices': 3072,
         # Preparation retains bounded accounting reservations and scheduler
         # rollback owners (2224 B), not architectural register-bank copies.
         '9VmBuilder17prepare_boot_vcpu': 3072,

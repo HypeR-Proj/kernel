@@ -6,10 +6,21 @@ use hyper::hal::memory::KernelImageLayout;
 use hyper::hal::memory::Stage1Mapping;
 use hyper::mm::{BootAllocator, PhysicalAddress};
 use hyper::platform::PlatformInfo;
+use hyper::sync::PublishedOnce;
 
 use super::page_table::{self, FinalAddressSpace};
 
 pub type Error = page_table::Error;
+
+// Boot retains this root permanently and never maps its lower aliases again.
+static IDLE_LOWER_ROOT: PublishedOnce<PhysicalAddress> = PublishedOnce::new();
+
+pub(in crate::arch::aarch64) fn idle_lower_root() -> u64 {
+    match IDLE_LOWER_ROOT.get() {
+        Some(root) => root.get(),
+        None => hyper::debug::invariant_failure("native translation before identity retirement"),
+    }
+}
 
 /// Architecture-owned state for the final EL2 stage-1 address space.
 pub struct PreparedAddressSpace {
@@ -92,7 +103,12 @@ impl PreparedAddressSpace {
         // The shared HAL accepts platform intervals for architectures that mix
         // identity and permanent mappings. Here TTBR0 owns only transition
         // aliases, so retiring its entire root requires no interval walk.
-        page_table::retire_identity_mappings(self.address_space.transition_root)
+        page_table::retire_identity_mappings(self.address_space.transition_root)?;
+        // Publish only after all descriptors are invalid and their old
+        // translations have completed retirement on every participating CPU.
+        IDLE_LOWER_ROOT
+            .publish(self.address_space.transition_root)
+            .map_err(|_| Error::Conflict)
     }
 
     /// Adds a guarded runtime-stack mapping to this hierarchy.

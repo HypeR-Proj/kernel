@@ -7,7 +7,7 @@
 .section .rodata.fp_probes, "a"
 .balign 4
 
-.macro fp_program name, guest=0, wait=0
+.macro fp_program name, guest=0, wait=0, blocking=0
 .global \name\()_start
 .global \name\()_end
 \name\()_start:
@@ -20,6 +20,35 @@
     .else
     mov x19, #0x1235              // The Native fixture patches this seed.
     sub x23, sp, #4096            // Bottom of the fixture's writable stack.
+    msr tpidr_el0, x19
+    .if \blocking
+    mov x0, #0
+    mov x8, #9                   // event_create.
+    svc #0
+    cbnz x0, .Lfail\@
+    mov x25, x1
+    sub x27, sp, #8192           // Untouched COW page, below the stack.
+    ldrb w9, [x27]
+    cmp w9, #0x5a
+    b.ne .Lfail\@
+    mov x0, x25
+    mov x1, x27
+    mov x2, #16                  // Complete HandleInfo record.
+    mov x3, #0
+    mov x4, #0
+    mov x5, #0
+    mov x8, #4                   // handle_get_info must resolve COW copyout.
+    svc #0
+    cbnz x0, .Lfail\@
+    cmp x1, #16
+    b.ne .Lfail\@
+    ldr w9, [x27]
+    cmp w9, #1                   // ObjectKind::EVENT.
+    b.ne .Lfail\@
+    ldrb w9, [x27, #16]
+    cmp w9, #0x5a                // Copyout must not overwrite the next byte.
+    b.ne .Lfail\@
+    .endif
     .endif
     .irp reg,v0.d[0],v0.d[1],v1.d[0],v1.d[1],v2.d[0],v2.d[1],v3.d[0],v3.d[1],v4.d[0],v4.d[1],v5.d[0],v5.d[1],v6.d[0],v6.d[1],v7.d[0],v7.d[1],v8.d[0],v8.d[1],v9.d[0],v9.d[1],v10.d[0],v10.d[1],v11.d[0],v11.d[1],v12.d[0],v12.d[1],v13.d[0],v13.d[1],v14.d[0],v14.d[1],v15.d[0],v15.d[1],v16.d[0],v16.d[1],v17.d[0],v17.d[1],v18.d[0],v18.d[1],v19.d[0],v19.d[1],v20.d[0],v20.d[1],v21.d[0],v21.d[1],v22.d[0],v22.d[1],v23.d[0],v23.d[1],v24.d[0],v24.d[1],v25.d[0],v25.d[1],v26.d[0],v26.d[1],v27.d[0],v27.d[1],v28.d[0],v28.d[1],v29.d[0],v29.d[1],v30.d[0],v30.d[1],v31.d[0],v31.d[1]
     umov x9, \reg
@@ -43,6 +72,11 @@
     .endr
     mov x24, #0
 .Lverify\@:
+    .if !\guest
+    mrs x9, tpidr_el0
+    cmp x9, x19
+    b.ne .Lfail\@
+    .endif
     .irp reg,v0.d[0],v1.d[0],v2.d[0],v3.d[0],v4.d[0],v5.d[0],v6.d[0],v7.d[0],v8.d[0],v9.d[0],v10.d[0],v11.d[0],v12.d[0],v13.d[0],v14.d[0],v15.d[0],v16.d[0],v17.d[0],v18.d[0],v19.d[0],v20.d[0],v21.d[0],v22.d[0],v23.d[0],v24.d[0],v25.d[0],v26.d[0],v27.d[0],v28.d[0],v29.d[0],v30.d[0],v31.d[0]
     umov x9, \reg
     cmp x9, x19
@@ -74,12 +108,29 @@
     wfi
     .endif
     .else
+    .if \blocking
+    mov x0, x25
+    mov x1, #1
+    mov x2, #-1
+    mov x8, #11                  // object_wait_one; controller migrates/wakes.
+    svc #0
+    cbnz x0, .Lfail\@
+    cmp x1, #1
+    b.ne .Lfail\@
+    mov x0, x25
+    mov x1, #1
+    mov x2, #0
+    mov x8, #10                  // Clear Event before the next wait.
+    svc #0
+    cbnz x0, .Lfail\@
+    .else
     mov x8, #0
     svc #0                      // Direct return must retain the register bank.
     mov x8, #-1
-    svc #0                      // Deferred unwind must save before re-entry.
+    svc #0                      // Unknown calls use the same direct return.
     mov x8, #6
     svc #0                      // Yield lets another FP owner execute.
+    .endif
     .endif
     mov x9, #0x400000
 .Lbusy\@:
@@ -95,5 +146,6 @@
 .endm
 
 fp_program aarch64_native_fp_probe
+fp_program aarch64_native_blocking_fp_probe, 0, 0, 1
 fp_program aarch64_guest_fp_probe, 1
 fp_program aarch64_guest_fp_wait_probe, 1, 1

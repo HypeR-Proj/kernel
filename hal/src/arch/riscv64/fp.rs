@@ -72,13 +72,13 @@ pub(super) fn restore_for_run(state: &State) {
     RESTORES.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Saves and scrubs resident state before typed anchor unwind can schedule.
+/// Saves and scrubs resident state before unwind or syscall suspension.
 pub(super) fn save(state: &mut State, status: u64) {
     if status & registers::SSTATUS_FS_MASK == 0 {
         return;
     }
     // SAFETY: The stopped, interrupt-masked owner still has the physical bank;
-    // all privileged code is IMAC. No owner survives outside the run anchor.
+    // all privileged code is IMAC. No physical residency survives suspension.
     unsafe { riscv64_fp_save_and_clear(state) };
     #[cfg(feature = "kernel-self-test")]
     SAVES.fetch_add(1, Ordering::Relaxed);

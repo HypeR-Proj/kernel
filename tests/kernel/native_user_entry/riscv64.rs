@@ -29,7 +29,9 @@ pub(crate) fn run() -> Result<(), Error> {
         run_pair(&domain, &group, true)?;
         run_pair(&domain, &group, false)?;
         run_fault_probes(&domain, &group)?;
-        if crate::hal::user::direct_native_call_count_for_test() != direct_calls.saturating_add(256)
+        // Each of four programs returns from 64 queries, one unknown call,
+        // and eight yields; thread_exit never contributes a direct return.
+        if crate::hal::user::direct_native_call_count_for_test() != direct_calls.saturating_add(292)
         {
             return Err(Error::Terminal);
         }

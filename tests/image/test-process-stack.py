@@ -18,12 +18,12 @@ spec.loader.exec_module(process_stack)
 SYMBOLS = (
     '15PreparedProcess7try_new',
     '7Process17finish_retirement',
-    '24sys_process_builder_seal23DeferredProcessServices',
-    '36sys_memory_inspector_read_statistics23DeferredProcessServices',
+    '24sys_process_builder_seal15ProcessServices',
+    '36sys_memory_inspector_read_statistics15ProcessServices',
     '6loader11load_native',
     '6loader20create_address_space',
     '6loader21prepare_address_space',
-    '32sys_pending_virtual_machine_seal23DeferredProcessServices',
+    '32sys_pending_virtual_machine_seal15ProcessServices',
     '9VmBuilder17prepare_boot_vcpu',
     '13VcpuExecution13try_installed',
 )
@@ -53,8 +53,8 @@ class ProcessStackTests(unittest.TestCase):
         self.functions['test-service'] = function(
             '24sys_process_builder_seal17RejectingServices', 'ret')
         self.assertEqual(len(self.check(self_test=True).splitlines()), len(SYMBOLS) - 1)
-        del self.functions['24sys_process_builder_seal23DeferredProcessServices']
-        with self.assertRaisesRegex(ValueError, 'DeferredProcessServices.*found 0'):
+        del self.functions['24sys_process_builder_seal15ProcessServices']
+        with self.assertRaisesRegex(ValueError, 'ProcessServices.*found 0'):
             self.check(self_test=True)
 
     def test_production_requires_bootstrap_loader(self):
@@ -75,8 +75,8 @@ class ProcessStackTests(unittest.TestCase):
 
     def test_ambiguous_real_syscall_fails(self):
         self.functions['duplicate'] = function(
-            '24sys_process_builder_seal23DeferredProcessServicesOtherInstantiation')
-        with self.assertRaisesRegex(ValueError, 'DeferredProcessServices.*found 2'):
+            '24sys_process_builder_seal15ProcessServicesOtherInstantiation')
+        with self.assertRaisesRegex(ValueError, 'ProcessServices.*found 2'):
             self.check()
 
     def test_split_prologue_reservations_are_accumulated(self):

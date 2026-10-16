@@ -10,8 +10,7 @@
 
 use core::marker::PhantomData;
 
-use hyper::abi::native::{NativeInvocation, NativeResult};
-use hyper::cpu::{CpuIndex, PinnedExecution};
+use hyper::cpu::CpuIndex;
 use hyper::hal::user::{NativeCallService, UserFault, UserRunBinding};
 use hyper::mm::PhysicalAddress;
 use hyper::sync::InterruptMaskGuard;
@@ -241,14 +240,17 @@ pub unsafe fn service_local_request(request: LocalRequest) -> bool {
     }
 }
 
-/// CPU-affine proof that one admitted local context installed a native root.
-#[must_use = "active native translation must be explicitly left before releasing CPU pinning"]
-pub struct ActiveAddressSpace<'pin> {
+/// CPU-local activation retained until the scheduler detaches this root.
+///
+/// The owner borrow keeps translation storage alive. CPU affinity is enforced
+/// by the unsafe activation contract: every actual context switch must consume
+/// this token on its original CPU before publishing the outgoing Thread.
+#[must_use = "active native translation must be explicitly left before a context switch"]
+pub struct ActiveAddressSpace<'owner> {
     cpu: CpuIndex,
     #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
     backend: Option<crate::arch::user::UserLocalActivation>,
-    _pin: PhantomData<&'pin dyn PinnedExecution>,
-    _owner: PhantomData<&'pin dyn hyper::hal::user::UserTranslationOwner>,
+    _owner: PhantomData<&'owner dyn hyper::hal::user::UserTranslationOwner>,
     not_send_or_sync: PhantomData<*mut ()>,
 }
 
@@ -302,22 +304,24 @@ pub unsafe fn prepare_host_address_space(
     }
 }
 
-/// Installs a prepared root on the pinned current CPU.
+/// Installs a prepared root on the IRQ-masked current CPU.
 ///
 /// # Safety
 ///
 /// Kernel admission must remain closed against update cuts until this method
 /// returns and the returned token is recorded active. The hierarchy and its
-/// identifier must remain retained for the token's lifetime.
-pub unsafe fn activate_local<'pin>(
+/// identifier must remain retained for the token's lifetime. Before enabling
+/// interrupts, the caller must register this activation with a scheduler hook
+/// that consumes it on this CPU before every actual context switch. A syscall
+/// may retain it while executing, but a parked continuation must not retain it.
+pub unsafe fn activate_local<'owner>(
     root: &PreparedAddressSpace,
     identifier: u16,
     identifier_epoch: u64,
     cpu: CpuIndex,
-    _pin: &'pin dyn PinnedExecution,
-    _owner: &'pin dyn hyper::hal::user::UserTranslationOwner,
+    _owner: &'owner dyn hyper::hal::user::UserTranslationOwner,
     kernel_access: &PreparedKernelAccess<'_>,
-) -> Result<ActiveAddressSpace<'pin>, AddressSpaceError> {
+) -> Result<ActiveAddressSpace<'owner>, AddressSpaceError> {
     if kernel_access.cpu != cpu
         || crate::hal::cpu::current_index() != Some(cpu)
         || crate::hal::irq::local_enabled()
@@ -326,7 +330,7 @@ pub unsafe fn activate_local<'pin>(
     }
     #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
     {
-        // SAFETY: The caller supplies the admission, pinning, and retention
+        // SAFETY: The caller supplies the admission, switch-hook, and retention
         // proof required by the architecture-local transition.
         let backend = unsafe {
             crate::arch::user::activate_user_local(&root.backend, identifier, identifier_epoch)
@@ -334,7 +338,6 @@ pub unsafe fn activate_local<'pin>(
         Ok(ActiveAddressSpace {
             cpu,
             backend: Some(backend),
-            _pin: PhantomData,
             _owner: PhantomData,
             not_send_or_sync: PhantomData,
         })
@@ -362,9 +365,12 @@ pub fn local_identity_is_active(identity: LocalIdentity) -> bool {
 ///
 /// # Safety
 ///
-/// The caller must execute on `active.cpu()` while the original execution pin
-/// remains valid.
+/// The caller must execute IRQ-masked on `active.cpu()`, before the outgoing
+/// Thread becomes available to another CPU.
 pub unsafe fn deactivate_local(active: ActiveAddressSpace<'_>) -> Result<(), AddressSpaceError> {
+    if crate::hal::cpu::current_index() != Some(active.cpu) || crate::hal::irq::local_enabled() {
+        hyper::debug::invariant_failure("selected HAL user::deactivate_local CPU invariant");
+    }
     #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
     {
         let mut active = active;
@@ -388,7 +394,7 @@ impl Drop for ActiveAddressSpace<'_> {
         #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
         if self.backend.is_some() {
             // Hardware still references a borrowed root. Returning would end
-            // the root and pin borrows and permit use-after-free.
+            // the root borrow and permit use-after-free.
             hyper::debug::invariant_failure("selected HAL user::drop invariant");
         }
     }
@@ -455,101 +461,62 @@ pub fn prepare_kernel_access<'mask>(
     }
 }
 
-/// A stopped lower-EL run which still owns its active translation token.
+/// Runs a Thread-owned Native context until a fault, interruption, or stop.
 ///
-/// Kernel policy cannot dispatch, block, or schedule while this value exists.
-/// The kernel address-space owner must consume this token and restore its
-/// preceding translation before exposing the exit to policy code.
-#[must_use = "native-user translation must be left before kernel dispatch"]
-pub struct StoppedUser<'context, 'pin> {
-    #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
-    exit: Option<crate::arch::user::UserExit<'context>>,
-    #[cfg(not(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64)))]
-    _context: PhantomData<&'context mut UserContext>,
-    active: Option<ActiveAddressSpace<'pin>>,
-}
-
-/// Runs one admitted native-user generation until ordinary kernel state is required.
+/// Syscalls execute on the current Thread's kernel stack and may block or
+/// migrate. Translation ownership remains with the caller throughout the run.
 ///
-/// The active translation token retains both execution pinning and root
-/// ownership. Never-blocking Native calls complete from synchronous exception
-/// entry; faults, preemption, and deferred calls return owned state here.
-pub fn run_user<'context, 'pin>(
+/// # Safety
+/// The caller retains the context and service at stable addresses until return.
+/// Initial entry has IRQs masked and an admitted Native translation. Every
+/// actual scheduler switch suspends Native machine state and leaves the local
+/// translation; a resumed callback restores translation before returning to
+/// userspace. No CPU-affine guard or borrow spans this call. Return is masked,
+/// with architecture publication closed; the caller must then leave any active
+/// translation before consuming the exit's exactly-once completion.
+pub unsafe fn run_user<'context>(
     context: &'context mut UserContext,
-    active: ActiveAddressSpace<'pin>,
     binding: UserRunBinding,
-    kernel_access: PreparedKernelAccess<'_>,
     service: &NativeCallService<'_>,
-) -> Result<StoppedUser<'context, 'pin>, UserEntryError> {
-    if kernel_access.cpu != active.cpu || crate::hal::irq::local_enabled() {
-        // SAFETY: `active` still owns the current-CPU pin and translation.
-        if unsafe { deactivate_local(active) }.is_err() {
-            hyper::debug::invariant_failure("selected HAL user::run_user invariant");
-        }
+) -> Result<(UserExit<'context>, StoppedPublication), UserEntryError> {
+    if crate::hal::irq::local_enabled() {
         return Err(UserEntryError::InterruptsEnabled);
     }
     #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
     {
-        // SAFETY: `active` retains the current-CPU pin, translation root, and
-        // owner for this entire call. `context` is exclusively borrowed until
-        // the architecture has closed its generation-qualified publication.
-        let exit =
-            match unsafe { crate::arch::user::run_user(&mut context.backend, binding, service) } {
-                Ok(exit) => exit,
-                Err(error) => {
-                    // SAFETY: The consumed token proves the current CPU remains
-                    // pinned to the activation which this path is abandoning.
-                    if unsafe { deactivate_local(active) }.is_err() {
-                        hyper::debug::invariant_failure("selected HAL user::run_user invariant");
-                    }
-                    return Err(UserEntryError::Backend(error));
-                }
-            };
-        Ok(StoppedUser {
-            exit: Some(exit),
-            active: Some(active),
-        })
+        // SAFETY: The caller supplies the Thread lifetime, scheduler suspension,
+        // translation, and masked boundary obligations documented above.
+        let exit = unsafe { crate::arch::user::run_user(&mut context.backend, binding, service) }
+            .map_err(UserEntryError::Backend)?;
+        let exit = UserExit::from_arch(exit);
+        let stopped = StoppedPublication {
+            binding: exit.binding(),
+        };
+        Ok((exit, stopped))
     }
     #[cfg(not(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64)))]
     {
-        let _ = (context, active, binding, kernel_access, service);
+        let _ = (context, binding, service);
         Err(UserEntryError::Unsupported)
     }
 }
 
-impl<'context, 'pin> StoppedUser<'context, 'pin> {
-    /// Separates the captured exit from its still-active translation ownership.
-    ///
-    /// This does not deactivate the native root. The address-space owner must
-    /// restore the preceding translation before dispatching the exit or allowing
-    /// scheduling; the publication proof identifies the stopped run generation.
-    pub fn release(
-        mut self,
-    ) -> (
-        UserExit<'context>,
-        ActiveAddressSpace<'pin>,
-        StoppedPublication,
-    ) {
-        let Some(active) = self.active.take() else {
-            hyper::debug::invariant_failure("selected HAL user::release invariant");
-        };
-        #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
-        {
-            let Some(exit) = self.exit.take() else {
-                hyper::debug::invariant_failure("selected HAL user::release invariant");
-            };
-            let exit = UserExit::from_arch(exit);
-            let stopped = StoppedPublication {
-                binding: exit.binding(),
-            };
-            (exit, active, stopped)
-        }
-        #[cfg(not(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64)))]
-        {
-            let _ = active;
-            hyper::debug::invariant_failure("selected HAL user::release invariant")
-        }
+/// Saves and withdraws Native CPU ownership before an actual Thread switch.
+///
+/// An interrupted syscall continues on its retained Thread stack after resume;
+/// it reacquires Native CPU ownership only when returning to userspace.
+///
+/// # Safety
+/// Local IRQs are masked and the outgoing Thread cannot execute concurrently.
+/// The scheduler calls this after dropping its locks and before switching
+/// stacks, then leaves the outgoing Native translation before another Thread
+/// can execute. No raw frame or CPU-local borrow may span the switch.
+pub unsafe fn suspend_current_user() {
+    if crate::hal::irq::local_enabled() {
+        hyper::debug::invariant_failure("Native suspension requires masked IRQs");
     }
+    #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
+    crate::arch::user::suspend_current_user();
 }
 
 /// Non-forgeable proof that architecture publication for one native-user
@@ -564,22 +531,8 @@ impl StoppedPublication {
     }
 }
 
-impl Drop for StoppedUser<'_, '_> {
-    fn drop(&mut self) {
-        if self.active.is_some() {
-            // Leaking a borrowed hardware root would permit both migration and
-            // hierarchy retirement while the CPU still names it.
-            hyper::debug::invariant_failure("selected HAL user::drop invariant");
-        }
-    }
-}
-
 #[cfg_attr(not(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64)), allow(dead_code))]
 pub enum UserExit<'context> {
-    NativeCall {
-        invocation: NativeInvocation,
-        completion: ReturnCapability<'context>,
-    },
     Fault {
         fault: UserFault,
         completion: ReturnCapability<'context>,
@@ -593,24 +546,15 @@ pub enum UserExit<'context> {
 impl<'context> UserExit<'context> {
     pub fn binding(&self) -> UserRunBinding {
         match self {
-            Self::NativeCall { completion, .. }
-            | Self::Fault { completion, .. }
-            | Self::Interrupted { completion } => completion.binding(),
+            Self::Fault { completion, .. } | Self::Interrupted { completion } => {
+                completion.binding()
+            }
         }
     }
 
     #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
     fn from_arch(exit: crate::arch::user::UserExit<'context>) -> Self {
         match exit {
-            crate::arch::user::UserExit::NativeCall {
-                invocation,
-                completion,
-            } => Self::NativeCall {
-                invocation,
-                completion: ReturnCapability {
-                    backend: completion,
-                },
-            },
             crate::arch::user::UserExit::Fault { fault, completion } => Self::Fault {
                 fault,
                 completion: ReturnCapability {
@@ -650,24 +594,6 @@ impl<'context> ReturnCapability<'context> {
         #[cfg(not(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64)))]
         {
             hyper::debug::invariant_failure("selected HAL user::binding invariant")
-        }
-    }
-
-    pub fn complete_native(
-        self,
-        expected: UserRunBinding,
-        result: NativeResult,
-    ) -> Result<(), CompletionFailure<'context>> {
-        #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
-        {
-            self.backend
-                .complete_native(expected, result)
-                .map_err(CompletionFailure::from_arch)
-        }
-        #[cfg(not(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64)))]
-        {
-            let _ = (self, expected, result);
-            hyper::debug::invariant_failure("selected HAL user::complete_native invariant")
         }
     }
 
@@ -745,6 +671,26 @@ impl<'context> CompletionFailure<'context> {
 ))]
 pub fn direct_native_call_count_for_test() -> usize {
     crate::arch::user::direct_native_call_count_for_test()
+}
+
+/// Diagnostic machine entries and actual syscall suspension boundaries.
+#[cfg(all(
+    any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64),
+    feature = "kernel-self-test"
+))]
+pub fn native_run_counts_for_test() -> (usize, usize) {
+    crate::arch::user::native_run_counts_for_test()
+}
+
+/// Whether the current syscall's original user frame still owns the FP bank.
+#[cfg(all(CONFIG_ARCH_AARCH64, feature = "kernel-self-test"))]
+pub fn syscall_fp_resident_for_test(
+    _mask: &InterruptMaskGuard<crate::hal::irq::LocalMask>,
+) -> bool {
+    if crate::hal::irq::local_enabled() {
+        hyper::debug::invariant_failure("Native FP test query requires masked IRQs");
+    }
+    crate::arch::user::syscall_fp_resident_for_test()
 }
 
 #[cfg(all(CONFIG_ARCH_RISCV64, feature = "kernel-self-test"))]
