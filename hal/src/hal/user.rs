@@ -11,6 +11,7 @@
 use core::marker::PhantomData;
 
 use hyper::cpu::CpuIndex;
+pub use hyper::hal::user::UserRegisterSnapshot;
 use hyper::hal::user::{NativeCallService, UserFault, UserRunBinding};
 use hyper::mm::PhysicalAddress;
 use hyper::sync::InterruptMaskGuard;
@@ -407,6 +408,14 @@ pub struct UserContext {
 }
 
 impl UserContext {
+    /// Copies a detached context. The caller must own it after machine-run
+    /// publication and any resident FP state have been withdrawn.
+    pub fn snapshot_registers(&self, output: &mut UserRegisterSnapshot) {
+        *output = UserRegisterSnapshot::EMPTY;
+        #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
+        self.backend.snapshot_registers(output);
+    }
+
     pub fn set_entry_argument(&mut self, argument: u64) {
         #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
         self.backend.set_entry_argument(argument);

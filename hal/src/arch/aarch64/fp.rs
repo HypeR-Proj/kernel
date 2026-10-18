@@ -35,6 +35,13 @@ pub(super) struct State {
 }
 
 impl State {
+    pub(super) fn snapshot(&self, output: &mut hyper::hal::user::UserRegisterSnapshot) {
+        for (index, vector) in self.vectors.iter().enumerate() {
+            output.vector[index * 2..index * 2 + 2].copy_from_slice(vector);
+        }
+        output.fp_control = [self.control, self.status];
+    }
+
     pub(super) const fn zeroed() -> Self {
         Self {
             vectors: [[0; 2]; 32],

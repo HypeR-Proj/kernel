@@ -109,6 +109,7 @@ struct PageError;
 struct Page {
     physical: PhysicalAddress,
     bytes: Arc<[u8; PAGE_SIZE as usize]>,
+    retained_block: Option<Arc<Vec<u8>>>,
 }
 
 struct BackendState {
@@ -192,11 +193,16 @@ impl PageBackend for Backend {
         Ok(Page {
             physical: PhysicalAddress::new(physical),
             bytes: Arc::new([0; PAGE_SIZE as usize]),
+            retained_block: None,
         })
     }
 
     fn physical_address(&self, page: &Self::Page) -> PhysicalAddress {
         page.physical
+    }
+
+    fn permits_crash_retention(&self, page: &Self::Page) -> bool {
+        page.retained_block.is_none()
     }
 
     fn read_owned(
@@ -1566,6 +1572,222 @@ fn materialize(space: &UserAddressSpace<Backend, Account>, range: UserSlice) {
 }
 
 #[test]
+fn crash_memory_retains_private_heap_and_stack_without_the_address_space() {
+    let (backend, account) = fixtures();
+    let usage = account.0.clone();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE * 2),
+        backend.clone(),
+        account.clone(),
+    ));
+    let storage = crate::require_ok(WritableVmo::try_new(PAGE_SIZE * 2, backend, account));
+    crate::require_ok(storage.populate(0, PAGE_SIZE * 2));
+    crate::require_ok(storage.write(0, b"heap evidence"));
+    let change = crate::require_ok(space.prepare_map_writable(
+        space.root_vmar(),
+        slice(0x1000, PAGE_SIZE * 2),
+        storage.clone(),
+        0,
+        Permissions::read_write(),
+        Permissions::read_write(),
+    ));
+    complete(crate::require_ok(change.commit_for_test()));
+    drop(storage);
+    space.begin_process_stop();
+    assert!(matches!(
+        space.copy_to_user(slice(0x1000, 1), b"x"),
+        Err(AddressSpaceError::Stopped)
+    ));
+    let metadata_before = usage.bytes.load(Ordering::Relaxed);
+    usage.fail_next.store(true, Ordering::Relaxed);
+    assert!(matches!(
+        space.capture_crash_memory(PAGE_SIZE),
+        Err(AddressSpaceError::Account(_))
+    ));
+    assert_eq!(usage.bytes.load(Ordering::Relaxed), metadata_before);
+    assert_eq!(usage.pages.load(Ordering::Relaxed), 2);
+    let memory = crate::require_ok(space.capture_crash_memory(PAGE_SIZE));
+    assert_eq!(memory.retained_bytes(), PAGE_SIZE);
+    assert!(memory.partial());
+    assert_eq!(memory.mapping_count(), 1);
+    assert_eq!(
+        crate::require_some(memory.mapping(0)).kind,
+        user::CrashMappingKind::Anonymous
+    );
+    drop(space);
+    assert_eq!(usage.address_spaces.load(Ordering::Relaxed), 0);
+    assert_eq!(usage.pages.load(Ordering::Relaxed), 1);
+    let mut bytes = [0; 13];
+    assert_eq!(memory.read(0x1000, &mut bytes), Ok(13));
+    assert_eq!(&bytes, b"heap evidence");
+    assert_eq!(
+        memory.read(0x2000, &mut bytes),
+        Err(user::CrashReadError::Unavailable)
+    );
+    assert_eq!(
+        memory.read(u64::MAX, &mut bytes),
+        Err(user::CrashReadError::InvalidRange)
+    );
+    assert_eq!(memory.read(0x1ff8, &mut bytes), Ok(8));
+    assert_eq!(
+        memory.read(0x1000, &mut vec![0; 65537]),
+        Err(user::CrashReadError::InvalidRange)
+    );
+    drop(memory);
+    assert_eq!(usage.pages.load(Ordering::Relaxed), 0);
+    assert_eq!(usage.bytes.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn crash_memory_does_not_pin_a_large_contiguous_block_through_one_subpage() {
+    let (backend, account) = fixtures();
+    let size = PAGE_SIZE * 8;
+    let block = Arc::new(vec![0; size as usize]);
+    let observer = Arc::downgrade(&block);
+    let mut pages = Vec::new();
+    for _ in 0..8 {
+        let mut page = crate::require_ok(backend.allocate_zeroed());
+        // Each physical subpage owns the whole allocation, as a DMA VMO does.
+        page.retained_block = Some(block.clone());
+        pages.push(page);
+    }
+    drop(block);
+    let storage = crate::require_ok(WritableVmo::try_from_owned_pages(
+        size,
+        backend.clone(),
+        account.clone(),
+        pages,
+    ));
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, size),
+        backend,
+        account.clone(),
+    ));
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_map_writable(
+            space.root_vmar(),
+            slice(0x1000, size),
+            storage,
+            0,
+            Permissions::read_write(),
+            Permissions::read_write(),
+        ))
+        .commit_for_test(),
+    ));
+    space.begin_process_stop();
+    let memory = crate::require_ok(space.capture_crash_memory(PAGE_SIZE));
+    assert_eq!(memory.retained_bytes(), 0);
+    assert!(memory.partial());
+    drop(space);
+    assert!(
+        observer.upgrade().is_none(),
+        "one dump page retained the whole block"
+    );
+    assert_eq!(
+        memory.read(0x1000, &mut [0]),
+        Err(user::CrashReadError::Unavailable)
+    );
+    drop(memory);
+    assert_eq!(account.0.bytes.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn crash_memory_excludes_exported_or_multiply_mapped_writable_vmos() {
+    let (backend, account) = fixtures();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE * 3),
+        backend.clone(),
+        account.clone(),
+    ));
+    let storage = crate::require_ok(WritableVmo::try_new(
+        PAGE_SIZE,
+        backend.clone(),
+        account.clone(),
+    ));
+    crate::require_ok(storage.populate(0, PAGE_SIZE));
+    for address in [0x1000, 0x2000] {
+        let change = crate::require_ok(space.prepare_map_writable(
+            space.root_vmar(),
+            slice(address, PAGE_SIZE),
+            storage.clone(),
+            0,
+            Permissions::read_write(),
+            Permissions::read_write(),
+        ));
+        complete(crate::require_ok(change.commit_for_test()));
+    }
+    drop(storage);
+    let exported = crate::require_ok(WritableVmo::try_new(PAGE_SIZE, backend, account));
+    crate::require_ok(exported.populate(0, PAGE_SIZE));
+    let change = crate::require_ok(space.prepare_map_writable(
+        space.root_vmar(),
+        slice(0x3000, PAGE_SIZE),
+        exported.clone(),
+        0,
+        Permissions::read_write(),
+        Permissions::read_write(),
+    ));
+    complete(crate::require_ok(change.commit_for_test()));
+    space.begin_process_stop();
+    let memory = crate::require_ok(space.capture_crash_memory(PAGE_SIZE * 3));
+    assert_eq!(memory.retained_bytes(), 0);
+    assert!(memory.partial());
+    for index in 0..3 {
+        let mapping = crate::require_some(memory.mapping(index));
+        assert_eq!(mapping.kind, user::CrashMappingKind::Shared);
+        assert_eq!(mapping.flags & 4, 4);
+    }
+    drop(exported);
+    let memory = crate::require_ok(space.capture_crash_memory(PAGE_SIZE * 3));
+    assert_eq!(memory.retained_bytes(), PAGE_SIZE);
+}
+
+#[test]
+fn crash_memory_waits_for_admitted_writes_and_rejects_stale_mapping_commits() {
+    let (backend, account) = fixtures();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE),
+        backend.clone(),
+        account.clone(),
+    ));
+    let source = crate::require_ok(user::SnapshotVmo::try_from_bytes(&[0], backend, account));
+    private_mapping(
+        &space,
+        source,
+        0x1000,
+        PAGE_SIZE,
+        0,
+        1,
+        user::PrivateMappingMode::Eager,
+    );
+    let write = crate::require_ok(space.prepare_user_write_for_test(slice(0x1000, 1)));
+    let protect = crate::require_ok(space.prepare_protect(
+        space.root_vmar(),
+        slice(0x1000, PAGE_SIZE),
+        Permissions::read_only(),
+    ));
+    space.begin_process_stop();
+    assert!(matches!(
+        space.capture_crash_memory(PAGE_SIZE),
+        Err(AddressSpaceError::Busy)
+    ));
+    assert!(matches!(
+        protect.commit_for_test(),
+        Err(AddressSpaceError::Stopped)
+    ));
+    crate::require_ok(space.write_user_reservation_for_test(&write, b"k"));
+    space.release_user_write_for_test(write);
+    let memory = crate::require_ok(space.capture_crash_memory(PAGE_SIZE));
+    let mut bytes = [0];
+    assert_eq!(memory.read(0x1000, &mut bytes), Ok(1));
+    assert_eq!(bytes, [b'k']);
+}
+
+#[test]
 fn private_cow_shares_then_isolates_and_preserves_mapping_identity() {
     let (backend, source_account) = fixtures();
     let (_, destination_account) = fixtures();
@@ -2920,6 +3142,68 @@ fn protected_source(bytes: Vec<u8>) -> ProtectedSourceFixture {
         fail,
         alive,
     )
+}
+
+#[test]
+fn crash_memory_keeps_cow_data_but_releases_file_protection_and_residency() {
+    let (backend, account) = fixtures();
+    let usage = account.0.clone();
+    let range = slice(0x1000, PAGE_SIZE * 2);
+    let space = crate::require_ok(UserAddressSpace::try_new(window(), range, backend, account));
+    let (source, reads, fail, alive) = protected_source(vec![0x63; PAGE_SIZE as usize * 2]);
+    let view = crate::require_ok(space.prepare_file_view(
+        source,
+        PAGE_SIZE * 2,
+        0,
+        PAGE_SIZE * 2,
+        0,
+        false,
+        user::PrivateMappingMode::CopyOnWrite,
+    ));
+    let plan = crate::require_ok(space.prepare_map_private_view(
+        space.root_vmar(),
+        range,
+        view,
+        Permissions::read_write(),
+        Permissions::read_write(),
+    ));
+    complete(crate::require_ok(plan.commit_for_test()));
+    materialize(&space, slice(0x1000, PAGE_SIZE));
+    crate::require_ok(space.copy_to_user(slice(0x1000, 1), b"k"));
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_residency(space.root_vmar(), Some(range), true))
+            .commit_for_test(),
+    ));
+    let previous_reads = reads.load(Ordering::Relaxed);
+    fail.store(true, Ordering::Relaxed);
+    space.begin_process_stop();
+    let memory = crate::require_ok(space.capture_crash_memory(PAGE_SIZE * 2));
+    assert_eq!(memory.retained_bytes(), PAGE_SIZE);
+    let mapping = crate::require_some(memory.mapping(0));
+    assert_eq!(mapping.kind, user::CrashMappingKind::PrivateFile);
+    assert_eq!(mapping.flags, 1 | 2 | 8);
+    space.retire_file_sources();
+    assert_eq!(alive.load(Ordering::Relaxed), 0);
+    assert_eq!(usage.pinned.load(Ordering::Relaxed), 0);
+    // A foreign VMAR retaining the stopped space must not prevent pressure
+    // reclaim; only clean pages disappear, without entering the dead provider.
+    let (reclaim, count) =
+        crate::require_some(crate::require_ok(space.prepare_file_reclaim(range)));
+    assert_eq!(count, 1);
+    complete(crate::require_ok(reclaim.commit_for_test()));
+    assert_eq!(usage.pages.load(Ordering::Relaxed), 1);
+    drop(space);
+    let mut bytes = [0; 2];
+    assert_eq!(memory.read(0x1000, &mut bytes), Ok(2));
+    assert_eq!(bytes, [b'k', 0x63]);
+    assert_eq!(
+        memory.read(0x2000, &mut bytes),
+        Err(user::CrashReadError::Unavailable)
+    );
+    assert_eq!(reads.load(Ordering::Relaxed), previous_reads);
+    assert_eq!(usage.pages.load(Ordering::Relaxed), 1);
+    drop(memory);
+    assert_eq!(usage.pages.load(Ordering::Relaxed), 0);
 }
 
 #[test]

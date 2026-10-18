@@ -152,6 +152,23 @@ fn deferred_release_closes_weak_upgrade_before_destroying_the_value() {
 }
 
 #[test]
+fn exact_owner_pair_rejects_aliases_external_owners_and_weak_observers() {
+    let owner = crate::require_ok(hyper::mm::FallibleArc::try_new(42u64));
+    assert!(!owner.is_only_owner_pair(&owner));
+    let peer = owner.clone();
+    assert!(owner.is_only_owner_pair(&peer));
+    let external = owner.clone();
+    assert!(!owner.is_only_owner_pair(&peer));
+    drop(external);
+    let weak = peer.downgrade();
+    assert!(!owner.is_only_owner_pair(&peer));
+    drop(weak);
+    assert!(owner.is_only_owner_pair(&peer));
+    let unrelated = crate::require_ok(hyper::mm::FallibleArc::try_new(42u64));
+    assert!(!owner.is_only_owner_pair(&unrelated));
+}
+
+#[test]
 fn nonfinal_deferred_release_leaves_the_remaining_owner_live() {
     let drops = Arc::new(AtomicUsize::new(0));
     let owner = crate::require_ok(hyper::mm::FallibleArc::try_new(CountedDrop(drops.clone())));

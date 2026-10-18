@@ -26,6 +26,11 @@ pub(super) struct State {
     padding: u32,
 }
 impl State {
+    pub(super) fn snapshot(&self, output: &mut hyper::hal::user::UserRegisterSnapshot) {
+        output.vector[..32].copy_from_slice(&self.registers);
+        output.fp_control[0] = u64::from(self.control);
+    }
+
     pub(super) const fn zeroed() -> Self {
         Self {
             registers: [0; 32],

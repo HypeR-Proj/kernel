@@ -6,6 +6,9 @@
 #[path = "../../../../src/kernel/process/lifecycle.rs"]
 mod lifecycle;
 
+#[path = "../../../../src/kernel/process/retention/policy.rs"]
+mod retention_policy;
+
 use lifecycle::{
     LifecycleError, ProcessLifecycle, ProcessPhase, StopDispatchProgress, TerminalReason,
     UserThreadLifecycle, UserThreadPhase,
@@ -13,6 +16,53 @@ use lifecycle::{
 
 use std::cell::RefCell;
 use std::rc::Rc;
+
+#[test]
+fn retention_budget_counts_stopped_records_not_live_registrations() {
+    let mut budget = retention_policy::Budget::default();
+    for _ in 0..retention_policy::MAX_ARMED {
+        assert!(budget.arm());
+    }
+    assert!(!budget.arm());
+    // More than four services can be armed; only captured evidence is limited.
+    for _ in 0..retention_policy::MAX_RETAINED {
+        assert_eq!(budget.retain(0), Some(0));
+    }
+    assert_eq!(budget.retain(0), None);
+    budget.release(0);
+    assert_eq!(budget.retain(0), Some(0));
+    // Revoking a control returns registration admission even when an observer
+    // still holds the small revoked-view object.
+    budget.disarm();
+    assert!(budget.arm());
+}
+
+#[test]
+fn retention_policy_requires_a_finite_deadline_but_allows_metadata_only() {
+    use retention_policy::{MAX_BYTES, MAX_TIMEOUT_NS, valid_request};
+    assert!(valid_request(0, 1));
+    assert!(valid_request(MAX_BYTES, MAX_TIMEOUT_NS));
+    assert!(!valid_request(0, 0));
+    assert!(!valid_request(MAX_BYTES + 1, 1));
+    assert!(!valid_request(1, MAX_TIMEOUT_NS + 1));
+}
+
+#[test]
+fn retention_budget_returns_uncaptured_bytes_and_reuses_released_records() {
+    let mut budget = retention_policy::Budget::default();
+    let limit = retention_policy::MAX_BYTES;
+    assert_eq!(budget.retain(limit), Some(limit));
+    budget.commit_bytes(limit, 4096);
+    assert_eq!(budget.retain(limit), Some(limit - 4096));
+    assert_eq!(budget.retain(4096), Some(0));
+    budget.release(limit - 4096);
+    budget.release(4096);
+    budget.release(0);
+    assert_eq!(budget.retain(limit), Some(limit));
+    budget.commit_bytes(limit, 0);
+    budget.release(0);
+    assert_eq!(budget.retain(limit), Some(limit));
+}
 
 #[test]
 fn stop_before_publication_cannot_reopen_thread_admission() {

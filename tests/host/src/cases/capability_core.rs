@@ -56,6 +56,7 @@ fn process_builder_storage_policy_is_explicit_and_bounds_graph_authority() {
         ObjectKind::FILE,
         ObjectKind::VIRTUAL_MACHINE_CREATION_AUTHORITY,
         ObjectKind::VIRTUAL_MACHINE_CREATION_LEASE,
+        ObjectKind::CRASH_VIEW,
     ] {
         assert!(builder_policy::BuilderStorable::permits_kind_id(
             admitted.get()
@@ -70,6 +71,7 @@ fn process_builder_storage_policy_is_explicit_and_bounds_graph_authority() {
         ObjectKind::VIRTUAL_MACHINE,
         ObjectKind::VIRTUAL_CPU,
         ObjectKind::VIRTUAL_SERIAL,
+        ObjectKind::PROCESS_RETIREMENT,
         TEST_KIND,
     ] {
         assert!(!builder_policy::BuilderStorable::permits_kind_id(
@@ -2030,4 +2032,54 @@ fn diagnostic_pin_does_not_preserve_active_handle_authority() {
     );
     drop(pin);
     assert_eq!(object.snapshot().references.diagnostic, 0);
+}
+
+#[test]
+fn stopping_withdraws_unclaimed_owners_without_stranding_inflight_transactions() {
+    let transitions = Arc::new(AtomicUsize::new(0));
+    let mut table = HandleTable::new();
+    let mut cursor = 0;
+    let rights = Rights::TRANSFER.union(Rights::INSPECT);
+    let values = crate::require_ok(table.reserve::<2>()).publish(
+        &mut table,
+        [
+            prepared(object(1, &transitions), rights),
+            prepared(object(2, &transitions), rights),
+        ],
+    );
+    let operation_pin = crate::require_ok(table.resolve::<TestObject>(values[1], Rights::INSPECT));
+    let pending_destination = crate::require_ok(table.reserve::<1>());
+    let claim = crate::require_ok(table.prepare_transfer(
+        &[HandleTransferRequest {
+            value: values[0],
+            offered_rights: None,
+            rights: Rights::INSPECT,
+            offered_kind: None,
+            expected_kind: None,
+            operation: HandleTransferOperation::Move,
+        }],
+        None,
+        None,
+        HandleTransferRoute::Rendezvous,
+    ));
+    let (metadata, owner) = crate::require_some(table.remove_stopping_owner(&mut cursor));
+    assert_eq!(metadata.value, values[1]);
+    owner.complete();
+    assert_eq!(transitions.load(Ordering::Relaxed), 1);
+    assert_eq!(operation_pin.object().value, 2);
+    assert!(table.remove_stopping_owner(&mut cursor).is_none());
+    assert!(matches!(
+        table.begin_teardown(),
+        Err(HandleError::OutstandingReservation)
+    ));
+    // A syscall already in progress can unwind safely after stop admission
+    // closes; its restored active owner is withdrawn in the next reaper step.
+    claim.rollback(&mut table);
+    pending_destination.abort(&mut table);
+    let (metadata, owner) = crate::require_some(table.remove_stopping_owner(&mut cursor));
+    assert_eq!(metadata.value, values[0]);
+    owner.complete();
+    assert_eq!(transitions.load(Ordering::Relaxed), 2);
+    assert!(table.remove_stopping_owner(&mut cursor).is_none());
+    remove_all(&mut table);
 }
