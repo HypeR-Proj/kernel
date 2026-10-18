@@ -727,6 +727,72 @@ unsafe impl DmaBuffer for ScatteredBuffer {
 
 struct HighAddressBuffer(ScatteredBuffer);
 
+#[cfg(feature = "io-dma-revoke-test")]
+#[derive(Clone)]
+struct SharedBuffer(std::rc::Rc<ScatteredBuffer>);
+
+// SAFETY: Reference counting retains the same immutable physical-page list and
+// its allocations across every clone, including the test-only revocation owner.
+#[cfg(feature = "io-dma-revoke-test")]
+unsafe impl DmaBuffer for SharedBuffer {
+    fn length(&self) -> u64 {
+        self.0.length()
+    }
+    fn physical_page(&self, offset: u64) -> u64 {
+        self.0.physical_page(offset)
+    }
+}
+
+#[cfg(feature = "io-dma-revoke-test")]
+#[test]
+fn test_revocation_removes_only_selected_leaf_and_keeps_backing_on_sync_failure() {
+    for fail_sync in [false, true] {
+        let fixture = Fixture::new();
+        let mut controller = require_ok(fixture.initialize_payload::<SharedBuffer>());
+        let domain = require_ok(controller.create_domain());
+        let buffer = SharedBuffer(std::rc::Rc::new(ScatteredBuffer::new(3)));
+        let owner = std::rc::Rc::downgrade(&buffer.0);
+        require_ok(controller.map_buffer(domain, 0x1ff000, buffer, Permissions::ReadWrite));
+        require_ok(controller.attach(16, domain));
+        let left = fixture.stage2_leaf(16, 0x1ff000);
+        let right = fixture.stage2_leaf(16, 0x201000);
+        assert!(matches!(
+            controller.revoke_test_page(domain, 0x200001),
+            Err(Error::Address)
+        ));
+        assert!(matches!(
+            controller.revoke_test_page(domain, 0x202000),
+            Err(Error::NotMapped)
+        ));
+        let live = STATE.with(|state| state.borrow().live_pages);
+        STATE.with(|state| state.borrow_mut().hold_commands = fail_sync);
+        let revoked = controller.revoke_test_page(domain, 0x200000);
+        assert_eq!(fixture.stage2_leaf(16, 0x200000), 0);
+        assert_eq!(fixture.stage2_leaf(16, 0x1ff000), left);
+        assert_eq!(fixture.stage2_leaf(16, 0x201000), right);
+        assert_eq!(STATE.with(|state| state.borrow().live_pages), live);
+        if fail_sync {
+            assert!(matches!(revoked, Err(Error::Timeout { .. })));
+            drop(controller);
+            // Uncertain hardware completion quarantines the original mapping.
+            assert!(owner.upgrade().is_some());
+            assert_eq!(STATE.with(|state| state.borrow().live_pages), live);
+        } else {
+            let retained = require_ok(revoked);
+            assert!(matches!(
+                controller.revoke_test_page(domain, 0x200000),
+                Err(Error::NotMapped)
+            ));
+            drop(require_ok(controller.unmap_buffer(domain, 0x1ff000)));
+            require_ok(controller.detach(16));
+            require_ok(controller.destroy_domain(domain));
+            assert!(owner.upgrade().is_some());
+            drop(retained);
+            assert!(owner.upgrade().is_none());
+        }
+    }
+}
+
 // SAFETY: This payload-only mock associates its final retained page with the
 // stable synthetic RAM address 2^48; other pages use their host addresses.
 // The mock never dereferences payload physical addresses. All backing remains

@@ -17,6 +17,7 @@ doctest = false
 [features]
 kernel-self-test = []
 kernel-stack-audit = []
+io-dma-revoke-test = []
 
 [dependencies]
 hyper-abi = { path = "../../sdk/abi" }

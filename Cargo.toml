@@ -23,6 +23,7 @@ default = []
 kernel-vgic-tc-test = ["hyper-hal/kernel-vgic-tc-test"]
 kernel-self-test = ["hyper/kernel-self-test", "hyper-hal/kernel-self-test"]
 kernel-smmuv3-test = ["kernel-self-test"]
+io-dma-revoke-test = ["hyper/io-dma-revoke-test"]
 kernel-stack-audit = ["hyper/kernel-stack-audit", "hyper-hal/kernel-stack-audit"]
 
 [[bin]]

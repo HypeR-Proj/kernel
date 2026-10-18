@@ -7,6 +7,9 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+[features]
+io-dma-revoke-test = ["hyper/io-dma-revoke-test"]
+
 [dependencies]
 hyper = { package = "hyper-core", path = "../../core" }
 hyper-filesystem = { path = "../../../stdlib/rust/hyper-filesystem" }
