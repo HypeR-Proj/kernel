@@ -6,8 +6,8 @@
 use crate::{require_ok, require_some};
 use hyper::drivers::{
     iommu::smmuv3::{
-        Capabilities, CommandError, Containment, Controller, DmaMemory, Environment, Error, Event,
-        FaultKind, FaultOutcome, Permissions, firmware::pci_stream_id,
+        Capabilities, CommandError, Containment, Controller, DmaBuffer, DmaMemory, Environment,
+        Error, Event, FaultKind, FaultOutcome, Permissions, firmware::pci_stream_id,
     },
     platform::{MmioResource, PermanentMmioMapping},
 };
@@ -22,6 +22,8 @@ struct State {
     registers: usize,
     time: u64,
     live_pages: usize,
+    allocations: Vec<(usize, usize)>,
+    allocations_left: Option<usize>,
     hold_update: bool,
     hold_commands: bool,
     command_error: bool,
@@ -59,12 +61,29 @@ impl Drop for Memory {
         let layout = require_ok(Layout::from_size_align(size, size));
         // SAFETY: Exact layout and unique ownership of this live allocation.
         unsafe { dealloc(self.address as *mut u8, layout) };
-        STATE.with(|state| state.borrow_mut().live_pages -= 1 << self.order);
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            state.live_pages -= 1 << self.order;
+            let position = require_some(
+                state
+                    .allocations
+                    .iter()
+                    .position(|allocation| allocation.0 == self.address),
+            );
+            state.allocations.swap_remove(position);
+        });
     }
 }
 impl Environment for TestEnvironment {
     type Memory = Memory;
     fn allocate(order: usize) -> Result<Memory, Error> {
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            if let Some(left) = &mut state.allocations_left {
+                *left = left.checked_sub(1).ok_or(Error::Allocation)?;
+            }
+            Ok(())
+        })?;
         let size = 4096 << order;
         let layout = Layout::from_size_align(size, size).map_err(|_| Error::Allocation)?;
         // SAFETY: Nonempty validated allocation layout.
@@ -72,7 +91,11 @@ impl Environment for TestEnvironment {
         if address == 0 {
             return Err(Error::Allocation);
         }
-        STATE.with(|state| state.borrow_mut().live_pages += 1 << order);
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            state.live_pages += 1 << order;
+            state.allocations.push((address, size));
+        });
         Ok(Memory { address, order })
     }
     fn now_microseconds() -> u64 {
@@ -174,7 +197,44 @@ impl Fixture {
             core::ptr::read_volatile((self.registers.as_ptr() as usize + offset) as *const u32)
         }
     }
+    fn stage2_leaf(&self, stream: u32, iova: u64) -> u64 {
+        let read_word = |address: u64| {
+            let address = require_ok(usize::try_from(address));
+            assert_eq!(address % 8, 0);
+            STATE.with(|state| {
+                assert!(
+                    state
+                        .borrow()
+                        .allocations
+                        .iter()
+                        .any(|&(base, size)| { address >= base && address - base <= size - 8 })
+                );
+            });
+            // SAFETY: The allocation registry proves this aligned word belongs
+            // to a live fixture allocation. This thread owns the controller;
+            // no concurrent hardware or allocation/destruction is emulated.
+            u64::from_le(unsafe { core::ptr::read_volatile(address as *const u64) })
+        };
+        const ADDRESS_MASK: u64 = 0x0000_ffff_ffff_f000;
+        let streams =
+            (u64::from(self.read(0x80)) | (u64::from(self.read(0x84)) << 32)) & ADDRESS_MASK;
+        let entry = streams + u64::from(stream) * 64;
+        assert_eq!(read_word(entry) & 15, 13); // Valid stage-2 STE.
+        let mut table = read_word(entry + 24) & ADDRESS_MASK;
+        for shift in [30, 21] {
+            let descriptor = read_word(table + ((iova >> shift) & 511) * 8);
+            if descriptor & 1 == 0 {
+                return 0;
+            }
+            assert_eq!(descriptor & 3, 3);
+            table = descriptor & ADDRESS_MASK;
+        }
+        read_word(table + ((iova >> 12) & 511) * 8)
+    }
     fn initialize(&self) -> Result<Controller<TestEnvironment>, Error> {
+        self.initialize_payload::<Memory>()
+    }
+    fn initialize_payload<B: DmaBuffer>(&self) -> Result<Controller<TestEnvironment, B>, Error> {
         let range = require_some(PhysicalRange::new(0x9050000, 0x20000));
         // SAFETY: Fixture stands in for a uniquely owned, coherent, cold SMMU.
         // Its register storage outlives controller use in each test.
@@ -641,4 +701,182 @@ fn wired_interrupt_selection_clears_firmware_msi_targets() {
     assert_eq!(fixture.read(0xb0), 0);
     require_ok(controller.enable_interrupts());
     assert_eq!(fixture.read(0x54), 5);
+}
+
+// Payload ownership deliberately has no CPU pointer or control-table interface.
+struct ScatteredBuffer(Vec<Memory>);
+impl ScatteredBuffer {
+    fn new(pages: usize) -> Self {
+        Self(
+            (0..pages)
+                .map(|_| require_ok(TestEnvironment::allocate(0)))
+                .collect(),
+        )
+    }
+}
+// SAFETY: Each element owns a stable coherent page. The vector and every page
+// remain alive until the driver returns or quarantines this complete owner.
+unsafe impl DmaBuffer for ScatteredBuffer {
+    fn length(&self) -> u64 {
+        self.0.len() as u64 * 4096
+    }
+    fn physical_page(&self, offset: u64) -> u64 {
+        self.0[offset as usize / 4096].physical()
+    }
+}
+
+struct HighAddressBuffer(ScatteredBuffer);
+
+// SAFETY: This payload-only mock associates its final retained page with the
+// stable synthetic RAM address 2^48; other pages use their host addresses.
+// The mock never dereferences payload physical addresses. All backing remains
+// owned, but the last page lies outside the controller's advertised PA width.
+unsafe impl DmaBuffer for HighAddressBuffer {
+    fn length(&self) -> u64 {
+        self.0.length()
+    }
+    fn physical_page(&self, offset: u64) -> u64 {
+        if offset == self.length() - 4096 {
+            1 << 48
+        } else {
+            self.0.physical_page(offset)
+        }
+    }
+}
+
+#[test]
+fn retained_scattered_buffers_revoke_as_a_unit_across_table_boundaries() {
+    let fixture = Fixture::new();
+    let mut controller = require_ok(fixture.initialize_payload::<ScatteredBuffer>());
+    let domain = require_ok(controller.create_domain());
+    let before = STATE.with(|state| state.borrow().commands.len());
+    require_ok(controller.map_buffer(
+        domain,
+        0x1ff000,
+        ScatteredBuffer::new(3),
+        Permissions::ReadWrite,
+    ));
+    assert_eq!(
+        STATE.with(|state| state.borrow().commands.len()) - before,
+        2
+    );
+    for (address, pages) in [(0x1fe000, 2), (0x200000, 1), (0x201000, 2)] {
+        assert_eq!(
+            controller.map_buffer(
+                domain,
+                address,
+                ScatteredBuffer::new(pages),
+                Permissions::Read
+            ),
+            Err(Error::AlreadyMapped)
+        );
+    }
+    assert!(matches!(
+        controller.unmap_page(domain, 0x1ff000),
+        Err(Error::Address)
+    ));
+    assert!(matches!(
+        controller.unmap_buffer(domain, 0x200000),
+        Err(Error::NotMapped)
+    ));
+    require_ok(controller.map_buffer(domain, 0x202000, ScatteredBuffer::new(1), Permissions::Read));
+    require_ok(controller.map_buffer(
+        domain,
+        0x1fe000,
+        ScatteredBuffer::new(1),
+        Permissions::Write,
+    ));
+    let live = STATE.with(|state| state.borrow().live_pages);
+    drop(require_ok(controller.unmap_buffer(domain, 0x1ff000)));
+    assert_eq!(STATE.with(|state| state.borrow().live_pages), live - 3);
+    // Removing a middle entry must preserve the ordered predecessor/successor
+    // checks; a new mapping may use precisely the revoked hole.
+    require_ok(controller.map_buffer(domain, 0x1ff000, ScatteredBuffer::new(3), Permissions::Read));
+    for address in [0x202000, 0x1fe000, 0x1ff000] {
+        drop(require_ok(controller.unmap_buffer(domain, address)));
+    }
+    require_ok(controller.destroy_domain(domain));
+}
+
+#[test]
+fn buffer_allocation_failure_publishes_no_partial_mapping() {
+    let fixture = Fixture::new();
+    let mut controller = require_ok(fixture.initialize_payload::<ScatteredBuffer>());
+    let domain = require_ok(controller.create_domain());
+    require_ok(controller.attach(8, domain));
+    let buffer = ScatteredBuffer::new(3);
+    let live = STATE.with(|state| state.borrow().live_pages);
+    STATE.with(|state| state.borrow_mut().allocations_left = Some(2));
+    // L2 + first L3 succeed, second L3 across the 2 MiB boundary fails.
+    assert_eq!(
+        controller.map_buffer(domain, 0x1ff000, buffer, Permissions::ReadWrite),
+        Err(Error::Allocation)
+    );
+    assert!(matches!(
+        controller.unmap_buffer(domain, 0x1ff000),
+        Err(Error::NotMapped)
+    ));
+    assert_eq!(STATE.with(|state| state.borrow().live_pages), live - 3 + 2);
+    for address in [0x1ff000, 0x200000, 0x201000] {
+        assert_eq!(fixture.stage2_leaf(8, address), 0);
+    }
+    STATE.with(|state| state.borrow_mut().allocations_left = None);
+    require_ok(controller.detach(8));
+    require_ok(controller.destroy_domain(domain));
+}
+
+#[test]
+fn last_page_outside_output_width_publishes_no_partial_mapping() {
+    let fixture = Fixture::new();
+    let mut controller = require_ok(fixture.initialize_payload::<HighAddressBuffer>());
+    let domain = require_ok(controller.create_domain());
+    require_ok(controller.attach(8, domain));
+    let buffer = HighAddressBuffer(ScatteredBuffer::new(3));
+    let live = STATE.with(|state| state.borrow().live_pages);
+    assert_eq!(
+        controller.map_buffer(domain, 0x1ff000, buffer, Permissions::ReadWrite),
+        Err(Error::Address)
+    );
+    assert!(matches!(
+        controller.unmap_buffer(domain, 0x1ff000),
+        Err(Error::NotMapped)
+    ));
+    for address in [0x1ff000, 0x200000, 0x201000] {
+        assert_eq!(fixture.stage2_leaf(8, address), 0);
+    }
+    // Both intermediate leaf tables were needed by the valid prefix. They are
+    // retained empty, while all three unpublished payload pages are released.
+    assert_eq!(STATE.with(|state| state.borrow().live_pages), live - 3 + 3);
+    require_ok(controller.detach(8));
+    require_ok(controller.destroy_domain(domain));
+}
+
+#[test]
+fn revoked_buffer_stays_retained_if_the_completion_fence_times_out() {
+    let fixture = Fixture::new();
+    let mut controller = require_ok(fixture.initialize_payload::<ScatteredBuffer>());
+    let domain = require_ok(controller.create_domain());
+    let buffer = ScatteredBuffer::new(3);
+    let pages: [u64; 3] = core::array::from_fn(|index| buffer.physical_page(index as u64 * 4096));
+    require_ok(controller.map_buffer(domain, 0x1ff000, buffer, Permissions::ReadWrite));
+    require_ok(controller.attach(8, domain));
+    for (index, physical) in pages.into_iter().enumerate() {
+        let leaf = fixture.stage2_leaf(8, 0x1ff000 + index as u64 * 4096);
+        assert_eq!(leaf & 3, 3);
+        assert_eq!(leaf & 0x0000_ffff_ffff_f000, physical);
+    }
+    let live = STATE.with(|state| state.borrow().live_pages);
+    STATE.with(|state| state.borrow_mut().hold_commands = true);
+    assert!(matches!(
+        controller.unmap_buffer(domain, 0x1ff000),
+        Err(Error::Timeout { .. })
+    ));
+    // Clearing the actual leaves is insufficient retirement: cached DMA may
+    // still refer to every page until the failed completion fence succeeds.
+    for address in [0x1ff000, 0x200000, 0x201000] {
+        assert_eq!(fixture.stage2_leaf(8, address), 0);
+    }
+    assert_eq!(STATE.with(|state| state.borrow().live_pages), live);
+    drop(controller);
+    assert_eq!(STATE.with(|state| state.borrow().live_pages), live);
 }

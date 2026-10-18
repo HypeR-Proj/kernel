@@ -6,11 +6,10 @@
 mod edu;
 pub(crate) mod runtime;
 
-use crate::kernel::device::iommu::{CoherentMemory, KernelEnvironment as E};
+use crate::kernel::device::dma::{BackendMemoryLease, Lease};
+use crate::kernel::device::iommu::{Controller, KernelEnvironment as E};
 use hyper::drivers::{
-    iommu::smmuv3::{
-        Controller, DmaMemory, Environment, Error, Permissions, firmware::pci_stream_id,
-    },
+    iommu::smmuv3::{Environment, Error, Permissions, firmware::pci_stream_id},
     platform::{DriverServices, PlatformDevice},
 };
 
@@ -69,7 +68,7 @@ impl Fixture {
 }
 
 pub(crate) fn run(
-    controller: &mut Controller<E>,
+    controller: &mut Controller,
     smmu: &PlatformDevice,
     nodes: &[PlatformDevice],
     services: &dyn DriverServices,
@@ -85,8 +84,8 @@ pub(crate) fn run(
     let guarded = page(GUARD)?;
     let address_a = page_a.virtual_address();
     let address_b = page_b.virtual_address();
-    controller.map_page(domain_a, IOVA, page_a, Permissions::ReadWrite)?;
-    controller.map_page(domain_b, IOVA, page_b, Permissions::ReadWrite)?;
+    controller.map_page(domain_a, IOVA, page_a.into(), Permissions::ReadWrite)?;
+    controller.map_page(domain_b, IOVA, page_b.into(), Permissions::ReadWrite)?;
     // Unconfigured StreamID must not reach physical RAM, even with a valid PA.
     unbound.probe_write(guarded.physical())?;
     fault(controller, sid_unbound, 4, None)?;
@@ -117,7 +116,7 @@ pub(crate) fn run(
 
     let readonly = page(PATTERN_B)?;
     let readonly_address = readonly.virtual_address();
-    controller.map_page(domain_a, OTHER_IOVA, readonly, Permissions::Read)?;
+    controller.map_page(domain_a, OTHER_IOVA, readonly.into(), Permissions::Read)?;
     // A denied write must carry bytes different from the protected contents.
     a.read_dma(IOVA)?;
     a.probe_write(OTHER_IOVA)?;
@@ -164,7 +163,7 @@ pub(crate) fn run(
     verify(old_a.virtual_address(), GUARD)?;
     let replacement = page(PATTERN_B)?;
     let replacement_address = replacement.virtual_address();
-    controller.map_page(domain_a, IOVA, replacement, Permissions::ReadWrite)?;
+    controller.map_page(domain_a, IOVA, replacement.into(), Permissions::ReadWrite)?;
     a.write_dma(IOVA)?;
     clean(controller)?;
     verify(replacement_address, PATTERN_A)?;
@@ -206,6 +205,41 @@ pub(crate) fn run(
     controller.detach(sid_a)?;
     drop(controller.unmap_page(reused, IOVA)?);
     controller.destroy_domain(reused)?;
+    // One VMO lease crosses a leaf-table boundary. Its physical pages need not
+    // be adjacent; the driver must translate each retained page independently.
+    let buffer_domain = controller.create_domain()?;
+    let buffer_base = 0x1fff_f000;
+    let buffer = buffer(PATTERN_A, 3)?;
+    let addresses: [usize; 3] = core::array::from_fn(|index| {
+        crate::kernel::mm::memory::linear_address(
+            buffer.object().physical_page(index as u64 * 4096),
+        )
+        .unwrap_or_else(|| hyper::debug::invariant_failure("DMA test page outside RAM"))
+    });
+    controller.map_buffer(
+        buffer_domain,
+        buffer_base,
+        buffer.into(),
+        Permissions::ReadWrite,
+    )?;
+    controller.attach(sid_a, buffer_domain)?;
+    for (index, address) in addresses.into_iter().enumerate() {
+        a.read_dma(buffer_base + index as u64 * 4096)?;
+        fill(address, GUARD);
+        a.write_dma(buffer_base + index as u64 * 4096)?;
+        clean(controller)?;
+        verify(address, PATTERN_A + index as u64)?;
+    }
+    if !matches!(
+        controller.unmap_page(buffer_domain, buffer_base),
+        Err(Error::Address)
+    ) {
+        return Err(Error::Corrupt);
+    }
+    controller.detach(sid_a)?;
+    drop(controller.unmap_buffer(buffer_domain, buffer_base)?);
+    controller.destroy_domain(buffer_domain)?;
+    crate::pr_info!("HypeR test: SMMUv3 VMO buffer ownership and range revocation passed");
     crate::pr_info!("HypeR test: SMMUv3 DMA isolation acceptance passed");
     Ok(())
 }
@@ -216,9 +250,51 @@ fn word(bytes: &[u8]) -> Result<u32, Error> {
         .map(u32::from_be_bytes)
         .map_err(|_| Error::Unsupported)
 }
-fn page(pattern: u64) -> Result<CoherentMemory, Error> {
-    let memory = E::allocate(0)?;
-    fill(memory.virtual_address(), pattern);
+trait LeaseAddress {
+    fn physical(&self) -> u64;
+    fn virtual_address(&self) -> usize;
+}
+impl LeaseAddress for Lease {
+    fn physical(&self) -> u64 {
+        self.object().physical_page(0)
+    }
+    fn virtual_address(&self) -> usize {
+        crate::kernel::mm::memory::linear_address(self.physical())
+            .unwrap_or_else(|| hyper::debug::invariant_failure("test lease outside linear RAM"))
+    }
+}
+impl LeaseAddress for crate::kernel::device::dma::Buffer {
+    fn physical(&self) -> u64 {
+        hyper::drivers::iommu::smmuv3::DmaBuffer::physical_page(self, 0)
+    }
+    fn virtual_address(&self) -> usize {
+        crate::kernel::mm::memory::linear_address(self.physical())
+            .unwrap_or_else(|| hyper::debug::invariant_failure("test buffer outside linear RAM"))
+    }
+}
+
+fn page(pattern: u64) -> Result<Lease, Error> {
+    buffer(pattern, 1)
+}
+
+fn buffer(pattern: u64, pages: u64) -> Result<Lease, Error> {
+    use crate::kernel::{
+        accounting::{ResourceDomain, ResourceLimits},
+        mm::user_space::{GuestMemoryBacking, VmoObject},
+    };
+    let domain =
+        ResourceDomain::try_new_root(ResourceLimits::UNLIMITED).map_err(|_| Error::Allocation)?;
+    let vmo = VmoObject::try_new_writable(pages * 4096, &domain).map_err(|_| Error::Allocation)?;
+    let backing = GuestMemoryBacking::try_from_vmo(&vmo).map_err(|_| Error::Allocation)?;
+    let memory = BackendMemoryLease::prepare(backing, &domain).map_err(|_| Error::Allocation)?;
+    for page in 0..pages {
+        let address =
+            crate::kernel::mm::memory::linear_address(memory.object().physical_page(page * 4096))
+                .ok_or(Error::Address)?;
+        fill(address, pattern + page);
+    }
+    // Both source owners leave scope here. Real DMA must keep working using
+    // only the kernel lease subsequently transferred into the SMMU domain.
     Ok(memory)
 }
 fn fill(address: usize, pattern: u64) {
@@ -239,7 +315,7 @@ fn verify(address: usize, pattern: u64) -> Result<(), Error> {
     }
     Ok(())
 }
-fn clean(controller: &mut Controller<E>) -> Result<(), Error> {
+fn clean(controller: &mut Controller) -> Result<(), Error> {
     controller.synchronize()?;
     if let Some(event) = controller.next_event()? {
         crate::pr_err!("HypeR test: unexpected SMMUv3 event {event:?}");
@@ -258,7 +334,7 @@ fn verify_not_word(address: usize, forbidden: u32) -> Result<(), Error> {
 }
 
 fn warm_permission_fault(
-    controller: &mut Controller<E>,
+    controller: &mut Controller,
     stream: u32,
     address: u64,
     read: bool,
@@ -285,7 +361,7 @@ fn warm_permission_fault(
     clean(controller)
 }
 fn fault(
-    controller: &mut Controller<E>,
+    controller: &mut Controller,
     stream: u32,
     kind: u8,
     transaction: Option<(u64, bool)>,

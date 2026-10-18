@@ -10,6 +10,8 @@ mod capability_objects;
 mod channel;
 #[cfg(CONFIG_ARCH_AARCH64)]
 mod channel_service;
+#[cfg(CONFIG_ARCH_AARCH64)]
+mod device_authority;
 mod file_locks;
 #[cfg(CONFIG_ARCH_AARCH64)]
 mod guest_entry_irq;

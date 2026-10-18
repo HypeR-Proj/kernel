@@ -3,11 +3,14 @@
 
 //! Faults handled by the real IRQ/worker path, without polling `EventQ` in tests.
 
-use super::{E, Error, Fixture, GUARD, IOVA, OTHER_IOVA, PATTERN_A, PATTERN_B, fill, page, verify};
+use super::{
+    E, Error, Fixture, GUARD, IOVA, LeaseAddress, OTHER_IOVA, PATTERN_A, PATTERN_B, fill, page,
+    verify,
+};
 use crate::kernel::device::iommu::runtime;
 use hyper::{
     drivers::{
-        iommu::smmuv3::{CommandError, Containment, DmaMemory, Environment, Permissions},
+        iommu::smmuv3::{CommandError, Containment, Environment, Permissions},
         platform::{DriverServices, PlatformDevice},
     },
     sync::InterruptSpinLock,
@@ -63,8 +66,8 @@ pub(crate) fn run() -> Result<(), Error> {
             let a = page(PATTERN_A)?;
             let b = page(PATTERN_B)?;
             let addresses = (a.virtual_address(), b.virtual_address());
-            controller.map_page(domain_a, IOVA, a, Permissions::ReadWrite)?;
-            controller.map_page(domain_b, IOVA, b, Permissions::ReadWrite)?;
+            controller.map_page(domain_a, IOVA, a.into(), Permissions::ReadWrite)?;
+            controller.map_page(domain_b, IOVA, b.into(), Permissions::ReadWrite)?;
             controller.attach(sid_a, domain_a)?;
             controller.attach(sid_b, domain_b)?;
             Ok((domain_a, domain_b, addresses.0, addresses.1))

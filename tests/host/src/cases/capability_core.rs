@@ -183,6 +183,10 @@ impl KernelObject for VariantRightsObject {
 
 struct DropTrackedObject(Arc<AtomicUsize>);
 
+std::thread_local! {
+    static RELEASING_TRACKED_OWNER: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
 impl kernel::object::private::Sealed for DropTrackedObject {}
 
 impl KernelObject for DropTrackedObject {
@@ -192,8 +196,17 @@ impl KernelObject for DropTrackedObject {
 
 impl Drop for DropTrackedObject {
     fn drop(&mut self) {
+        // Another test may reap this object immediately on its own thread;
+        // destruction must only be absent from the releasing caller's stack.
+        assert!(!RELEASING_TRACKED_OWNER.get());
         self.0.fetch_add(1, Ordering::Release);
     }
+}
+
+fn release_tracked_owner<T>(owner: T) {
+    RELEASING_TRACKED_OWNER.set(true);
+    drop(owner);
+    RELEASING_TRACKED_OWNER.set(false);
 }
 
 type TestObjectRef = PublishableRef<TestObject, KernelService>;
@@ -271,18 +284,44 @@ fn zero_reference_object_drop_is_deferred_and_reaped_exactly_once() {
         KernelRef::try_new_scheduler(DropTrackedObject(drops.clone())),
     );
 
-    drop(object);
-    assert_eq!(drops.load(Ordering::Acquire), 0);
-    assert!(kernel::object::final_reap_pending());
+    release_tracked_owner(object);
+    verify_reaped_once(&drops);
+}
 
-    let mut attempts = 0usize;
-    while drops.load(Ordering::Acquire) == 0 && attempts < 4_096 {
+#[test]
+fn kernel_service_lease_survives_until_its_last_derived_owner() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let lease: KernelRef<DropTrackedObject, kernel::object::KernelService> =
+        crate::require_ok(KernelRef::try_new_service(DropTrackedObject(drops.clone())));
+    let mapping = lease.clone();
+    assert_eq!(lease.snapshot().export_policy, ExportPolicy::KernelOnly);
+    assert_eq!(lease.koid(), mapping.koid());
+    drop(lease);
+    let _ = kernel::object::reap_final_objects(4096);
+    assert_eq!(drops.load(Ordering::Acquire), 0);
+    assert_eq!(mapping.snapshot().references.kernel_service, 1);
+    release_tracked_owner(mapping);
+    verify_reaped_once(&drops);
+}
+
+fn verify_reaped_once(drops: &Arc<AtomicUsize>) {
+    use std::time::{Duration, Instant};
+
+    // There is no valid post-release assertion about queue occupancy or an
+    // initial zero count: a concurrent test may have already reaped this owner.
+    let started = Instant::now();
+    while drops.load(Ordering::Acquire) == 0 && started.elapsed() < Duration::from_secs(5) {
         // Host tests share the global queue and run concurrently, so another
         // test may consume the next item between observing this probe and the
         // reap attempt. Only this probe's exactly-once drop is authoritative.
-        let _ = kernel::object::reap_one_final_object();
-        std::thread::yield_now();
-        attempts += 1;
+        if kernel::object::reap_one_final_object() {
+            std::thread::yield_now();
+        } else {
+            // Another reaper may have removed this owner and been descheduled
+            // before destroying it. Allow scheduler time, not a fixed number
+            // of CPU-speed-dependent yields, for that callback to complete.
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
     assert_eq!(drops.load(Ordering::Acquire), 1);
 

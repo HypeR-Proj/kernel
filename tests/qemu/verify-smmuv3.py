@@ -18,6 +18,7 @@ MARKERS = (
     "SMMUv3 unmapped and read/write permission faults passed",
     "SMMUv3 revoke/remap and stream reassignment passed",
     "SMMUv3 command and event queue wrap passed",
+    "SMMUv3 VMO buffer ownership and range revocation passed",
     "SMMUv3 DMA isolation acceptance passed",
     "SMMUv3 pre-enable event drain passed",
     "SMMUv3 IRQ worker, per-stream quarantine and fault flood suppression passed",

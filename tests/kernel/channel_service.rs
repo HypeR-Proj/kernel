@@ -106,6 +106,7 @@ pub(super) fn run() -> Result<(), Error> {
 
     verify_memory_authority_attenuation(&process, &domain)?;
     verify_guest_memory_authority(&process, &domain)?;
+    super::device_authority::verify(&process).map_err(|_| Error::State(60))?;
     verify_handle_accounting_churn(&process)?;
     verify_partial_charge_records(&process)?;
     verify_handle_quota_rollback(&process, ResourceLimits::UNLIMITED)?;
