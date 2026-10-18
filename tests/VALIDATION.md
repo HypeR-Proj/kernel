@@ -64,6 +64,14 @@ not a claim that every interleaving or failure path has been exhaustively tested
 
 ## Concurrent execution
 
+The [lifecycle fuzz/stress workloads](../../tests/stress/README.md) complement
+the fixed regression cases. `host/tests/capability_fuzz.rs` runs seeded
+transactions against production handle/object code and checks a separate owner
+model after every operation. The `native-stress` CI shard runs real multithreaded
+syscalls, cross-process MOVE, endpoint closure and concurrent process stop on
+one/four AArch64 CPUs and RISC-V harts. Seeds select reproducible workloads, not
+deterministic scheduler interleavings; longer campaigns are manual.
+
 `tests/concurrency` is a host-only Loom suite. From the repository root, run:
 
 ```sh
