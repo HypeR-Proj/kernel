@@ -206,14 +206,18 @@ fn exercise_ready_migration(target: CpuIndex) -> Result<(), Error> {
         return Err(Error::StateMismatch(7));
     }
 
-    let before = scheduler::statistics()?;
     if scheduler::migrate_thread(worker, target)? != MigrationStatus::Completed {
         return Err(Error::StateMismatch(8));
     }
+    // Statistics validates each run queue against its owned Ready Threads.
+    // Aggregate counts from separate snapshots cannot prove this move: timer
+    // IRQs may wake permanent workers between those snapshots, even while
+    // the FIFO bootstrap and target blocker prevent them from running.
     let after = scheduler::statistics()?;
-    if before.per_cpu_ready[CpuIndex::BOOT.get()] != after.per_cpu_ready[CpuIndex::BOOT.get()] + 1
-        || before.per_cpu_ready[target.get()] + 1 != after.per_cpu_ready[target.get()]
+    if after.per_cpu_ready[target.get()] == 0
         || scheduler::thread_placement(worker)? != (target, affinity)
+        || READY_STAGE.load(Ordering::Acquire) != 1
+        || READY_FAILURE.load(Ordering::Acquire) != 0
     {
         return Err(Error::StateMismatch(9));
     }

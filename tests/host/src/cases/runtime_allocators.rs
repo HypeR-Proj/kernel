@@ -14,7 +14,7 @@ use hyper::mm::allocator::heap::{
     CacheActivationError, CpuLocalCachePolicy, InitError, KernelGlobalAllocator, PageAvailability,
     PageOwner, SlabAllocator, allocation_page_bound, install_allocator_invariant_handler,
 };
-use hyper::mm::{BootAllocator, BuddyAllocator, BuddyError, PAGE_SIZE};
+use hyper::mm::{BootAllocator, BuddyAllocator, BuddyError, PAGE_SIZE, PhysicalAddress};
 use hyper::platform::{MAX_MEMORY_REGIONS, MAX_RESERVED_REGIONS, PhysicalRange, RegionList};
 
 struct AlignedMemory {
@@ -88,6 +88,222 @@ fn buddy_splits_and_coalesces_blocks() {
     assert_eq!(buddy.free_pages(), initial);
     assert_eq!(buddy.stats().deallocations, 2);
     assert!(buddy.allocate(6).is_ok());
+}
+
+struct LiveBuddyBlock {
+    address: PhysicalAddress,
+    order: usize,
+    canary: u8,
+}
+
+impl LiveBuddyBlock {
+    fn pages(&self) -> std::ops::Range<usize> {
+        let start = self.address.get() as usize / PAGE_SIZE as usize;
+        start..start + (1 << self.order)
+    }
+
+    fn poison(&self, memory: &mut AlignedMemory) {
+        let offset = self.address.get() as usize;
+        let size = (PAGE_SIZE as usize) << self.order;
+        assert!(offset + size <= memory.layout.size());
+        // SAFETY: This live block is in the exclusively owned test buffer;
+        // its bounded mutable slice expires before any allocator operation.
+        let bytes = unsafe { std::slice::from_raw_parts_mut(memory.pointer.add(offset), size) };
+        bytes.fill(self.canary);
+        for page in bytes.chunks_exact_mut(PAGE_SIZE as usize) {
+            // Caller-owned bytes must never supply free-tree child links.
+            // These values also differ from the allocator's empty-link marker.
+            page[..8].copy_from_slice(&(u64::MAX - 1).to_ne_bytes());
+            page[8..16].copy_from_slice(&(u64::MAX - 2).to_ne_bytes());
+        }
+    }
+
+    fn verify(&self, memory: &AlignedMemory) {
+        let offset = self.address.get() as usize;
+        let size = (PAGE_SIZE as usize) << self.order;
+        assert!(offset + size <= memory.layout.size());
+        // SAFETY: The block remains live in the test buffer and the allocator
+        // is idle throughout this bounded, read-only payload inspection.
+        let bytes = unsafe { std::slice::from_raw_parts(memory.pointer.add(offset), size) };
+        for (index, page) in bytes.chunks_exact(PAGE_SIZE as usize).enumerate() {
+            assert_eq!(&page[..8], &(u64::MAX - 1).to_ne_bytes());
+            assert_eq!(&page[8..16], &(u64::MAX - 2).to_ne_bytes());
+            assert!(
+                page[16..].iter().all(|&byte| byte == self.canary),
+                "live payload changed: block {:#x}, order {}, page {index}",
+                self.address.get(),
+                self.order
+            );
+        }
+    }
+
+    fn release(self, buddy: &mut BuddyAllocator, memory: &AlignedMemory) {
+        self.verify(memory);
+        // SAFETY: Consuming this record returns its one live allocation with
+        // the original order, after the last payload reference has expired.
+        crate::require_ok(unsafe { buddy.deallocate(self.address, self.order) });
+    }
+}
+
+fn allocator_random(state: &mut u64) -> usize {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    *state as usize
+}
+
+fn assert_buddy_pool_reusable(buddy: &mut BuddyAllocator, pages: usize) {
+    let stats = buddy.stats();
+    let order = pages.trailing_zeros() as usize;
+    assert!(pages.is_power_of_two());
+    assert_eq!(stats.managed_pages, pages);
+    assert_eq!(stats.free_pages, pages);
+    assert_eq!(stats.allocated_pages, 0);
+    assert_eq!(stats.free_blocks[order], 1);
+    assert_eq!(stats.free_blocks.iter().sum::<usize>(), 1);
+    let whole_pool = crate::require_ok(buddy.allocate(order));
+    assert_eq!(whole_pool.get(), 0);
+    assert_eq!(buddy.free_pages(), 0);
+    assert_eq!(buddy.allocate(0), Err(BuddyError::OutOfMemory));
+    // SAFETY: This is the one live allocation covering the complete pool.
+    crate::require_ok(unsafe { buddy.deallocate(whole_pool, order) });
+    assert_eq!(buddy.stats().free_blocks, stats.free_blocks);
+}
+
+#[test]
+fn buddy_fragmented_odd_even_release_preserves_live_pages_and_reuses_the_pool() {
+    const PAGES: usize = 8192;
+    let (mut memory, handoff) = handoff(PAGES);
+    // SAFETY: The aligned test buffer remains the exclusive complete direct map.
+    let mut buddy =
+        crate::require_ok(unsafe { BuddyAllocator::from_handoff(&handoff, memory.pointer as u64) });
+    let mut even = Vec::new();
+    let mut odd = Vec::new();
+    let mut seen = HashSet::new();
+    for index in 0..PAGES {
+        let block = LiveBuddyBlock {
+            address: crate::require_ok(buddy.allocate(0)),
+            order: 0,
+            canary: index as u8,
+        };
+        assert_eq!(block.address.get() % PAGE_SIZE, 0);
+        assert!(seen.insert(block.address.get()));
+        block.poison(&mut memory);
+        if block.pages().start.is_multiple_of(2) {
+            even.push(block);
+        } else {
+            odd.push(block);
+        }
+    }
+    assert_eq!(buddy.allocate(0), Err(BuddyError::OutOfMemory));
+    odd.sort_by_key(|block| block.address.get());
+    for block in odd {
+        block.release(&mut buddy, &memory);
+    }
+    assert_eq!(buddy.free_pages(), PAGES / 2);
+    assert_eq!(buddy.stats().free_blocks[0], PAGES / 2);
+    assert_eq!(buddy.allocate(1), Err(BuddyError::OutOfMemory));
+    for block in &even {
+        block.verify(&memory);
+    }
+
+    // Repeated root removal must preserve every descendant, down to a final
+    // direct-child replacement. Every even buddy still contains caller bytes.
+    let mut recovered = Vec::new();
+    seen.clear();
+    for index in 0..PAGES / 2 {
+        let block = LiveBuddyBlock {
+            address: crate::require_ok(buddy.allocate(0)),
+            order: 0,
+            canary: !index as u8,
+        };
+        assert_eq!(block.pages().start % 2, 1);
+        assert!(seen.insert(block.address.get()));
+        block.poison(&mut memory);
+        recovered.push(block);
+    }
+    assert_eq!(buddy.allocate(0), Err(BuddyError::OutOfMemory));
+    for block in recovered {
+        block.release(&mut buddy, &memory);
+    }
+    // Random buddy removal also replaces interior nodes while coalescing.
+    let mut random = 0x982b_4f07_b36a_c851;
+    while !even.is_empty() {
+        let index = allocator_random(&mut random) % even.len();
+        even.swap_remove(index).release(&mut buddy, &memory);
+    }
+    assert_buddy_pool_reusable(&mut buddy, PAGES);
+}
+
+#[test]
+fn buddy_mixed_order_churn_preserves_payloads_ownership_and_coalescence() {
+    const PAGES: usize = 8192;
+    for seed in [0x12f8_78ac_e649_b30d, 0xc31d_7b56_908a_42ef] {
+        let (mut memory, handoff) = handoff(PAGES);
+        // SAFETY: The aligned test buffer remains the exclusive complete direct map.
+        let mut buddy = crate::require_ok(unsafe {
+            BuddyAllocator::from_handoff(&handoff, memory.pointer as u64)
+        });
+        let mut random = seed;
+        let mut live: Vec<LiveBuddyBlock> = Vec::new();
+        let mut occupied = vec![false; PAGES];
+        let mut owned_pages = 0;
+        let mut orders = [0; 7];
+        for step in 0..8192 {
+            let mut release = !live.is_empty() && allocator_random(&mut random).is_multiple_of(4);
+            if !release {
+                let order = allocator_random(&mut random) % orders.len();
+                match buddy.allocate(order) {
+                    Ok(address) => {
+                        let block = LiveBuddyBlock {
+                            address,
+                            order,
+                            canary: allocator_random(&mut random) as u8,
+                        };
+                        assert_eq!(address.get() % (PAGE_SIZE << order), 0);
+                        let pages = block.pages();
+                        assert!(pages.end <= PAGES);
+                        assert!(occupied[pages.clone()].iter().all(|&used| !used));
+                        occupied[pages].fill(true);
+                        owned_pages += 1 << order;
+                        orders[order] += 1;
+                        block.poison(&mut memory);
+                        live.push(block);
+                    }
+                    Err(BuddyError::OutOfMemory) => {
+                        assert!(buddy.stats().free_blocks[order..].iter().all(|&n| n == 0));
+                        release = true;
+                    }
+                    error => panic!("unexpected allocation result: {error:?}"),
+                }
+            }
+            if release {
+                assert!(!live.is_empty());
+                let index = allocator_random(&mut random) % live.len();
+                let block = live.swap_remove(index);
+                let pages = block.pages();
+                assert!(occupied[pages.clone()].iter().all(|&used| used));
+                occupied[pages].fill(false);
+                owned_pages -= 1 << block.order;
+                block.release(&mut buddy, &memory);
+            }
+            let stats = buddy.stats();
+            assert_eq!(stats.allocated_pages, owned_pages);
+            assert_eq!(stats.free_pages, PAGES - owned_pages);
+            assert_eq!(free_pages_from_blocks(&stats.free_blocks), stats.free_pages);
+            if step % 1024 == 0 {
+                for block in &live {
+                    block.verify(&memory);
+                }
+            }
+        }
+        assert!(orders.iter().all(|&allocations| allocations != 0));
+        while !live.is_empty() {
+            let index = allocator_random(&mut random) % live.len();
+            live.swap_remove(index).release(&mut buddy, &memory);
+        }
+        assert_buddy_pool_reusable(&mut buddy, PAGES);
+    }
 }
 
 #[test]

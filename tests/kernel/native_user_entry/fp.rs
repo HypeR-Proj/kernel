@@ -182,9 +182,25 @@ fn with_guest(
     let running = installed
         .start_boot_for_test()
         .map_err(|_| Error::Scheduler)?;
-    // SAFETY: The installed guest retains its initialized, aligned RAM until
-    // stop completes below. Its release counter store pairs with our atomic loads.
-    let result = test(unsafe { &*counter });
+    let result =
+        (|| {
+            // Keep the guest competing with the Native FP owners on CPU 0. A
+            // successful automatic migration would otherwise weaken isolation
+            // coverage by letting each FP bank run on a different physical CPU.
+            scheduler::set_thread_affinity(
+                running.thread(),
+                scheduler::CpuMask::single(CpuIndex::BOOT),
+            )
+            .map_err(|_| Error::Scheduler)?;
+            wait(|| {
+                Ok(scheduler::thread_migration_state(running.thread())
+                    .map_err(|_| Error::Scheduler)?
+                    == (CpuIndex::BOOT, None))
+            })?;
+            // SAFETY: The installed guest retains its initialized, aligned RAM until
+            // stop completes below. Release counter stores pair with atomic loads.
+            test(unsafe { &*counter })
+        })();
     running.stop();
     super::super::vm_registry::wait_for_vm_usage_release(&domain).map_err(|_| Error::Lifecycle)?;
     result

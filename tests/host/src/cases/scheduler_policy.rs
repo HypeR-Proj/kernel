@@ -3,6 +3,8 @@
 
 //! Host checks for static scheduler classes and placement invariants.
 
+#[path = "../../../../src/kernel/task/scheduler/balance_policy.rs"]
+mod balance_policy;
 #[path = "../../../../src/kernel/task/policy.rs"]
 mod policy;
 
@@ -110,4 +112,41 @@ fn placement_requires_assignment_to_satisfy_affinity() {
         constrained_affinity.without_cpu(cpu0),
         CpuMask::single(cpu1)
     );
+}
+
+#[test]
+fn initial_balance_prefers_less_work_but_keeps_locality_on_ties() {
+    use balance_policy::least_loaded;
+
+    assert_eq!(
+        least_loaded(0, [(0, 4), (1, 0), (2, 2)].into_iter()),
+        Some(1)
+    );
+    assert_eq!(
+        least_loaded(2, [(0, 1), (1, 1), (2, 1)].into_iter()),
+        Some(2)
+    );
+    assert_eq!(least_loaded(9, [(3, 1), (5, 1)].into_iter()), Some(3));
+    assert_eq!(least_loaded(0, [(4, 7)].into_iter()), Some(4));
+    assert_eq!(least_loaded(0, core::iter::empty()), None);
+}
+
+#[test]
+fn balance_never_swaps_a_single_runnable_thread_between_equal_cpus() {
+    for source in 0..16 {
+        for target in 0..16 {
+            let before = source * source + target * target;
+            let improves = balance_policy::improves_balance(source, target);
+            if improves {
+                let after = (source - 1) * (source - 1) + (target + 1) * (target + 1);
+                assert!(after < before);
+            } else if source > 0 {
+                let after = (source - 1) * (source - 1) + (target + 1) * (target + 1);
+                assert!(after >= before);
+            }
+        }
+    }
+    assert!(!balance_policy::improves_balance(0, u32::MAX));
+    assert!(!balance_policy::improves_balance(u32::MAX, u32::MAX - 1));
+    assert!(balance_policy::improves_balance(u32::MAX, 0));
 }

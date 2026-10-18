@@ -174,8 +174,13 @@ fn exercise_policy_transitions() -> Result<(), Error> {
     FIFO_SEQUENCE.store(0, Ordering::Release);
 
     let guard = scheduler::preempt_disable()?;
-    let dormant =
-        scheduler::kthread_create_fifo("policy-dormant", policy_peer, 1, ThreadPriority::HIGHEST)?;
+    let dormant = scheduler::kthread_create_fifo_with_affinity(
+        "policy-dormant",
+        policy_peer,
+        1,
+        ThreadPriority::HIGHEST,
+        CpuMask::single(CpuIndex::BOOT),
+    )?;
     scheduler::set_thread_fair_policy(dormant)?;
     scheduler::thread_ready(dormant)?;
     if FIFO_SEQUENCE.load(Ordering::Acquire) != 0 {
@@ -190,7 +195,12 @@ fn exercise_policy_transitions() -> Result<(), Error> {
     let _ = super::support::quiesce_workers()?;
 
     let guard = scheduler::preempt_disable()?;
-    let ready = scheduler::kthread_create("policy-ready", policy_peer, 2)?;
+    let ready = scheduler::kthread_create_with_affinity(
+        "policy-ready",
+        policy_peer,
+        2,
+        CpuMask::single(CpuIndex::BOOT),
+    )?;
     scheduler::thread_ready(ready)?;
     scheduler::set_thread_fifo_policy(ready, ThreadPriority::HIGHEST)?;
     scheduler::set_thread_fair_policy(ready)?;
@@ -250,8 +260,20 @@ fn exercise_fair_rotation() -> Result<(), Error> {
     FAIR_ROTATION.ran.store(0, Ordering::Release);
     let _ = scheduler::cond_resched()?;
     let guard = scheduler::preempt_disable()?;
-    let first = scheduler::kthread_create("fair-peer/0", fair_rotation_peer, 1 << 0)?;
-    let second = scheduler::kthread_create("fair-peer/1", fair_rotation_peer, 1 << 1)?;
+    // This is a local quantum test: remote execution is intentionally excluded
+    // so disabling this CPU's preemption can still hold both peers ready.
+    let first = scheduler::kthread_create_with_affinity(
+        "fair-peer/0",
+        fair_rotation_peer,
+        1 << 0,
+        CpuMask::single(CpuIndex::BOOT),
+    )?;
+    let second = scheduler::kthread_create_with_affinity(
+        "fair-peer/1",
+        fair_rotation_peer,
+        1 << 1,
+        CpuMask::single(CpuIndex::BOOT),
+    )?;
     scheduler::thread_ready(first)?;
     scheduler::thread_ready(second)?;
 
@@ -307,7 +329,8 @@ fn exercise_affinity_creation() -> Result<(), Error> {
         0,
         local_affinity,
     )?;
-    if scheduler::thread_placement(local)? != (current, local_affinity) {
+    let (assigned, actual_affinity) = scheduler::thread_placement(local)?;
+    if actual_affinity != local_affinity || !local_affinity.contains(assigned) {
         return Err(Error::Affinity(4));
     }
     scheduler::thread_ready(local)?;
@@ -625,9 +648,12 @@ extern "C" fn completion_waiter(argument: usize) {
 
 fn exercise_mutex_and_semaphore_handoff() -> Result<(), Error> {
     let state = &SYNC_STATE;
-    let producer = scheduler::kthread_create("sync-producer", producer, 0)?;
-    let first = scheduler::kthread_create("sync-consumer/0", consumer, 0)?;
-    let second = scheduler::kthread_create("sync-consumer/1", consumer, 1)?;
+    // The handoff order is a local FIFO-policy contract, not a global order
+    // between CPUs. Independent-CPU progress has its own runtime test.
+    let affinity = CpuMask::single(CpuIndex::BOOT);
+    let producer = scheduler::kthread_create_with_affinity("sync-producer", producer, 0, affinity)?;
+    let first = scheduler::kthread_create_with_affinity("sync-consumer/0", consumer, 0, affinity)?;
+    let second = scheduler::kthread_create_with_affinity("sync-consumer/1", consumer, 1, affinity)?;
     let guard = scheduler::preempt_disable()?;
     scheduler::thread_ready(producer)?;
     if !scheduler::thread_ready(first)? || scheduler::thread_ready(first)? {

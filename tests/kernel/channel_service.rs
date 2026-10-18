@@ -545,6 +545,11 @@ fn verify_handle_admission_after_stop(
 ) -> Result<(), Error> {
     let baseline = domain.usage().total(ResourceKind::Handles);
     let process = create_process(domain, group)?;
+    let inspector = crate::kernel::inspect::ObjectInspector::try_system(domain)
+        .map_err(|_| Error::Construction)?;
+    inspector
+        .scan_process_handles(process.koid().get(), 0)
+        .map_err(|_| Error::State(48))?;
     let object =
         ObjectPublication::try_new(Event::try_new(domain).map_err(|_| Error::Construction)?)
             .map_err(|_| Error::Construction)?;
@@ -564,6 +569,17 @@ fn verify_handle_admission_after_stop(
         }
     }
     retire_process(&process)?;
+    // Retain the Process so lookup still finds its identity after its handle
+    // table has retired. Inspection must report disappearance, not BAD_STATE.
+    if !matches!(
+        process.scan_handles(crate::kernel::capability::HandleScanCursor::from_token(0)),
+        Err(ProcessError::Handle(HandleError::TableRetired))
+    ) || !matches!(
+        inspector.scan_process_handles(process.koid().get(), 0),
+        Err(crate::kernel::inspect::Error::NotFound)
+    ) {
+        return Err(Error::State(49));
+    }
     if domain.usage().total(ResourceKind::Handles) != baseline {
         return Err(Error::State(47));
     }

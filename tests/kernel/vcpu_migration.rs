@@ -4,8 +4,11 @@
 //! Real guest execution across affinity-driven CPU migration and administrative stop.
 
 use crate::kernel::task::scheduler;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, Ordering};
 use hyper::cpu::CpuIndex;
+
+static BALANCE_STOP: AtomicBool = AtomicBool::new(false);
+static BALANCE_FAILED: AtomicBool = AtomicBool::new(false);
 
 // x0 is the shared counter's IPA. STLR pairs with the host's atomic load;
 // the counter register itself must survive every exception and migration.
@@ -90,9 +93,81 @@ pub(super) fn run() -> Result<(), Error> {
     }
     exercise_bytes(super::native_user_entry::fp_guest_program(false))?;
     exercise_bytes(super::native_user_entry::fp_guest_program(true))?;
+    exercise_balancing()?;
     crate::pr_info!("HypeR test: guest FP preemption, timer wait and migration passed");
     crate::pr_info!("HypeR test: running and timer-waiting vCPU migration and retirement passed");
     Ok(())
+}
+
+fn exercise_balancing() -> Result<(), Error> {
+    BALANCE_STOP.store(false, Ordering::Release);
+    BALANCE_FAILED.store(false, Ordering::Release);
+    let result: Result<(), Error> = (|| {
+        for _ in 0..2 {
+            let id = scheduler::kthread_create_with_affinity(
+                "balance/guest-peer",
+                balance_peer,
+                0,
+                scheduler::CpuMask::single(CpuIndex::BOOT),
+            )?;
+            if let Err(error) = scheduler::thread_ready(id) {
+                scheduler::discard_dormant_kernel_thread(id)?;
+                return Err(error.into());
+            }
+        }
+        let (prepared, domain, counter) = super::vm_registry::prepare_migration_guest(
+            super::native_user_entry::fp_guest_program(false),
+        )
+        .map_err(Error::Fixture)?;
+        let installed = prepared.install().map_err(Error::Registry)?;
+        let running = installed.start_boot_for_test().map_err(Error::Installed)?;
+        let thread = running.thread();
+        let result: Result<(), Error> = (|| {
+            scheduler::set_thread_affinity(thread, scheduler::CpuMask::single(CpuIndex::BOOT))?;
+            wait(|| Ok(scheduler::thread_migration_state(thread)? == (CpuIndex::BOOT, None)))?;
+            // SAFETY: The installed VM retains this aligned AtomicU64 until
+            // stop below; guest release stores are paired with atomic loads.
+            let counter = unsafe { &*counter };
+            let first = counter.load(Ordering::Acquire);
+            wait(|| counter_progress(counter, first))?;
+            let target = CpuIndex::new(1).ok_or(Error::InvalidCpu)?;
+            scheduler::set_thread_affinity(
+                thread,
+                scheduler::CpuMask::single(CpuIndex::BOOT).with_cpu(target),
+            )?;
+            // Only the guest may leave the overloaded CPU. The two Fair peers
+            // stay pinned, so progress on CPU 1 proves automatic vCPU migration
+            // rather than spreading newly created guest topology members.
+            wait(|| {
+                if BALANCE_FAILED.load(Ordering::Acquire) {
+                    return Err(Error::Installed("balancing peer lost its CPU"));
+                }
+                Ok(scheduler::thread_migration_state(thread)? == (target, None))
+            })?;
+            let previous = counter.load(Ordering::Acquire);
+            wait(|| counter_progress(counter, previous))?;
+            Ok(())
+        })();
+        running.stop();
+        super::vm_registry::wait_for_vm_usage_release(&domain).map_err(Error::Fixture)?;
+        result
+    })();
+    BALANCE_STOP.store(true, Ordering::Release);
+    super::support::quiesce_workers().map_err(Error::Quiescence)?;
+    result?;
+    crate::pr_info!("HypeR test: automatic vCPU balancing preserves guest FP state and progress");
+    Ok(())
+}
+
+extern "C" fn balance_peer(_: usize) {
+    while !BALANCE_STOP.load(Ordering::Acquire) {
+        if crate::kernel::cpu::current_index() != Some(CpuIndex::BOOT)
+            || scheduler::yield_now().is_err()
+        {
+            BALANCE_FAILED.store(true, Ordering::Release);
+            break;
+        }
+    }
 }
 
 #[cfg(CONFIG_ARCH_AARCH64)]
@@ -111,6 +186,8 @@ fn exercise_bytes(code: &[u8]) -> Result<(), Error> {
     let running = installed.start_boot_for_test().map_err(Error::Installed)?;
     let thread = running.thread();
     let result = (|| {
+        scheduler::set_thread_affinity(thread, scheduler::CpuMask::single(CpuIndex::BOOT))?;
+        wait(|| Ok(scheduler::thread_migration_state(thread)? == (CpuIndex::BOOT, None)))?;
         // SAFETY: The installed VM owner retains this initialized, aligned RAM
         // throughout the closure. Guest accesses are same-width release stores;
         // only atomic host loads occur until all observation has finished.
@@ -162,13 +239,15 @@ fn verify_affinity_contract(thread: crate::kernel::task::thread::ThreadId) -> Re
     }
     let other = CpuIndex::new(if current.get() == 0 { 1 } else { 0 }).ok_or(Error::InvalidCpu)?;
     let both = CpuMask::single(current).with_cpu(other);
-    // An admitted current CPU remains assigned when the allowed set grows.
+    // Widening the set does not itself request a migration. Automatic balance
+    // may act after this call, so only the affinity is stable until narrowed.
     if scheduler::set_thread_affinity(thread, both)? != MigrationStatus::Completed
-        || scheduler::thread_migration_state(thread)? != (current, None)
-        || scheduler::thread_placement(thread)? != (current, both)
+        || scheduler::thread_placement(thread)?.1 != both
     {
         return Err(Error::AffinityContract);
     }
+    scheduler::set_thread_affinity(thread, CpuMask::single(current))?;
+    wait(|| Ok(scheduler::thread_migration_state(thread)? == (current, None)))?;
     let initial = scheduler::thread_placement(thread)?;
     if scheduler::set_thread_affinity(thread, CpuMask::EMPTY)
         != Err(scheduler::Error::EmptyCpuAffinity)

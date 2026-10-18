@@ -91,15 +91,28 @@ fn run_pair(domain: &ResourceDomain, group: &TaskGroup, same_hart: bool) -> Resu
         scheduler::preempt_enable_and_reschedule(pin).map_err(|_| Error::Scheduler)?;
         let (first_thread, second_thread) = prepared?;
         let completed = crate::kernel::task::wait_for_test_progress(REGISTER_TIMEOUT_NS, || {
-            Ok::<_, Error>(first.try_join().is_some() && second.try_join().is_some())
+            // Process completion precedes the final Thread join notification.
+            // On another CPU either process can be stopped while its reaper
+            // is still publishing the Thread's completion.
+            Ok::<_, Error>(
+                first.try_join().is_some()
+                    && second.try_join().is_some()
+                    && first_thread.try_join().is_some()
+                    && second_thread.try_join().is_some(),
+            )
         })?;
         if !completed {
             return Err(Error::Lifecycle);
         }
         for (process, thread) in [(first, &first_thread), (second, &second_thread)] {
-            if process.try_join() != Some(TerminalReason::LastThreadExited { status: 0 })
-                || thread.try_join() != Some(TerminalReason::ThreadExited { status: 0 })
+            let process_exit = process.try_join();
+            let thread_exit = thread.try_join();
+            if process_exit != Some(TerminalReason::LastThreadExited { status: 0 })
+                || thread_exit != Some(TerminalReason::ThreadExited { status: 0 })
             {
+                crate::pr_err!(
+                    "HypeR test: Native registers same_hart={same_hart}: process={process_exit:?}, thread={thread_exit:?}"
+                );
                 return Err(Error::Terminal);
             }
             retire_process(process)?;
@@ -136,12 +149,17 @@ fn run_fault_probes(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Er
             thread.ready().map_err(|_| Error::Scheduler)?;
             let completed =
                 crate::kernel::task::wait_for_test_progress(REGISTER_TIMEOUT_NS, || {
-                    Ok::<_, Error>(process.try_join().is_some())
+                    Ok::<_, Error>(process.try_join().is_some() && thread.try_join().is_some())
                 })?;
             if !completed {
                 return Err(Error::Lifecycle);
             }
-            if process.try_join() != Some(expected) || thread.try_join() != Some(expected) {
+            let process_exit = process.try_join();
+            let thread_exit = thread.try_join();
+            if process_exit != Some(expected) || thread_exit != Some(expected) {
+                crate::pr_err!(
+                    "HypeR test: Native fault expected={expected:?}: process={process_exit:?}, thread={thread_exit:?}"
+                );
                 return Err(Error::Terminal);
             }
             Ok(())

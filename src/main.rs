@@ -62,6 +62,7 @@ kernel_start_errors! {
     Memory(crate::kernel::mm::InitializationError) => "memory",
     MemorySealing(crate::kernel::mm::FinalizationError) => "memory-sealing",
     Scheduler(crate::kernel::task::scheduler::Error) => "scheduler",
+    SchedulerBalancing(crate::kernel::time::Error) => "scheduler-balancing",
     Time(crate::kernel::time::InitializationError) => "time",
     VirtualMachineInitialization(crate::kernel::vm::InitializationError) => "virtual-machine-initialization",
 }
@@ -95,6 +96,7 @@ extern "C" fn start_kernel() -> ! {
         crate::kernel_tests::verify_early_startup();
         crate::kernel::cpu::initialize()?;
         crate::kernel::time::initialize_workers()?;
+        crate::kernel::task::scheduler::initialize_load_balancing()?;
         crate::kernel::mm::activate_local_allocator_caches()?;
         crate::kernel::mm::seal_address_space()?;
 

@@ -18,6 +18,13 @@ mod admission;
 mod publication;
 mod wakeup;
 
+// The lock keeps the production mask guard; only its atomic lanes are modeled.
+use hyper::hal;
+use hyper::sync::InterruptMaskGuard;
+mod scheduler_lock;
+#[path = "../../../src/sync/lock/sharded.rs"]
+mod sharded_lock;
+
 fn require_ok<T, E: core::fmt::Debug>(result: Result<T, E>) -> T {
     match result {
         Ok(value) => value,

@@ -133,6 +133,9 @@ fn callback(probe: &FallibleArc<Probe>, callout: CalloutRef<'_>, _: TimerEvent) 
         probe.failed.store(true, Ordering::Release);
     }
     let count = probe.callbacks.fetch_add(1, Ordering::AcqRel) + 1;
+    if count == 1 && verify_worker_identity(probe.cpu).is_err() {
+        probe.failed.store(true, Ordering::Release);
+    }
     if probe.repeat && count < SELF_REARMS {
         let rearm = if count.is_multiple_of(2) {
             callout.arm_after(100_000)
@@ -147,6 +150,29 @@ fn callback(probe: &FallibleArc<Probe>, callout: CalloutRef<'_>, _: TimerEvent) 
         probe.failed.store(true, Ordering::Release);
     }
     probe.active.store(false, Ordering::Release);
+}
+
+fn verify_worker_identity(cpu: CpuIndex) -> Result<(), Error> {
+    let thread = scheduler::current_thread_id()?;
+    let name = scheduler::thread_name(thread)?;
+    if name
+        .as_str()
+        .strip_prefix("ktimer/")
+        .and_then(|suffix| suffix.parse::<usize>().ok())
+        != Some(cpu.get())
+        || scheduler::thread_placement(thread)? != (cpu, CpuMask::single(cpu))
+    {
+        return Err(Error::Invariant("timer worker identity and ownership"));
+    }
+    // A singleton mask alone would pass the placement check above. CPU-owned
+    // workers must also reject attempts to turn them into movable Threads.
+    if scheduler::set_thread_affinity(thread, CpuMask::ALL)
+        != Err(scheduler::Error::MigrationUnsupported)
+        || scheduler::migrate_thread(thread, cpu) != Err(scheduler::Error::MigrationUnsupported)
+    {
+        return Err(Error::Invariant("timer worker accepted placement changes"));
+    }
+    Ok(())
 }
 
 struct WaitProbe {

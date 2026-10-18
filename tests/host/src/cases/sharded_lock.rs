@@ -140,3 +140,73 @@ fn unwind_releases_read_and_write_lanes() {
     lock.with(|value| *value = 7);
     assert_eq!(lock.read(1, |value| *value), Some(7));
 }
+
+#[test]
+fn try_writer_releases_partial_lanes_without_waiting() {
+    for lane in 0..4 {
+        let lock = InterruptShardedLock::<_, Mask, 4>::new(0usize);
+        let (attempted, outcome) = mpsc::channel();
+        thread::scope(|scope| {
+            let observed = lock.read(lane, |_| {
+                let lock = &lock;
+                scope.spawn(move || {
+                    let result = lock.try_with(|value| *value = 1);
+                    let _ = attempted.send(result);
+                });
+                // Keep the contended lane held until the attempt returns.
+                // On failure, release it before joining the scoped worker.
+                outcome.recv_timeout(Duration::from_secs(5))
+            });
+            assert_eq!(observed, Some(Ok(None)));
+        });
+        // A failure at lane N must release every earlier lane as well.
+        assert_eq!(lock.try_with(|value| *value), Some(0));
+        assert_eq!(lock.try_with(|value| *value = 2), Some(()));
+        assert_eq!(lock.read(lane, |value| *value), Some(2));
+    }
+}
+
+#[test]
+fn failed_try_writer_restores_interrupt_state_and_unwind_releases_lanes() {
+    thread_local! {
+        static MASKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    struct TrackedMask;
+    impl InterruptMask for TrackedMask {
+        type State = bool;
+        fn save_and_disable() -> bool {
+            MASKED.with(|masked| masked.replace(true))
+        }
+        fn restore(state: bool) {
+            MASKED.with(|masked| masked.set(state));
+        }
+    }
+    let lock = InterruptShardedLock::<_, TrackedMask, 3>::new(0usize);
+    let (attempted, outcome) = mpsc::channel();
+    thread::scope(|scope| {
+        let observed = lock.read(2, |_| {
+            let lock = &lock;
+            scope.spawn(move || {
+                let failed = lock.try_with(|_| panic!("contended writer entered"));
+                let restored = !MASKED.with(|masked| masked.get());
+                let _ = attempted.send((failed, restored));
+            });
+            outcome.recv_timeout(Duration::from_secs(5))
+        });
+        assert_eq!(observed, Some(Ok((None, true))));
+    });
+    assert!(!MASKED.with(|masked| masked.get()));
+    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        lock.try_with(|_| {
+            assert!(MASKED.with(|masked| masked.get()));
+            panic!("try writer test unwind");
+        });
+    }));
+    assert!(unwind.is_err());
+    assert!(!MASKED.with(|masked| masked.get()));
+    MASKED.with(|masked| masked.set(true));
+    assert_eq!(lock.try_with(|value| *value = 3), Some(()));
+    assert!(MASKED.with(|masked| masked.get()));
+    MASKED.with(|masked| masked.set(false));
+    assert_eq!(lock.read(0, |value| *value), Some(3));
+}

@@ -66,11 +66,13 @@ impl BuddyStats {
 
 /// Intrusive physical page allocator using power-of-two buddy blocks.
 ///
-/// Free-list links are stored in the first word of each free block. The
-/// allocator therefore needs only a direct-map base and no separately allocated
-/// metadata. All methods require external synchronization.
+/// Each order indexes free blocks by physical address in an intrusive binary
+/// digital tree. Two child links live in each free block; no separately
+/// allocated metadata is needed. Tree depth is bounded by the number of
+/// block-address bits, even when a fragmented VM releases many isolated pages.
+/// All methods require external synchronization.
 pub struct BuddyAllocator {
-    free_lists: [u64; MAX_ORDER + 1],
+    free_roots: [u64; MAX_ORDER + 1],
     free_blocks: [usize; MAX_ORDER + 1],
     handoff: MemoryHandoff,
     direct_map_base: u64,
@@ -84,7 +86,7 @@ pub struct BuddyAllocator {
 
 impl BuddyAllocator {
     /// Admits a no-longer-referenced boot reservation to the runtime pool.
-    /// Validation and reservation splitting finish before any free-list write.
+    /// Validation and reservation splitting finish before any free-tree write.
     /// Allocations already in the pool are never accepted a second time.
     ///
     /// # Safety
@@ -147,7 +149,7 @@ impl BuddyAllocator {
         Ok(pages)
     }
 
-    /// Builds free lists from RAM minus every boot reservation.
+    /// Builds free-block indexes from RAM minus every boot reservation.
     ///
     /// # Safety
     ///
@@ -158,7 +160,7 @@ impl BuddyAllocator {
         direct_map_base: u64,
     ) -> Result<Self, BuddyError> {
         let mut allocator = Self {
-            free_lists: [NONE; MAX_ORDER + 1],
+            free_roots: [NONE; MAX_ORDER + 1],
             free_blocks: [0; MAX_ORDER + 1],
             handoff: *handoff,
             direct_map_base,
@@ -200,7 +202,7 @@ impl BuddyAllocator {
             return Err(BuddyError::InvalidOrder);
         }
         let Some(source_order) =
-            (order..=MAX_ORDER).find(|&candidate| self.free_lists[candidate] != NONE)
+            (order..=MAX_ORDER).find(|&candidate| self.free_roots[candidate] != NONE)
         else {
             self.allocation_failures = self.allocation_failures.saturating_add(1);
             return Err(BuddyError::OutOfMemory);
@@ -225,7 +227,7 @@ impl BuddyAllocator {
     /// # Safety
     ///
     /// `address` and `order` must describe one live allocation owned by this
-    /// allocator. Double-free and mismatched-order calls corrupt free lists.
+    /// allocator. Double-free and mismatched-order calls corrupt ownership.
     pub unsafe fn deallocate(
         &mut self,
         address: PhysicalAddress,
@@ -329,54 +331,121 @@ impl BuddyAllocator {
     }
 
     fn push(&mut self, order: usize, address: u64) -> Result<(), BuddyError> {
-        self.write_next(address, self.free_lists[order])?;
-        self.free_lists[order] = address;
+        let mut parent = None;
+        let mut current = self.free_roots[order];
+        let mut depth = 0;
+        while current != NONE {
+            if current == address {
+                return Err(BuddyError::InvalidReservation);
+            }
+            let branch = Self::branch(address, order, depth)?;
+            parent = Some((current, branch));
+            current = self.children(current)?[branch];
+            depth += 1;
+        }
+        self.write_children(address, [NONE; 2])?;
+        self.replace_link(order, parent, address)?;
         self.free_blocks[order] += 1;
         Ok(())
     }
 
     fn pop(&mut self, order: usize) -> Result<u64, BuddyError> {
-        let address = self.free_lists[order];
+        let address = self.free_roots[order];
         debug_assert_ne!(address, NONE);
-        self.free_lists[order] = self.read_next(address)?;
-        self.free_blocks[order] -= 1;
+        self.remove(order, address)?;
         Ok(address)
     }
 
     fn remove(&mut self, order: usize, target: u64) -> Result<bool, BuddyError> {
-        let mut previous = NONE;
-        let mut current = self.free_lists[order];
+        let mut parent = None;
+        let mut current = self.free_roots[order];
+        let mut depth = 0;
         while current != NONE {
-            let next = self.read_next(current)?;
             if current == target {
-                if previous == NONE {
-                    self.free_lists[order] = next;
-                } else {
-                    self.write_next(previous, next)?;
-                }
+                let replacement = self.detach_leaf(current)?;
+                self.replace_link(order, parent, replacement)?;
                 self.free_blocks[order] -= 1;
                 return Ok(true);
             }
-            previous = current;
-            current = next;
+            let branch = Self::branch(target, order, depth)?;
+            parent = Some((current, branch));
+            current = self.children(current)?[branch];
+            depth += 1;
         }
         Ok(false)
     }
 
-    fn read_next(&self, physical: u64) -> Result<u64, BuddyError> {
-        let pointer = self.pointer(physical)? as *const u64;
+    /// Routing uses one block-number bit per level, low bits first. Comparing
+    /// the exact address precedes this operation: a final node can occur after
+    /// all key bits have been consumed, but cannot have distinct descendants.
+    fn branch(address: u64, order: usize, depth: u32) -> Result<usize, BuddyError> {
+        let shift = PAGE_SIZE.trailing_zeros() + order as u32 + depth;
+        address
+            .checked_shr(shift)
+            .map(|key| (key & 1) as usize)
+            .ok_or(BuddyError::InvalidReservation)
+    }
+
+    /// Replace a removed node with a descendant leaf. Moving an entire child
+    /// subtree upward would change its bit positions and break lookup. A leaf
+    /// shares the removed node's ancestor prefix and can inherit its children
+    /// at their original depths after its old link has been withdrawn.
+    fn detach_leaf(&mut self, removed: u64) -> Result<u64, BuddyError> {
+        let mut leaf = removed;
+        let mut parent = None;
+        loop {
+            let children = self.children(leaf)?;
+            let branch = if children[0] != NONE { 0 } else { 1 };
+            let next = children[branch];
+            if next == NONE {
+                break;
+            }
+            parent = Some((leaf, branch));
+            leaf = next;
+        }
+        let Some((parent, branch)) = parent else {
+            return Ok(NONE);
+        };
+        self.write_child(parent, branch, NONE)?;
+        // Re-read after unlinking: the leaf may have been a direct child.
+        self.write_children(leaf, self.children(removed)?)?;
+        Ok(leaf)
+    }
+
+    fn replace_link(
+        &mut self,
+        order: usize,
+        parent: Option<(u64, usize)>,
+        replacement: u64,
+    ) -> Result<(), BuddyError> {
+        if let Some((parent, branch)) = parent {
+            self.write_child(parent, branch, replacement)?;
+        } else {
+            self.free_roots[order] = replacement;
+        }
+        Ok(())
+    }
+
+    fn children(&self, physical: u64) -> Result<[u64; 2], BuddyError> {
+        let pointer = self.pointer(physical)? as *const [u64; 2];
         // SAFETY: from_handoff establishes a writable direct map for every
-        // managed page; free-list nodes always point to initialized metadata
-        // in those pages. Allocator locking, not volatile access, orders this
-        // ordinary cacheable memory between CPUs.
+        // managed page. Only links reachable from an allocator-owned root are
+        // read; an arbitrary buddy address is never dereferenced to infer its
+        // ownership from potentially caller-controlled bytes.
         Ok(unsafe { pointer.read() })
     }
 
-    fn write_next(&self, physical: u64, next: u64) -> Result<(), BuddyError> {
-        let pointer = self.pointer(physical)? as *mut u64;
+    fn write_child(&self, physical: u64, branch: usize, child: u64) -> Result<(), BuddyError> {
+        let mut children = self.children(physical)?;
+        children[branch] = child;
+        self.write_children(physical, children)
+    }
+
+    fn write_children(&self, physical: u64, children: [u64; 2]) -> Result<(), BuddyError> {
+        let pointer = self.pointer(physical)? as *mut [u64; 2];
         // SAFETY: The allocator exclusively owns every free block and the
         // direct-map contract from construction remains valid.
-        unsafe { pointer.write(next) };
+        unsafe { pointer.write(children) };
         Ok(())
     }
 
