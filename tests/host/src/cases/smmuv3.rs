@@ -14,7 +14,7 @@ use hyper::drivers::{
 use hyper::{mm::VirtualAddress, platform::PhysicalRange};
 use std::{
     alloc::{Layout, alloc_zeroed, dealloc},
-    cell::{RefCell, UnsafeCell},
+    cell::{Cell, RefCell, UnsafeCell},
 };
 
 #[derive(Default)]
@@ -37,6 +37,7 @@ struct State {
     pages_before_completion: Option<usize>,
 }
 thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
+thread_local! { static PHYSICAL_QUERIES: Cell<usize> = const { Cell::new(0) }; }
 struct Memory {
     address: usize,
     order: usize,
@@ -47,6 +48,7 @@ struct TestEnvironment;
 // mock uses the same stable allocation for its CPU and synthetic DMA addresses.
 unsafe impl DmaMemory for Memory {
     fn physical(&self) -> u64 {
+        PHYSICAL_QUERIES.with(|count| count.set(count.get() + 1));
         self.address as u64
     }
     fn virtual_address(&self) -> usize {
@@ -941,6 +943,131 @@ fn live_domain_reclaims_empty_tables_without_disturbing_other_buffers() {
     drop(require_ok(controller.unmap_buffer(domain, 0x1000)));
     require_ok(controller.detach(8));
     require_ok(controller.destroy_domain(domain));
+}
+
+#[test]
+fn pruning_repairs_indices_for_interleaved_live_subtrees() {
+    let fixture = Fixture::new();
+    let mut controller = require_ok(fixture.initialize_payload::<ScatteredBuffer>());
+    let domain = require_ok(controller.create_domain());
+    require_ok(controller.attach(8, domain));
+    let baseline = STATE.with(|state| state.borrow().live_pages);
+    let mut mappings = Vec::new();
+    // Interleave parents with older children from other subtrees. Removing
+    // groups 0 and 3 moves surviving L2 owners as well as their L3 children.
+    for index in 0..96u64 {
+        let iova = ((index % 6) << 30) + ((index / 6) << 21) + 4096;
+        let buffer = ScatteredBuffer::new(1);
+        let physical = buffer.physical_page(0);
+        require_ok(controller.map_buffer(domain, iova, buffer, Permissions::ReadWrite));
+        mappings.push((iova, physical));
+    }
+    for _ in 0..3 {
+        for &(iova, _) in mappings.iter().step_by(3) {
+            drop(require_ok(controller.unmap_buffer(domain, iova)));
+        }
+        for (index, &(iova, physical)) in mappings.iter().enumerate() {
+            let leaf = fixture.stage2_leaf(8, iova);
+            if index % 3 == 0 {
+                assert_eq!(leaf, 0);
+            } else {
+                assert_eq!(leaf & 0x0000_ffff_ffff_f000, physical);
+            }
+        }
+        for (iova, physical) in mappings.iter_mut().step_by(3).rev() {
+            let buffer = ScatteredBuffer::new(1);
+            *physical = buffer.physical_page(0);
+            require_ok(controller.map_buffer(domain, *iova, buffer, Permissions::ReadWrite));
+        }
+    }
+    for &(iova, _) in mappings.iter().rev() {
+        drop(require_ok(controller.unmap_buffer(domain, iova)));
+    }
+    assert_eq!(STATE.with(|state| state.borrow().live_pages), baseline);
+    require_ok(controller.detach(8));
+    require_ok(controller.destroy_domain(domain));
+}
+
+// One owned page aliased at many IOVAs exercises large translation trees
+// without allocating a large test payload or measuring wall-clock timings.
+struct AliasedBuffer {
+    page: Memory,
+    pages: u64,
+}
+// SAFETY: All aligned offsets identify the same live, coherent page, retained
+// exclusively by this owner until retirement. No CPU payload access occurs.
+unsafe impl DmaBuffer for AliasedBuffer {
+    fn length(&self) -> u64 {
+        self.pages * 4096
+    }
+    fn physical_page(&self, offset: u64) -> u64 {
+        assert!(offset < self.length() && offset.is_multiple_of(4096));
+        self.page.physical()
+    }
+}
+
+#[test]
+fn translation_work_scales_linearly_with_leaf_tables() {
+    fn work(tables: u64) -> (usize, usize) {
+        let fixture = Fixture::new();
+        let mut controller = require_ok(fixture.initialize_payload::<AliasedBuffer>());
+        let domain = require_ok(controller.create_domain());
+        let buffer = AliasedBuffer {
+            page: require_ok(TestEnvironment::allocate(0)),
+            pages: tables * 512,
+        };
+        PHYSICAL_QUERIES.with(|count| count.set(0));
+        require_ok(controller.map_buffer(domain, 0, buffer, Permissions::ReadWrite));
+        let map = PHYSICAL_QUERIES.with(|count| count.replace(0));
+        drop(require_ok(controller.unmap_buffer(domain, 0)));
+        let unmap = PHYSICAL_QUERIES.with(Cell::get);
+        require_ok(controller.destroy_domain(domain));
+        (map, unmap)
+    }
+    let small = work(32);
+    let large = work(64);
+    eprintln!("SMMU walk owner queries (map/unmap): {small:?} -> {large:?}");
+    // Doubling the tree must not quadruple physical-owner comparisons. This
+    // catches linear table searches inside each page walk and pruning pass.
+    assert!(large.0 <= small.0 * 3, "map work: {small:?} -> {large:?}");
+    assert!(large.1 <= small.1 * 3, "unmap work: {small:?} -> {large:?}");
+}
+
+#[cfg(all(feature = "kernel-test", feature = "io-dma-revoke-test"))]
+#[test]
+fn pruning_work_scales_linearly_across_root_slots() {
+    fn work(branches: u64) -> usize {
+        let fixture = Fixture::new();
+        let mut controller = require_ok(fixture.initialize_payload::<SharedBuffer>());
+        let domain = require_ok(controller.create_domain());
+        for branch in 1..=branches {
+            require_ok(controller.map_buffer(
+                domain,
+                branch << 30,
+                SharedBuffer(std::rc::Rc::new(ScatteredBuffer::new(1))),
+                Permissions::ReadWrite,
+            ));
+        }
+        // Empty separate subtrees without pruning, then retire them in one
+        // pass. Late parents expose quadratic reverse physical-address scans.
+        for branch in 1..=branches {
+            drop(require_ok(
+                controller.revoke_test_page(domain, branch << 30),
+            ));
+        }
+        PHYSICAL_QUERIES.with(|count| count.set(0));
+        drop(require_ok(controller.unmap_buffer(domain, 1 << 30)));
+        let queries = PHYSICAL_QUERIES.with(Cell::get);
+        for branch in 2..=branches {
+            drop(require_ok(controller.unmap_buffer(domain, branch << 30)));
+        }
+        require_ok(controller.destroy_domain(domain));
+        queries
+    }
+    let small = work(32);
+    let large = work(64);
+    eprintln!("SMMU pruning owner queries: {small} -> {large}");
+    assert!(large <= small * 3, "pruning work: {small} -> {large}");
 }
 
 #[test]
