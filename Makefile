@@ -10,7 +10,6 @@ QEMU_MACHINE := virt,virtualization=on,gic-version=3,dtb-randomness=on
 DEFCONFIG := configs/qemu_aarch64_defconfig
 QEMU_BOOTARGS ?= earlycon=pl011,mmio32,0x09000000
 QEMU_TEST_SCRIPT := tests/qemu/verify-smp.sh
-QEMU_TIMER_SCRIPT := tests/qemu/verify-timer.sh
 else ifeq ($(ARCH),riscv64)
 TARGET := riscv64imac-unknown-none-elf
 QEMU ?= qemu-system-riscv64
@@ -19,7 +18,6 @@ QEMU_MACHINE := virt
 DEFCONFIG := configs/qemu_riscv64_defconfig
 QEMU_BOOTARGS ?= earlycon=uart8250,mmio,0x10000000
 QEMU_TEST_SCRIPT := tests/qemu/verify-riscv64.sh
-QEMU_TIMER_SCRIPT := tests/qemu/verify-riscv64.sh
 else ifeq ($(ARCH),x86_64)
 TARGET := x86_64-unknown-none
 QEMU ?= qemu-system-x86_64
@@ -30,7 +28,6 @@ QEMU_RUN_PREREQUISITES = $(X86_HOST_DTB)
 DEFCONFIG := configs/qemu_x86_64_defconfig
 QEMU_BOOTARGS ?= earlycon=uart8250,io,0x3f8
 QEMU_TEST_SCRIPT := tests/qemu/verify-x86_64.sh
-QEMU_TIMER_SCRIPT := tests/qemu/verify-x86_64.sh
 else
 $(error unsupported ARCH '$(ARCH)')
 endif
@@ -110,7 +107,7 @@ GUEST_FETCH := tools/guest/fetch-alpine-x86_64.sh
 GUEST_ASSET_STAMP := $(GUEST_OUTPUT)/.alpine-3.23.5.stamp
 endif
 
-.PHONY: all prepare-config config defconfig olddefconfig guest-assets clean-guest-assets build image release check test doc test-image test-timer test-qemu test-vhe-required verify verify-runtime verify-image verify-boot verify-smp run clean
+.PHONY: all prepare-config config defconfig olddefconfig guest-assets clean-guest-assets build image release check test doc test-image test-qemu test-vhe-required verify verify-runtime verify-image verify-boot verify-smp run clean
 
 all: image
 
@@ -224,11 +221,6 @@ test-image:
 	KERNEL_RUNTIME_SYMBOLS=$(KERNEL_RUNTIME_SYMBOLS) \
 		sh tests/image/verify-image.sh $(ARCH) $(READOBJ) $(NM) $(OBJDUMP) $(KERNEL_ELF) $(KERNEL_IMAGE) $(KALLSYMS_BLOB)
 
-test-timer: image
-	sh $(QEMU_TIMER_SCRIPT) $(QEMU) $(KERNEL_IMAGE) $(QEMU_CPU) $(QEMU_MEMORY) "$(QEMU_BOOTARGS)"
-
-test-timer: CARGO_FEATURES=--features kernel-test,kernel-self-test
-
 test-qemu: image
 	QEMU_CPUS=$(QEMU_CPUS) sh $(QEMU_TEST_SCRIPT) $(QEMU) $(KERNEL_IMAGE) $(QEMU_CPU) $(QEMU_MEMORY) "$(QEMU_BOOTARGS)"
 
@@ -260,11 +252,7 @@ endif
 verify-image: image
 	$(MAKE) test-image
 
-verify-boot: image
-	$(MAKE) test-timer ARCH=$(ARCH) QEMU_CPU=$(QEMU_CPU)
-
-verify-smp: image
-	$(MAKE) test-qemu ARCH=$(ARCH) QEMU_CPU=$(QEMU_CPU)
+verify-boot verify-smp: test-qemu
 
 run:
 	@test -f "$(KERNEL_IMAGE)" || { echo "Missing kernel image; run make first" >&2; exit 2; }

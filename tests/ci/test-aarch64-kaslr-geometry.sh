@@ -24,13 +24,12 @@ expect_invalid() {
 
 expect_valid VHE 48 0xffffff48e0600000 0x48e0600000
 expect_valid VHE 42 0xffffff0000200000 0x200000
-expect_invalid nVHE 48 0xff0000200000 0x200000
-expect_invalid nVHE 42 0x30000200000 0x200000
+# Reject an unsupported host mode even when the VHE geometry is valid.
+expect_invalid nVHE 48 0xffffff48e0600000 0x48e0600000
 
 expect_invalid VHE 48 0xfffffe48e0600000 0x48e0600000
 expect_invalid VHE 48 0xffffff48e0400000 0x48e0600000
-expect_invalid nVHE 48 0xff0000400000 0x200000
-expect_invalid nVHE 42 0x30000000001 0x1
+expect_invalid VHE 42 0xffffff0000000001 0x1
 expect_invalid VHE 48 0xffffff8000000000 0x8000000000
 
 echo "AArch64 KASLR geometry parser tests passed"

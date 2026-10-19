@@ -133,6 +133,7 @@ impl CompletionState {
 }
 
 static COMPLETION_STATE: CompletionState = CompletionState::new();
+static JOIN_STATE: CompletionState = CompletionState::new();
 
 pub(super) fn run() -> Result<(), Error> {
     exercise_nonblocking_paths()?;
@@ -142,6 +143,7 @@ pub(super) fn run() -> Result<(), Error> {
     exercise_fifo_preemption_points()?;
     exercise_mutex_and_semaphore_handoff()?;
     exercise_completion_events()?;
+    exercise_cancelled_completion_join()?;
     exercise_wait_queue_wake_all()?;
     let stats = super::support::quiesce_workers()?;
     if stats.real_time_class_threads + stats.fair_class_threads + stats.idle_class_threads
@@ -643,6 +645,51 @@ extern "C" fn completion_waiter(argument: usize) {
     }
     if state.done.release().is_err() {
         state.worker_error.store(3, Ordering::Release);
+    }
+}
+
+fn exercise_cancelled_completion_join() -> Result<(), Error> {
+    let state = &JOIN_STATE;
+    let worker = scheduler::kthread_create_fifo(
+        "completion/join",
+        completion_joiner,
+        0,
+        ThreadPriority::NORMAL,
+    )?;
+    scheduler::thread_ready(worker)?;
+    for _ in 0..8 {
+        if !crate::kernel::task::wait_for_test_progress(
+            crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
+            || Ok::<_, Error>(state.event.waiter_count()? == 1),
+        )? || state.observed.load(Ordering::Acquire) != 0
+            || state.worker_error.load(Ordering::Acquire) != 0
+            || !state.event.cancel_waiter_for_test(worker)?
+        {
+            return Err(Error::StateMismatch);
+        }
+    }
+    // Complete immediately after cancellation: either the joiner has rearmed,
+    // or the retained completion must satisfy its next wait without parking.
+    state.event.complete_all()?;
+    wait_for_completions(&state.done, 1)?;
+    if state.observed.load(Ordering::Acquire) != 1
+        || state.worker_error.load(Ordering::Acquire) != 0
+        || state.event.waiter_count()? != 0
+    {
+        return Err(Error::StateMismatch);
+    }
+    Ok(())
+}
+
+extern "C" fn completion_joiner(_: usize) {
+    let state = &JOIN_STATE;
+    if state.event.wait_uninterruptible().is_err() {
+        state.worker_error.store(1, Ordering::Release);
+    } else {
+        state.observed.store(1, Ordering::Release);
+    }
+    if state.done.release().is_err() {
+        state.worker_error.store(2, Ordering::Release);
     }
 }
 

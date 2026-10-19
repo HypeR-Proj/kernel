@@ -398,6 +398,144 @@ fn map_copy_and_page_boundary_access_use_one_committed_epoch() {
 }
 
 #[test]
+fn mapping_index_seeks_sparse_ranges_and_preserves_copy_boundaries() {
+    let (backend, account) = fixtures();
+    let base = 0x100_000;
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(base, PAGE_SIZE * (3 * 128 + 1)),
+        backend.clone(),
+        account.clone(),
+    ));
+    let vmo = crate::require_ok(WritableVmo::try_new(
+        PAGE_SIZE * 2,
+        backend,
+        account.clone(),
+    ));
+    crate::require_ok(vmo.populate(0, PAGE_SIZE * 2));
+    crate::require_ok(vmo.write(PAGE_SIZE - 1, b"ab"));
+    for index in (0..128).rev() {
+        let mapping = crate::require_ok(space.prepare_map_writable(
+            space.root_vmar(),
+            slice(base + index * PAGE_SIZE * 3, PAGE_SIZE * 2),
+            vmo.clone(),
+            0,
+            Permissions::read_only(),
+            Permissions::read_write(),
+        ));
+        complete(crate::require_ok(mapping.commit_for_test()));
+    }
+    for index in 0..128 {
+        let start = base + index * PAGE_SIZE * 3;
+        let mut bytes = [0; 2];
+        crate::require_ok(space.copy_from_user(slice(start + PAGE_SIZE - 1, 2), &mut bytes));
+        assert_eq!(&bytes, b"ab");
+        for address in [start + PAGE_SIZE * 2 - 1, start + PAGE_SIZE * 3 - 1] {
+            bytes = [0x55; 2];
+            assert!(matches!(
+                space.copy_from_user(slice(address, 2), &mut bytes),
+                Err(AddressSpaceError::NotMapped)
+            ));
+            assert_eq!(bytes, [0x55; 2]);
+        }
+    }
+    // Cursor ranks remain compatible with bounded diagnostic enumeration,
+    // independent of insertion order and AVL rotations.
+    let mut cursor = crate::require_ok(space.vmar_details(space.root_vmar(), 0)).next_cursor;
+    for index in 0..128 {
+        let detail = crate::require_ok(space.vmar_details(space.root_vmar(), cursor));
+        let user::VmarDetailRecord::Mapping { range, .. } = detail.record else {
+            panic!("missing mapping in diagnostic enumeration");
+        };
+        assert_eq!(range.base().get(), base + index * PAGE_SIZE * 3);
+        cursor = detail.next_cursor;
+    }
+    assert_eq!(cursor, 0);
+    drop(space);
+    drop(vmo);
+    assert_eq!(account.0.bytes.load(Ordering::Relaxed), 0);
+    assert_eq!(account.0.mappings.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn mapping_updates_share_unaffected_nodes_and_roll_back_every_failed_path() {
+    let mut costs = Vec::new();
+    for count in [32, 512] {
+        let (backend, account) = fixtures();
+        let base = 0x100_000;
+        let space = crate::require_ok(UserAddressSpace::try_new(
+            window(),
+            slice(base, PAGE_SIZE * 4 * count),
+            backend.clone(),
+            account.clone(),
+        ));
+        let vmo = crate::require_ok(WritableVmo::try_new(
+            PAGE_SIZE * 3,
+            backend,
+            account.clone(),
+        ));
+        crate::require_ok(vmo.populate(0, PAGE_SIZE * 3));
+        for step in 0..count {
+            let index = step * 37 % count;
+            let mapping = crate::require_ok(space.prepare_map_writable(
+                space.root_vmar(),
+                slice(base + index * PAGE_SIZE * 4, PAGE_SIZE * 3),
+                vmo.clone(),
+                0,
+                Permissions::read_only(),
+                Permissions::read_write(),
+            ));
+            complete(crate::require_ok(mapping.commit_for_test()));
+        }
+        let baseline = account.0.bytes.load(Ordering::Relaxed);
+        let epoch = space.mapping_epoch();
+        // Splitting one record into three also exercises rollback after new
+        // mapping owners and only part of the replacement path were charged.
+        let range = slice(base + (count * 2 + 1) * PAGE_SIZE, PAGE_SIZE);
+        let change = crate::require_ok(space.prepare_protect(
+            space.root_vmar(),
+            range,
+            Permissions::read_write(),
+        ));
+        costs.push(account.0.bytes.load(Ordering::Relaxed) - baseline);
+        drop(change);
+        assert_eq!(account.0.bytes.load(Ordering::Relaxed), baseline);
+        let mut success = false;
+        for fail in 1..128 {
+            account.0.fail_at_call.store(
+                account.0.charge_calls.load(Ordering::Relaxed) + fail,
+                Ordering::Relaxed,
+            );
+            let change = space.prepare_protect(space.root_vmar(), range, Permissions::read_write());
+            match &change {
+                Ok(_) => success = true,
+                Err(error) => assert!(matches!(error, AddressSpaceError::Account(_))),
+            }
+            drop(change);
+            account.0.fail_at_call.store(0, Ordering::Relaxed);
+            assert_eq!(space.mapping_epoch(), epoch);
+            assert_eq!(account.0.bytes.load(Ordering::Relaxed), baseline);
+            assert_eq!(account.0.mappings.load(Ordering::Relaxed), count);
+            assert!(matches!(
+                space.copy_to_user(slice(range.base().get(), 1), b"x"),
+                Err(AddressSpaceError::WriteDenied)
+            ));
+            if success {
+                break;
+            }
+        }
+        assert!(success);
+        account.0.fail_at_call.store(0, Ordering::Relaxed);
+        drop(space);
+        drop(vmo);
+        assert_eq!(account.0.bytes.load(Ordering::Relaxed), 0);
+        assert_eq!(account.0.mappings.load(Ordering::Relaxed), 0);
+    }
+    // 16x more mappings must not require a 16x mapping-table clone.
+    assert!(costs[1] <= costs[0] * 4, "preparation bytes: {costs:?}");
+}
+
+#[test]
 fn partial_protect_and_unmap_split_records_and_invalidate_old_tokens() {
     let (backend, account) = fixtures();
     let vmo = crate::require_ok(WritableVmo::try_new(

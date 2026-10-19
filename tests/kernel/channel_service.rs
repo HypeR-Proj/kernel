@@ -622,7 +622,14 @@ fn verify_handle_admission_after_stop(
     let handle = PreparedHandle::try_from_new_object(object, Rights::WAIT, HandleFlags::NONE)
         .map_err(ProcessError::from)?;
     let reservation = process.reserve_handles::<1>()?;
+    if process.requested_stop_reason().is_some() {
+        return Err(Error::State(45));
+    }
     process.request_stop(TerminalReason::Requested);
+    process.request_stop(TerminalReason::ProcessExited { status: 99 });
+    if process.requested_stop_reason() != Some(TerminalReason::Requested) {
+        return Err(Error::State(45));
+    }
     // The reservation was admitted before stop, but ordinary publication must
     // now fail reversibly. Consume-on-success transactions have separate rules.
     match process.publish_handles(reservation, [handle]) {
