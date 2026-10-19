@@ -28,6 +28,12 @@ pub(crate) fn verify_object_details_for_test(
             Rights::INSPECT.union(Rights::INSPECT_DETAILS),
         )
         .map_err(|_| "detail inspector publication")?;
+    let basic_receiver = process
+        .resolve_invocation(basic)
+        .map_err(|_| "basic receiver")?;
+    let detailed_receiver = process
+        .resolve_invocation(detailed)
+        .map_err(|_| "detailed receiver")?;
     for pair in [
         services.create_byte_channel().map_err(|_| "byte pair")?,
         services
@@ -42,7 +48,7 @@ pub(crate) fn verify_object_details_for_test(
             .map_err(|_| "right metadata")?;
         for (owner, target) in [(0, left.koid.get()), (process.koid().get(), pair[0].get())] {
             if !matches!(
-                services.read_object_details(basic, owner, target, 0),
+                services.read_object_details(&basic_receiver, owner, target, 0),
                 Err(Error::Process(ProcessError::Handle(
                     HandleError::AccessDenied
                 )))
@@ -50,7 +56,7 @@ pub(crate) fn verify_object_details_for_test(
                 return Err("basic inspector admitted details");
             }
             let details = services
-                .read_object_details(detailed, owner, target, 0)
+                .read_object_details(&detailed_receiver, owner, target, 0)
                 .map_err(|_| "authorized details")?;
             if details.koid != left.koid
                 || !matches!(details.details.record, DetailRecord::Channel { peer_koid, local_open: true, peer_open: true, .. } if peer_koid == right.koid.get())
@@ -60,14 +66,19 @@ pub(crate) fn verify_object_details_for_test(
         }
         process.close_handle(pair[1]).map_err(|_| "close right")?;
         let details = services
-            .read_object_details(detailed, 0, left.koid.get(), 0)
+            .read_object_details(&detailed_receiver, 0, left.koid.get(), 0)
             .map_err(|_| "closed peer details")?;
         if !matches!(details.details.record, DetailRecord::Channel { peer_koid, peer_open: false, .. } if peer_koid == right.koid.get())
         {
             return Err("closed peer identity lost or kept open");
         }
         if !matches!(
-            services.read_object_details(detailed, process.koid().get(), pair[1].get(), 0),
+            services.read_object_details(
+                &detailed_receiver,
+                process.koid().get(),
+                pair[1].get(),
+                0
+            ),
             Err(Error::NotFound)
         ) {
             return Err("closed handle was resolved");

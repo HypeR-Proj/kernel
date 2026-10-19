@@ -705,22 +705,6 @@ pub fn syscall_fp_resident_for_test(
     crate::arch::user::syscall_fp_resident_for_test()
 }
 
-#[cfg(all(
-    CONFIG_ARCH_RISCV64,
-    all(feature = "kernel-test", feature = "kernel-self-test")
-))]
-pub fn native_register_test_program_for_test() -> &'static [u8] {
-    crate::arch::user::native_register_test_program_for_test()
-}
-
-#[cfg(all(
-    CONFIG_ARCH_RISCV64,
-    all(feature = "kernel-test", feature = "kernel-self-test")
-))]
-pub fn native_fault_test_programs_for_test() -> [&'static [u8]; 2] {
-    crate::arch::user::native_fault_test_programs_for_test()
-}
-
 /// Copies from machine-visible memory using the selected architecture seam.
 ///
 /// # Safety

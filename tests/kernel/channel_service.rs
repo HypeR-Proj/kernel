@@ -180,7 +180,7 @@ fn verify_memory_authority_attenuation(
     let ordinary = process.duplicate_handle(root, VmarObject::ROOT_RIGHTS)?;
     let (child, _) = allocate_vmar(
         process,
-        ordinary,
+        &process.resolve_invocation(ordinary)?,
         IMAGE_BASE + PAGE_SIZE * 3,
         PAGE_SIZE,
         true,
@@ -189,13 +189,26 @@ fn verify_memory_authority_attenuation(
     if !matches!(
         process.resolve_handle::<VmarObject>(child, Rights::LOCK_MEMORY),
         Err(ProcessError::Handle(HandleError::AccessDenied))
-    ) || set_memory_residency(process, child, 0, 0, true, true).is_ok()
+    ) || set_memory_residency(
+        process,
+        &process.resolve_invocation(child)?,
+        0,
+        0,
+        true,
+        true,
+    )
+    .is_ok()
     {
         return Err(Error::State(81));
     }
-    let (allowed_child, _) =
-        allocate_vmar(process, root, IMAGE_BASE + PAGE_SIZE * 4, PAGE_SIZE, true)
-            .map_err(|_| Error::State(86))?;
+    let (allowed_child, _) = allocate_vmar(
+        process,
+        &process.resolve_invocation(root)?,
+        IMAGE_BASE + PAGE_SIZE * 4,
+        PAGE_SIZE,
+        true,
+    )
+    .map_err(|_| Error::State(86))?;
     process.resolve_handle::<VmarObject>(allowed_child, Rights::LOCK_MEMORY)?;
     // Restrict a child to only residency operations; MAP is independent.
     let lock_only = process.duplicate_handle(allowed_child, Rights::LOCK_MEMORY)?;
@@ -205,8 +218,24 @@ fn verify_memory_authority_attenuation(
     ) {
         return Err(Error::State(82));
     }
-    set_memory_residency(process, lock_only, 0, 0, true, true).map_err(|_| Error::State(83))?;
-    set_memory_residency(process, lock_only, 0, 0, true, false).map_err(|_| Error::State(84))?;
+    set_memory_residency(
+        process,
+        &process.resolve_invocation(lock_only)?,
+        0,
+        0,
+        true,
+        true,
+    )
+    .map_err(|_| Error::State(83))?;
+    set_memory_residency(
+        process,
+        &process.resolve_invocation(lock_only)?,
+        0,
+        0,
+        true,
+        false,
+    )
+    .map_err(|_| Error::State(84))?;
     for handle in [lock_only, allowed_child, child, ordinary, root] {
         process.close_handle(handle)?;
     }
@@ -227,26 +256,48 @@ fn verify_guest_memory_authority(process: &Process, domain: &ResourceDomain) -> 
     let write_only = process.duplicate_handle(full, Rights::WRITE)?;
     let map_only = process.duplicate_handle(full, Rights::MAP)?;
     let payload = write_user(process, 0, b"ring")?;
-    if guest_memory_access::scalar(process, map_only, false, 0, 2, 0) != Err(VmError::AccessDenied)
-        || guest_memory_access::scalar(process, read_only, true, 0, 2, 1)
+    if guest_memory_access::scalar(&process.resolve_invocation(map_only)?, false, 0, 2, 0)
+        != Err(VmError::AccessDenied)
+        || guest_memory_access::scalar(&process.resolve_invocation(read_only)?, true, 0, 2, 1)
             != Err(VmError::AccessDenied)
-        || guest_memory_access::scalar(process, write_only, false, 0, 2, 0)
+        || guest_memory_access::scalar(&process.resolve_invocation(write_only)?, false, 0, 2, 0)
             != Err(VmError::AccessDenied)
-        || guest_memory_access::transfer(process, read_only, true, 0, payload)
-            != Err(VmError::AccessDenied)
-        || guest_memory_access::transfer(process, write_only, false, 0, payload)
-            != Err(VmError::AccessDenied)
+        || guest_memory_access::transfer(
+            process,
+            &process.resolve_invocation(read_only)?,
+            true,
+            0,
+            payload,
+        ) != Err(VmError::AccessDenied)
+        || guest_memory_access::transfer(
+            process,
+            &process.resolve_invocation(write_only)?,
+            false,
+            0,
+            payload,
+        ) != Err(VmError::AccessDenied)
     {
         return Err(Error::State(90));
     }
-    if guest_memory_access::transfer(process, write_only, true, 4094, payload)
-        != Err(VmError::InvalidArgument)
+    if guest_memory_access::transfer(
+        process,
+        &process.resolve_invocation(write_only)?,
+        true,
+        4094,
+        payload,
+    ) != Err(VmError::InvalidArgument)
     {
         return Err(Error::State(91));
     }
-    guest_memory_access::transfer(process, write_only, true, 0, payload)
-        .map_err(|_| Error::State(92))?;
-    if guest_memory_access::scalar(process, read_only, false, 0, 4, 0)
+    guest_memory_access::transfer(
+        process,
+        &process.resolve_invocation(write_only)?,
+        true,
+        0,
+        payload,
+    )
+    .map_err(|_| Error::State(92))?;
+    if guest_memory_access::scalar(&process.resolve_invocation(read_only)?, false, 0, 4, 0)
         != Ok(u64::from(u32::from_le_bytes(*b"ring")))
     {
         return Err(Error::State(93));
@@ -254,7 +305,10 @@ fn verify_guest_memory_authority(process: &Process, domain: &ResourceDomain) -> 
     for handle in [read_only, write_only, map_only, full] {
         process.close_handle(handle)?;
     }
-    if guest_memory_access::scalar(process, full, false, 0, 2, 0) != Err(VmError::BadHandle) {
+    if !matches!(
+        process.resolve_invocation(full),
+        Err(ProcessError::Handle(HandleError::InvalidHandle))
+    ) {
         return Err(Error::State(94));
     }
     Ok(())
@@ -341,7 +395,12 @@ fn verify_cross_process_capability_transfer(
     )? {
         return Err(Error::State(23));
     }
-    capability_channel_try_send(source, sender, Some(source_bytes), Some(source_record))?;
+    capability_channel_try_send(
+        source,
+        &source.resolve_invocation(sender)?,
+        Some(source_bytes),
+        Some(source_record),
+    )?;
 
     // SAFETY: the allocation remains owned by this test until worker
     // quiescence, and all shared observations use atomics or immutable fields.
@@ -395,14 +454,20 @@ extern "C" fn capability_receive_worker(context: usize) {
     // retains it until this worker has fully left the scheduler.
     let context =
         unsafe { &*core::ptr::with_exposed_provenance::<CapabilityReceiveContext>(context) };
-    let outcome = capability_channel_receive(
-        &context.process,
-        context.endpoint,
-        hyper::abi::native::HYPER_NATIVE_DEADLINE_INFINITE,
-        Some(context.byte_output),
-        Some(context.slot_output),
-        || false,
-    );
+    let outcome = context
+        .process
+        .resolve_invocation(context.endpoint)
+        .map_err(CapabilityChannelServiceError::from)
+        .and_then(|receiver| {
+            capability_channel_receive(
+                &context.process,
+                &receiver,
+                hyper::abi::native::HYPER_NATIVE_DEADLINE_INFINITE,
+                Some(context.byte_output),
+                Some(context.slot_output),
+                || false,
+            )
+        });
     let status = match outcome {
         Ok(CapabilityReceiveOutcome::Delivered(CapabilityDeliveryInfo { bytes, handles: 1 }))
             if bytes == CAPABILITY_MESSAGE.len() =>
@@ -651,12 +716,12 @@ fn verify_fifo_and_buffer_contract(process: &Process) -> Result<(), Error> {
     let [sender, receiver] = byte_channel_create(process)?;
     let first = write_user(process, 0, b"first")?;
     let second = write_user(process, 0x40, b"second")?;
-    byte_channel_write(process, sender, Some(first))?;
-    byte_channel_write(process, sender, Some(second))?;
+    byte_channel_write(process, &process.resolve_invocation(sender)?, Some(first))?;
+    byte_channel_write(process, &process.resolve_invocation(sender)?, Some(second))?;
 
     let short = scratch(0x100, 2)?;
     process.copy_to_user(short, &[0x5a, 0xa5])?;
-    if byte_channel_read(process, receiver, Some(short))?
+    if byte_channel_read(process, &process.resolve_invocation(receiver)?, Some(short))?
         != (ByteChannelReadOutcome::BufferTooSmall { bytes: 5 })
     {
         return Err(Error::State(3));
@@ -670,7 +735,7 @@ fn verify_fifo_and_buffer_contract(process: &Process) -> Result<(), Error> {
     verify_read(process, receiver, 0x140, b"first", 5)?;
     verify_read(process, receiver, 0x180, b"second", 6)?;
     if !matches!(
-        byte_channel_read(process, receiver, None),
+        byte_channel_read(process, &process.resolve_invocation(receiver)?, None),
         Err(ByteChannelServiceError::Channel(
             ByteChannelError::WouldBlock
         ))
@@ -685,12 +750,16 @@ fn verify_fifo_and_buffer_contract(process: &Process) -> Result<(), Error> {
 fn verify_copy_failure_restores_message(process: &Process) -> Result<(), Error> {
     let [sender, receiver] = byte_channel_create(process)?;
     let source = write_user(process, 0x200, b"atomic")?;
-    byte_channel_write(process, sender, Some(source))?;
+    byte_channel_write(process, &process.resolve_invocation(sender)?, Some(source))?;
     let output = scratch(0x240, 8)?;
 
     fail_exposed_write_after_copy_for_test(1);
     if !matches!(
-        byte_channel_read(process, receiver, Some(output)),
+        byte_channel_read(
+            process,
+            &process.resolve_invocation(receiver)?,
+            Some(output)
+        ),
         Err(ByteChannelServiceError::Process(ProcessError::UserMemory(
             _
         )))
@@ -711,11 +780,13 @@ fn verify_read(
     stage: usize,
 ) -> Result<(), Error> {
     let output = scratch(offset, 16)?;
-    if byte_channel_read(process, receiver, Some(output))?
-        != (ByteChannelReadOutcome::Received {
-            bytes: expected.len() as u64,
-        })
-    {
+    if byte_channel_read(
+        process,
+        &process.resolve_invocation(receiver)?,
+        Some(output),
+    )? != (ByteChannelReadOutcome::Received {
+        bytes: expected.len() as u64,
+    }) {
         return Err(Error::State(stage));
     }
     let mut actual = [0; 16];

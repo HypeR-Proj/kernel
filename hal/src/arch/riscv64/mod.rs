@@ -93,15 +93,12 @@ pub use timer::{
 };
 pub use user_entry::Error as UserEntryError;
 #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+pub(crate) use user_entry::direct_native_call_count_for_test;
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub(crate) use user_entry::native_run_counts_for_test;
 pub(crate) use user_entry::{
     CompletionFailure as UserCompletionFailure, ReturnCapability as UserReturnCapability,
     UserContext, UserExit,
-};
-#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
-pub(crate) use user_entry::{
-    direct_native_call_count_for_test, native_fault_test_programs_for_test,
-    native_register_test_program_for_test,
 };
 pub(crate) use user_entry::{run_user, suspend_current_user};
 pub use user_machine::{ContractError as UserMachineContractError, Error as UserAddressSpaceError};

@@ -27,32 +27,41 @@ pub(super) fn verify(process: &Process) -> Result<(), &'static str> {
         .duplicate_handle(root, Rights::MAP_DMA)
         .map_err(|_| "DMA delegation")?;
     for handle in [inspect, map] {
+        let receiver = process
+            .resolve_invocation(handle)
+            .map_err(|_| "authority receiver")?;
         if !matches!(
-            service::claim(process, handle, u32::MAX),
+            service::claim(process, &receiver, u32::MAX),
             Err(Error::AccessDenied)
         ) || !matches!(
-            service::claim_matching(process, handle, 1, 1, "virtio,mmio"),
+            service::claim_matching(process, &receiver, 1, 1, "virtio,mmio"),
             Err(service::MatchError::Service(Error::AccessDenied))
         ) || !matches!(
-            service::claim_bundle(process, handle, &[], 0),
+            service::claim_bundle(process, &receiver, &[], 0),
             Err(Error::AccessDenied)
         ) {
             return Err("discovery or address permission allowed claim");
         }
     }
     for handle in [inspect, assign] {
+        let receiver = process
+            .resolve_invocation(handle)
+            .map_err(|_| "authority receiver")?;
         // Use the authority itself in the VMO slot: access must fail before a
         // VMO lookup, independently of residency or available hardware.
         if !matches!(
-            service::dma_extent(process, handle, root, 0, 4096),
+            service::dma_extent(process, &receiver, root, 0, 4096),
             Err(Error::AccessDenied)
         ) {
             return Err("non-MAP_DMA authority disclosed DMA extent");
         }
     }
     for handle in [assign, map] {
+        let receiver = process
+            .resolve_invocation(handle)
+            .map_err(|_| "authority receiver")?;
         if !matches!(
-            service::firmware_read(process, handle, 0, 0, ""),
+            service::firmware_read(&receiver, 0, 0, ""),
             Err(service::MatchError::Service(Error::AccessDenied))
         ) {
             return Err("non-INSPECT authority allowed discovery");

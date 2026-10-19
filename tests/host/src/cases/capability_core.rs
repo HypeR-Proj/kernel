@@ -57,6 +57,7 @@ fn process_builder_storage_policy_is_explicit_and_bounds_graph_authority() {
         ObjectKind::VIRTUAL_MACHINE_CREATION_AUTHORITY,
         ObjectKind::VIRTUAL_MACHINE_CREATION_LEASE,
         ObjectKind::CRASH_VIEW,
+        ObjectKind::SYSTEM_INFO,
     ] {
         assert!(builder_policy::BuilderStorable::permits_kind_id(
             admitted.get()
@@ -64,6 +65,8 @@ fn process_builder_storage_policy_is_explicit_and_bounds_graph_authority() {
     }
     for rejected in [
         ObjectKind::PROCESS_BUILDER,
+        ObjectKind::EXECUTION_CONTEXT,
+        ObjectKind::OBJECT_FACTORY,
         ObjectKind::PROCESS,
         ObjectKind::THREAD,
         ObjectKind::VMAR,
@@ -907,13 +910,15 @@ fn concurrent_close_and_page_reuse_preserve_an_existing_operation_pin() {
         let reservation = crate::require_ok(table.reserve::<1>());
         reservation.publish(&mut table, [prepared(original, Rights::INSPECT)])[0]
     };
-    let resolved = crate::require_ok(table.resolve::<TestObject>(value, Rights::INSPECT));
+    let receiver = crate::require_ok(table.resolve_invocation(value));
     let rendezvous = Arc::new(std::sync::Barrier::new(2));
     let operation_rendezvous = rendezvous.clone();
     let operation = std::thread::spawn(move || {
         operation_rendezvous.wait();
         operation_rendezvous.wait();
-        resolved.object().value
+        crate::require_ok(receiver.resolve::<TestObject>(Rights::INSPECT))
+            .object()
+            .value
     });
 
     rendezvous.wait();
@@ -934,6 +939,50 @@ fn concurrent_close_and_page_reuse_preserve_an_existing_operation_pin() {
     };
     assert_eq!(observed, 101);
     remove_all(&mut table);
+}
+
+#[test]
+fn invocation_retains_only_the_captured_grant_and_an_operation_pin() {
+    let transitions = Arc::new(AtomicUsize::new(0));
+    let object = object(104, &transitions);
+    let mut table = HandleTable::new();
+    let [handle] = crate::require_ok(table.reserve::<1>())
+        .publish(&mut table, [prepared(object.clone(), Rights::INSPECT)]);
+    let receiver = crate::require_ok(table.resolve_invocation(handle));
+    assert_eq!(receiver.info().koid, object.koid());
+    assert_eq!(receiver.info().rights, Rights::INSPECT);
+    assert_eq!(receiver.kind(), TEST_KIND);
+    assert_eq!(
+        receiver.require(Rights::SIGNAL),
+        Err(HandleError::AccessDenied)
+    );
+    assert!(matches!(
+        receiver.resolve::<OtherObject>(Rights::INSPECT),
+        Err(HandleError::WrongObjectType)
+    ));
+    assert!(matches!(
+        receiver.resolve_waitable(Rights::WAIT),
+        Err(HandleError::AccessDenied)
+    ));
+    let snapshot = object.snapshot();
+    assert_eq!(snapshot.references.user_authority, 1);
+    assert_eq!(snapshot.references.operation_pin, 1);
+
+    crate::require_ok(table.remove(handle)).complete();
+    assert_eq!(transitions.load(Ordering::Relaxed), 1);
+    assert_eq!(object.active_handle_count(), 0);
+    assert_eq!(
+        crate::require_ok(receiver.resolve::<TestObject>(Rights::INSPECT))
+            .object()
+            .value,
+        104
+    );
+    assert!(matches!(
+        table.resolve_invocation(handle),
+        Err(HandleError::InvalidHandle)
+    ));
+    drop(receiver);
+    assert_eq!(object.snapshot().references.operation_pin, 0);
 }
 
 #[test]
@@ -1102,6 +1151,7 @@ fn transfer_claim_rollback_restores_exact_values_and_authority() {
         },
     ];
 
+    let receiver = crate::require_ok(table.resolve_invocation(values[0]));
     let claim = crate::require_ok(table.prepare_transfer(
         &requests,
         None,
@@ -1109,6 +1159,16 @@ fn transfer_claim_rollback_restores_exact_values_and_authority() {
         HandleTransferRoute::Buffered,
     ));
     assert_eq!(table.get_info(values[0]), Err(HandleError::Busy));
+    assert!(matches!(
+        table.resolve_invocation(values[0]),
+        Err(HandleError::Busy)
+    ));
+    assert_eq!(
+        crate::require_ok(receiver.resolve::<TestObject>(Rights::INSPECT))
+            .object()
+            .value,
+        31
+    );
     assert_eq!(table.remove(values[1]).err(), Some(HandleError::Busy));
     assert!(matches!(
         table.begin_teardown(),

@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "capabilities.h"
+
 /* Copied into independent EL0/EL1 mappings, never executed by the kernel. */
 .section .rodata.fp_probes, "a"
 .balign 4
@@ -23,21 +25,22 @@
     msr tpidr_el0, x19
     .if \blocking
     mov x0, #0
-    mov x8, #9                   // event_create.
-    svc #0
+    native_invoke NATIVE_TEST_OBJECT_FACTORY, HYPER_NATIVE_OP_EVENT_CREATE, 1
     cbnz x0, .Lfail\@
     mov x25, x1
+    native_publish_event
     sub x27, sp, #8192           // Untouched COW page, below the stack.
     ldrb w9, [x27]
     cmp w9, #0x5a
     b.ne .Lfail\@
-    mov x0, x25
-    mov x1, x27
-    mov x2, #16                  // Complete HandleInfo record.
+    mov x8, x25
+    mov x0, x27
+    mov x1, #16                  // Complete HandleInfo record.
+    mov x2, #0
     mov x3, #0
     mov x4, #0
     mov x5, #0
-    mov x8, #4                   // handle_get_info must resolve COW copyout.
+    mov x6, #HYPER_NATIVE_OP_HANDLE_GET_INFO // Must resolve COW copyout.
     svc #0
     cbnz x0, .Lfail\@
     cmp x1, #16
@@ -109,27 +112,28 @@
     .endif
     .else
     .if \blocking
-    mov x0, x25
-    mov x1, #1
-    mov x2, #-1
-    mov x8, #11                  // object_wait_one; controller migrates/wakes.
+    mov x8, x25
+    mov x0, #1
+    mov x1, #-1
+    mov x2, #0
+    native_arguments 2
+    mov x6, #HYPER_NATIVE_OP_OBJECT_WAIT_ONE // Controller migrates/wakes.
     svc #0
     cbnz x0, .Lfail\@
     cmp x1, #1
     b.ne .Lfail\@
-    mov x0, x25
-    mov x1, #1
-    mov x2, #0
-    mov x8, #10                  // Clear Event before the next wait.
+    mov x8, x25
+    mov x0, #1
+    mov x1, #0
+    native_arguments 2
+    mov x6, #HYPER_NATIVE_OP_EVENT_SIGNAL // Clear Event for the next wait.
     svc #0
     cbnz x0, .Lfail\@
     .else
-    mov x8, #0
-    svc #0                      // Direct return must retain the register bank.
-    mov x8, #-1
-    svc #0                      // Unknown calls use the same direct return.
-    mov x8, #6
-    svc #0                      // Yield lets another FP owner execute.
+    native_invoke NATIVE_TEST_SYSTEM_INFO, HYPER_NATIVE_OP_ABI_QUERY
+    mov x6, #-1
+    svc #0                      // Unknown operation on the same capability.
+    native_invoke NATIVE_TEST_EXECUTION_CONTEXT, HYPER_NATIVE_OP_THREAD_YIELD
     .endif
     .endif
     mov x9, #0x400000

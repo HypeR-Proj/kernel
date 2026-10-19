@@ -8,7 +8,7 @@ use crate::kernel::mm::user_space::{UserAddress, UserSlice};
 use crate::kernel::process::{Process, UserThread, UserThreadPhase};
 use crate::kernel::task::scheduler::CpuMask;
 
-/// Exercises the real deferred thread service before the caller becomes runnable.
+/// Exercises the real thread service before the caller becomes runnable.
 pub(crate) fn verify_thread_affinity_creation_for_test(
     process: &Process,
     caller: &UserThread,
@@ -38,8 +38,10 @@ pub(crate) fn verify_thread_affinity_creation_for_test(
         )
     };
     let check = |handle: HandleValue, expected: CpuMask| -> Result<(), &'static str> {
-        let thread = process
-            .resolve_user_thread_handle(handle, Rights::INSPECT)
+        let receiver = process
+            .resolve_invocation(handle)
+            .map_err(|_| "created thread receiver")?;
+        let thread = UserThread::resolve_receiver(&receiver, Rights::INSPECT)
             .map_err(|_| "created thread resolve")?;
         let id = thread.scheduler_id().ok_or("created scheduler identity")?;
         let (_, actual) = crate::kernel::task::scheduler::thread_placement(id)

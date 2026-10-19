@@ -270,17 +270,19 @@ pub(super) fn run(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Erro
 
 #[cfg(CONFIG_ARCH_AARCH64)]
 fn blocking_probe(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Error> {
-    use crate::kernel::capability::{HandleValue, Rights};
+    use crate::kernel::capability::Rights;
     use crate::kernel::object::Event;
 
     with_probe(domain, group, 0x3456, ProbeMode::Blocking, |probe| {
         for round in 0..8 {
             wait(|| {
                 Ok(probe.progress()? > round
-                    && probe
-                        .process
-                        .resolve_handle::<Event>(HandleValue::first_for_test(), Rights::WAIT)
-                        .is_ok_and(|event| event.object().waiter_count() == 1))
+                    && super::event_handle(&probe.process).is_ok_and(|handle| {
+                        probe
+                            .process
+                            .resolve_handle::<Event>(handle, Rights::WAIT)
+                            .is_ok_and(|event| event.object().waiter_count() == 1)
+                    }))
             })?;
             let index = if crate::kernel::cpu::online_cpu_count() > 1 {
                 (round as usize + 1) % 2
@@ -291,7 +293,7 @@ fn blocking_probe(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Erro
             probe.move_to(cpu)?;
             probe
                 .process
-                .resolve_handle::<Event>(HandleValue::first_for_test(), Rights::SIGNAL)
+                .resolve_handle::<Event>(super::event_handle(&probe.process)?, Rights::SIGNAL)
                 .map_err(|_| Error::Lifecycle)?
                 .object()
                 .signal(0, Event::SIGNALED.bits())

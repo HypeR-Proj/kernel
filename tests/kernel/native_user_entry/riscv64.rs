@@ -12,6 +12,46 @@ use super::{Error, prepare_process, retire_process};
 const REGISTER_TIMEOUT_NS: u64 = 20_000_000_000;
 static KERNEL_ONLY_WORD: u64 = 0x4859_5045_525f_5553;
 
+/// Raw LP64D register-isolation payload, copied into test-owned user memory.
+fn register_program() -> &'static [u8] {
+    unsafe extern "C" {
+        static riscv64_native_register_test_start: u8;
+        static riscv64_native_register_test_end: u8;
+    }
+    let start = core::ptr::addr_of!(riscv64_native_register_test_start);
+    let end = core::ptr::addr_of!(riscv64_native_register_test_end);
+    // SAFETY: Assembly bounds one immutable, retained position-independent
+    // payload. Its bytes remain mapped and unchanged for the machine lifetime.
+    unsafe { super::program_bytes(start, end) }
+}
+
+/// Containment probes: supervisor-only load through a0, then privileged SATP.
+/// A forbidden instruction which incorrectly completes exits with -99, so an
+/// unrelated later instruction fault cannot masquerade as successful isolation.
+fn fault_programs() -> [&'static [u8]; 2] {
+    unsafe extern "C" {
+        static riscv64_native_supervisor_load_start: u8;
+        static riscv64_native_supervisor_load_end: u8;
+        static riscv64_native_privileged_csr_start: u8;
+        static riscv64_native_privileged_csr_end: u8;
+    }
+    [
+        (
+            &raw const riscv64_native_supervisor_load_start,
+            &raw const riscv64_native_supervisor_load_end,
+        ),
+        (
+            &raw const riscv64_native_privileged_csr_start,
+            &raw const riscv64_native_privileged_csr_end,
+        ),
+    ]
+    .map(|(start, end)| {
+        // SAFETY: The linked test assembly retains each immutable probe in one
+        // section between its start/end labels for the entire kernel lifetime.
+        unsafe { super::program_bytes(start, end) }
+    })
+}
+
 pub(crate) fn run() -> Result<(), Error> {
     let direct_calls = crate::hal::user::direct_native_call_count_for_test();
     let domain =
@@ -20,7 +60,7 @@ pub(crate) fn run() -> Result<(), Error> {
     super::verify_thread_creation_affinity(
         &domain,
         &group,
-        crate::hal::user::native_register_test_program_for_test(),
+        register_program(),
         MachineAbi::Riscv64,
     )?;
     let result = (|| {
@@ -29,9 +69,9 @@ pub(crate) fn run() -> Result<(), Error> {
         run_pair(&domain, &group, true)?;
         run_pair(&domain, &group, false)?;
         run_fault_probes(&domain, &group)?;
-        // Each of four programs returns from 64 queries, one unknown call,
-        // and eight yields; thread_exit never contributes a direct return.
-        if crate::hal::user::direct_native_call_count_for_test() != direct_calls.saturating_add(292)
+        // Each of four programs returns from 64 queries, one unknown operation,
+        // one invalid target and eight yields; thread_exit never returns.
+        if crate::hal::user::direct_native_call_count_for_test() != direct_calls.saturating_add(296)
         {
             return Err(Error::Terminal);
         }
@@ -46,7 +86,7 @@ pub(crate) fn run() -> Result<(), Error> {
 }
 
 fn run_pair(domain: &ResourceDomain, group: &TaskGroup, same_hart: bool) -> Result<(), Error> {
-    let program = crate::hal::user::native_register_test_program_for_test();
+    let program = register_program();
     let mut processes: [Option<Process>; 2] = [None, None];
     let result = (|| {
         for slot in &mut processes {
@@ -129,7 +169,7 @@ fn run_pair(domain: &ResourceDomain, group: &TaskGroup, same_hart: bool) -> Resu
 }
 
 fn run_fault_probes(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Error> {
-    let programs = crate::hal::user::native_fault_test_programs_for_test();
+    let programs = fault_programs();
     let expected = [
         TerminalReason::Fault { class: 2, code: 13 },
         TerminalReason::Fault { class: 4, code: 2 },
@@ -184,9 +224,19 @@ fn stop_and_retire(process: &Process) -> Result<(), Error> {
 
 fn integer_only(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Error> {
     let before = crate::hal::user::fp_state_counts_for_test();
-    // li a0,0; li a7,7 (thread_exit); ecall. No F/D or illegal instructions.
-    let code: [u8; 12] = [0x13, 0x05, 0, 0, 0x93, 0x08, 0x70, 0, 0x73, 0, 0, 0];
-    let process = prepare_process(domain, group, &code, MachineAbi::Riscv64)?;
+    unsafe extern "C" {
+        static riscv64_native_integer_exit_start: u8;
+        static riscv64_native_integer_exit_end: u8;
+    }
+    // SAFETY: These labels bound one retained immutable test assembly program.
+    // Its invocation exits normally without issuing F/D or illegal instructions.
+    let code = unsafe {
+        super::program_bytes(
+            &raw const riscv64_native_integer_exit_start,
+            &raw const riscv64_native_integer_exit_end,
+        )
+    };
+    let process = prepare_process(domain, group, code, MachineAbi::Riscv64)?;
     let result = (|| {
         let thread = process
             .create_initial_user_thread("selftest/integer-only", CpuMask::ALL)

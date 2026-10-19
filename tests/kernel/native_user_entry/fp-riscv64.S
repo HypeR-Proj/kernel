@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "capabilities.h"
+
 /* Copied into independent U/VS mappings, never executed by the IMAC kernel. */
 .section .rodata.fp_probes, "a"
 .option norvc
@@ -74,12 +76,10 @@
     wfi
     .endif
     .else
-    li a7, 0
-    ecall                        /* Direct ABI query. */
-    li a7, -1
-    ecall                        /* Direct unsupported result. */
-    li a7, 6
-    ecall                        /* Yield to another owner. */
+    native_invoke NATIVE_TEST_SYSTEM_INFO, HYPER_NATIVE_OP_ABI_QUERY
+    li a6, -1
+    ecall                        /* Unknown method on a valid capability. */
+    native_invoke NATIVE_TEST_EXECUTION_CONTEXT, HYPER_NATIVE_OP_THREAD_YIELD
     .endif
     li t0, 0x400000
 .Lbusy\@:

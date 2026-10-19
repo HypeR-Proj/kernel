@@ -7,14 +7,6 @@
 //! contains no process or ABI policy and exposes no runnable entry before
 //! address-space residency exists.
 
-#[cfg(all(
-    target_arch = "riscv64",
-    all(feature = "kernel-test", feature = "kernel-self-test")
-))]
-pub(crate) use super::imp::{
-    native_fault_test_programs_for_test, native_register_test_program_for_test,
-};
-
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub use super::imp::UserAddressSpaceError;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]

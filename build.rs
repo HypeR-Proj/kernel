@@ -12,6 +12,8 @@ use std::process::Command;
 mod aarch64_registers;
 #[path = "build_support/config.rs"]
 mod config;
+#[path = "../sdk/abi/schema/native.rs"]
+mod native_abi;
 #[allow(dead_code)]
 #[path = "hal/src/arch/riscv64/registers.rs"]
 mod riscv64_registers;
@@ -116,24 +118,54 @@ fn main() -> Result<(), Box<dyn Error>> {
     ) && env::var_os("CARGO_FEATURE_KERNEL_TEST").is_some()
         && env::var_os("CARGO_FEATURE_KERNEL_SELF_TEST").is_some()
     {
-        let source = if target == "riscv64imac-unknown-none-elf" {
-            "tests/kernel/native_user_entry/fp-riscv64.S"
+        write_native_test_header(&output_directory.join("native_abi_constants.h"))?;
+        let sources = if target == "riscv64imac-unknown-none-elf" {
+            [
+                ("tests/kernel/native_user_entry/fp-riscv64.S", "fp_probes.o"),
+                (
+                    "tests/kernel/native_user_entry/registers-riscv64.S",
+                    "native_probes.o",
+                ),
+            ]
         } else {
-            "tests/kernel/native_user_entry/fp.S"
+            [
+                ("tests/kernel/native_user_entry/fp.S", "fp_probes.o"),
+                (
+                    "tests/kernel/native_user_entry/invocation-aarch64.S",
+                    "native_probes.o",
+                ),
+            ]
         };
-        println!("cargo:rerun-if-changed={source}");
-        let object = output_directory.join("fp_probes.o");
-        compile_assembly(
-            clang_target,
-            (target == "riscv64imac-unknown-none-elf")
-                .then_some("rv64imafdc_h_zicsr_zifencei_zicbom"),
-            source,
-            &output_directory,
-            &object,
-        )?;
-        println!("cargo:rustc-link-arg-bin=hyper={}", object.display());
+        println!("cargo:rerun-if-changed=tests/kernel/native_user_entry/capabilities.h");
+        for (source, name) in sources {
+            println!("cargo:rerun-if-changed={source}");
+            let object = output_directory.join(name);
+            compile_assembly(
+                clang_target,
+                (target == "riscv64imac-unknown-none-elf")
+                    .then_some("rv64imafdc_h_zicsr_zifencei_zicbom"),
+                source,
+                &output_directory,
+                &object,
+            )?;
+            println!("cargo:rustc-link-arg-bin=hyper={}", object.display());
+        }
     }
     Ok(())
+}
+
+fn write_native_test_header(path: &Path) -> io::Result<()> {
+    println!("cargo:rerun-if-changed=../sdk/abi/schema/native.rs");
+    let mut header =
+        String::from("/* Generated from the Native ABI schema for machine invocation probes. */\n");
+    for invocation in native_abi::NATIVE_ABI.invocations {
+        header.push_str(&format!(
+            "#define HYPER_NATIVE_OP_{} {}\n",
+            invocation.name.to_ascii_uppercase(),
+            invocation.operation,
+        ));
+    }
+    fs::write(path, header)
 }
 
 fn export_build_version() -> Result<(), Box<dyn Error>> {

@@ -7,147 +7,65 @@ use super::{Error, IMAGE_BASE, prepare_process, retire_process};
 use hyper::mm::PAGE_SIZE;
 
 use crate::kernel::accounting::{ResourceDomain, ResourceLimits};
-use crate::kernel::capability::{HandleValue, ResolvedWaitable, Rights};
+use crate::kernel::capability::{ResolvedWaitable, Rights};
 use crate::kernel::object::{Event, ObjectHandleState, ObjectKind, SignalWaitOutcome};
-use crate::kernel::process::{MachineAbi, Process, TaskGroup, TerminalReason};
+use crate::kernel::process::{MachineAbi, Process, TaskGroup, TerminalReason, UserThread};
 use crate::kernel::task::scheduler::CpuMask;
 
-const DIRECT_CALL_COUNT: usize = 65;
+const DIRECT_CALL_COUNT: usize = 66;
 
-// Query the ABI repeatedly within one machine run and validate x0/x1/x2 after
-// every direct return. An unknown call uses the same Thread-context dispatcher
-// and must return NOT_SUPPORTED before brk #0 reports success. Any comparison
-// failure branches to brk #1 so its syndrome identifies a return-path error.
-const PROGRAM: [u8; 64] = [
-    0x09, 0x08, 0x80, 0xd2, // mov x9, #64; direct-call loop count.
-    0x01, 0x00, 0x00, 0xd4, // svc #0; x8 starts at abi_query (zero).
-    0x1f, 0x00, 0x00, 0xf1, // cmp x0, #0; status == OK.
-    0x81, 0x01, 0x00, 0x54, // b.ne failure.
-    0x3f, 0x00, 0x00, 0xf1, // cmp x1, #0; pre-release ABI revision.
-    0x41, 0x01, 0x00, 0x54, // b.ne failure.
-    0x5f, 0x04, 0x00, 0xf1, // cmp x2, #1; CORE feature bitmap.
-    0x01, 0x01, 0x00, 0x54, // b.ne failure.
-    0x29, 0x05, 0x00, 0xf1, // subs x9, x9, #1.
-    0x01, 0xff, 0xff, 0x54, // b.ne svc loop.
-    0x08, 0x00, 0x80, 0x92, // mov x8, #-1; unknown syscall number.
-    0x01, 0x00, 0x00, 0xd4, // svc #0; ordinary unsupported call.
-    0x1f, 0x10, 0x00, 0xb1, // cmn x0, #4; status == NOT_SUPPORTED (-4).
-    0x41, 0x00, 0x00, 0x54, // b.ne failure.
-    0x00, 0x00, 0x20, 0xd4, // brk #0; success.
-    0x20, 0x00, 0x20, 0xd4, // brk #1; result mismatch.
-];
+// Machine programs use generated object-local operations and real capabilities
+// installed by prepare_process. The integer burst checks every result and an
+// unknown method on a valid capability before reporting success with BRK #0.
+macro_rules! native_program {
+    ($function:ident, $start:ident, $end:ident) => {
+        fn $function() -> &'static [u8] {
+            unsafe extern "C" {
+                static $start: u8;
+                static $end: u8;
+            }
+            // SAFETY: These two immutable assembly labels delimit the named
+            // position-independent program retained by the linker.
+            unsafe { super::program_bytes(&raw const $start, &raw const $end) }
+        }
+    };
+}
 
-// Yield once, validate its completed result, then terminate the current Thread
-// with status -17. Reaching either breakpoint means that a returning or
-// no-return contract was violated.
-const THREAD_EXIT_PROGRAM: [u8; 36] = [
-    0xc8, 0x00, 0x80, 0xd2, // mov x8, #6; thread_yield.
-    0x01, 0x00, 0x00, 0xd4, // svc #0; yielding Thread continuation.
-    0x1f, 0x00, 0x00, 0xf1, // cmp x0, #0; status == OK.
-    0xa1, 0x00, 0x00, 0x54, // b.ne result_mismatch.
-    0x00, 0x02, 0x80, 0x92, // mov x0, #-17; exit status.
-    0xe8, 0x00, 0x80, 0xd2, // mov x8, #7; thread_exit.
-    0x01, 0x00, 0x00, 0xd4, // svc #0; must not return.
-    0x20, 0x00, 0x20, 0xd4, // brk #1; no-return contract failed.
-    0x40, 0x00, 0x20, 0xd4, // result_mismatch: brk #2.
-];
-
-// Terminate the Process with status 23. The call must stop its current Thread
-// without completing a machine-visible result.
-const PROCESS_EXIT_PROGRAM: [u8; 16] = [
-    0xe0, 0x02, 0x80, 0xd2, // mov x0, #23; exit status.
-    0x08, 0x01, 0x80, 0xd2, // mov x8, #8; process_exit.
-    0x01, 0x00, 0x00, 0xd4, // svc #0; must not return.
-    0x20, 0x00, 0x20, 0xd4, // brk #1; no-return contract failed.
-];
-
-// Create an Event, assert its level through ordinary Thread context, observe
-// it with an infinite-deadline wait, then exit normally. This proves the
-// generated ABI numbers, Process handle publication, rights checks, object
-// dispatch, and the signal snapshot return convention through real EL0 entry.
-const EVENT_WAIT_PROGRAM: [u8; 108] = [
-    0x00, 0x00, 0x80, 0xd2, // mov x0, #0; event_create options.
-    0x28, 0x01, 0x80, 0xd2, // mov x8, #9; event_create.
-    0x01, 0x00, 0x00, 0xd4, // svc #0.
-    0x1f, 0x00, 0x00, 0xf1, // cmp x0, #0.
-    0xc1, 0x02, 0x00, 0x54, // b.ne failure.
-    0xf3, 0x03, 0x01, 0xaa, // mov x19, x1; retain Event handle.
-    0xe0, 0x03, 0x13, 0xaa, // mov x0, x19; Event handle.
-    0x01, 0x00, 0x80, 0xd2, // mov x1, #0; clear mask.
-    0x22, 0x00, 0x80, 0xd2, // mov x2, #1; set SIGNALED.
-    0x48, 0x01, 0x80, 0xd2, // mov x8, #10; event_signal.
-    0x01, 0x00, 0x00, 0xd4, // svc #0.
-    0x1f, 0x00, 0x00, 0xf1, // cmp x0, #0.
-    0xc1, 0x01, 0x00, 0x54, // b.ne failure.
-    0xe0, 0x03, 0x13, 0xaa, // mov x0, x19; Event handle.
-    0x21, 0x00, 0x80, 0xd2, // mov x1, #1; requested SIGNALED.
-    0x02, 0x00, 0x80, 0x92, // mov x2, #-1; infinite deadline.
-    0x68, 0x01, 0x80, 0xd2, // mov x8, #11; object_wait_one.
-    0x01, 0x00, 0x00, 0xd4, // svc #0.
-    0x1f, 0x00, 0x00, 0xf1, // cmp x0, #0.
-    0xe1, 0x00, 0x00, 0x54, // b.ne failure.
-    0x3f, 0x04, 0x00, 0xf1, // cmp x1, #1; observed SIGNALED.
-    0xa1, 0x00, 0x00, 0x54, // b.ne failure.
-    0x00, 0x00, 0x80, 0xd2, // mov x0, #0; exit status.
-    0xe8, 0x00, 0x80, 0xd2, // mov x8, #7; thread_exit.
-    0x01, 0x00, 0x00, 0xd4, // svc #0; must not return.
-    0x20, 0x00, 0x20, 0xd4, // brk #1; no-return contract failed.
-    0x40, 0x00, 0x20, 0xd4, // failure: brk #2.
-];
-
-// Block forever on a clear Event. The kernel self-test controller requests
-// Process stop only after the Event publishes its waiter; returning to either
-// breakpoint proves cancellation leaked a result back into EL0.
-const CANCELLED_EVENT_WAIT_PROGRAM: [u8; 52] = [
-    0x00, 0x00, 0x80, 0xd2, // mov x0, #0; event_create options.
-    0x28, 0x01, 0x80, 0xd2, // mov x8, #9; event_create.
-    0x01, 0x00, 0x00, 0xd4, // svc #0.
-    0x1f, 0x00, 0x00, 0xf1, // cmp x0, #0.
-    0x01, 0x01, 0x00, 0x54, // b.ne failure.
-    0xf3, 0x03, 0x01, 0xaa, // mov x19, x1; retain Event handle.
-    0xe0, 0x03, 0x13, 0xaa, // mov x0, x19; Event handle.
-    0x21, 0x00, 0x80, 0xd2, // mov x1, #1; requested SIGNALED.
-    0x02, 0x00, 0x80, 0x92, // mov x2, #-1; infinite deadline.
-    0x68, 0x01, 0x80, 0xd2, // mov x8, #11; object_wait_one.
-    0x01, 0x00, 0x00, 0xd4, // svc #0; controller cancels this wait.
-    0x60, 0x00, 0x20, 0xd4, // brk #3; cancellation must not return.
-    0x40, 0x00, 0x20, 0xd4, // failure: brk #2.
-];
-
-// Wait on an Event until the controller rolls over the hardware ASID pool.
-// Resumption must execute the same user mapping and return the expected status.
-const ROLLOVER_WAIT_PROGRAM: [u8; 72] = [
-    0x00, 0x00, 0x80, 0xd2, // mov x0, #0.
-    0x28, 0x01, 0x80, 0xd2, // mov x8, #9; event_create.
-    0x01, 0x00, 0x00, 0xd4, // svc #0.
-    0x1f, 0x00, 0x00, 0xf1, // cmp x0, #0.
-    0xa1, 0x01, 0x00, 0x54, // b.ne failure.
-    0xf3, 0x03, 0x01, 0xaa, // mov x19, x1.
-    0xe0, 0x03, 0x13, 0xaa, // mov x0, x19.
-    0x21, 0x00, 0x80, 0xd2, // mov x1, #1; SIGNALED.
-    0x02, 0x00, 0x80, 0x92, // mov x2, #-1; infinite wait.
-    0x68, 0x01, 0x80, 0xd2, // mov x8, #11; object_wait_one.
-    0x01, 0x00, 0x00, 0xd4, // svc #0; return after rollover.
-    0x1f, 0x00, 0x00, 0xf1, // cmp x0, #0.
-    0xa1, 0x00, 0x00, 0x54, // b.ne failure.
-    0xa0, 0x04, 0x80, 0xd2, // mov x0, #37; success status.
-    0xe8, 0x00, 0x80, 0xd2, // mov x8, #7; thread_exit.
-    0x01, 0x00, 0x00, 0xd4, // svc #0; must not return.
-    0x20, 0x00, 0x20, 0xd4, // brk #1.
-    0x40, 0x00, 0x20, 0xd4, // failure: brk #2.
-];
-
-// Mismatch succeeds, elapsed wait times out, misalignment is rejected, then
-// the controller cancels a genuinely published infinite atomic wait.
-const ATOMIC_WAIT_PROGRAM: [u8; 112] = [
-    0xf3, 0x43, 0x00, 0xd1, 0x7f, 0x02, 0x00, 0xb9, 0xe0, 0x03, 0x13, 0xaa, 0x21, 0x00, 0x80, 0xd2,
-    0x02, 0x00, 0x80, 0xd2, 0x03, 0x00, 0x80, 0xd2, 0x04, 0x00, 0x80, 0xd2, 0x05, 0x00, 0x80, 0xd2,
-    0x08, 0x0a, 0x80, 0xd2, 0x01, 0x00, 0x00, 0xd4, 0x20, 0x02, 0x00, 0xb5, 0xe0, 0x03, 0x13, 0xaa,
-    0x01, 0x00, 0x80, 0xd2, 0x02, 0x00, 0x80, 0xd2, 0x01, 0x00, 0x00, 0xd4, 0x1f, 0x2c, 0x00, 0xb1,
-    0x61, 0x01, 0x00, 0x54, 0x60, 0x06, 0x00, 0x91, 0x01, 0x00, 0x80, 0xd2, 0x02, 0x00, 0x80, 0xd2,
-    0x01, 0x00, 0x00, 0xd4, 0x1f, 0x04, 0x00, 0xb1, 0xa1, 0x00, 0x00, 0x54, 0xe0, 0x03, 0x13, 0xaa,
-    0x01, 0x00, 0x80, 0xd2, 0x02, 0x00, 0x80, 0x92, 0x01, 0x00, 0x00, 0xd4, 0x80, 0x00, 0x20, 0xd4,
-];
+native_program!(
+    program,
+    aarch64_native_integer_start,
+    aarch64_native_integer_end
+);
+native_program!(
+    thread_exit_program,
+    aarch64_native_thread_exit_start,
+    aarch64_native_thread_exit_end
+);
+native_program!(
+    process_exit_program,
+    aarch64_native_process_exit_start,
+    aarch64_native_process_exit_end
+);
+native_program!(
+    event_wait_program,
+    aarch64_native_event_wait_start,
+    aarch64_native_event_wait_end
+);
+native_program!(
+    cancelled_event_wait_program,
+    aarch64_native_cancelled_event_wait_start,
+    aarch64_native_cancelled_event_wait_end
+);
+native_program!(
+    rollover_wait_program,
+    aarch64_native_rollover_wait_start,
+    aarch64_native_rollover_wait_end
+);
+native_program!(
+    atomic_wait_program,
+    aarch64_native_atomic_wait_start,
+    aarch64_native_atomic_wait_end
+);
 
 #[derive(Clone, Copy)]
 enum SiblingSetup {
@@ -184,12 +102,12 @@ pub(crate) fn run() -> Result<(), Error> {
     let domain =
         ResourceDomain::try_new_root(ResourceLimits::UNLIMITED).map_err(|_| Error::Construction)?;
     let group = TaskGroup::try_new(&domain).map_err(|_| Error::Group)?;
-    super::verify_thread_creation_affinity(&domain, &group, &PROGRAM, MachineAbi::Aarch64)?;
+    super::verify_thread_creation_affinity(&domain, &group, program(), MachineAbi::Aarch64)?;
 
     let outcome = run_program(
         &domain,
         &group,
-        &PROGRAM,
+        program(),
         "selftest/el0-fault",
         SiblingSetup::None,
         RunControl::Join,
@@ -222,7 +140,7 @@ pub(crate) fn run() -> Result<(), Error> {
     let outcome = run_program(
         &domain,
         &group,
-        &THREAD_EXIT_PROGRAM,
+        thread_exit_program(),
         "selftest/el0-thread-exit",
         SiblingSetup::None,
         RunControl::Join,
@@ -238,7 +156,7 @@ pub(crate) fn run() -> Result<(), Error> {
     let outcome = run_program(
         &domain,
         &group,
-        &EVENT_WAIT_PROGRAM,
+        event_wait_program(),
         "selftest/el0-event-wait",
         SiblingSetup::None,
         RunControl::Join,
@@ -254,7 +172,7 @@ pub(crate) fn run() -> Result<(), Error> {
     let outcome = run_program(
         &domain,
         &group,
-        &CANCELLED_EVENT_WAIT_PROGRAM,
+        cancelled_event_wait_program(),
         "selftest/el0-event-cancel",
         SiblingSetup::None,
         RunControl::CancelPublishedEventWait,
@@ -270,7 +188,7 @@ pub(crate) fn run() -> Result<(), Error> {
     let outcome = run_program(
         &domain,
         &group,
-        &PROCESS_EXIT_PROGRAM,
+        process_exit_program(),
         "selftest/el0-process-exit",
         SiblingSetup::Dormant,
         RunControl::Join,
@@ -287,7 +205,7 @@ pub(crate) fn run() -> Result<(), Error> {
     let outcome = run_program(
         &domain,
         &group,
-        &ATOMIC_WAIT_PROGRAM,
+        atomic_wait_program(),
         "selftest/el0-atomic-wait",
         SiblingSetup::None,
         RunControl::CancelPublishedAtomicWait,
@@ -300,7 +218,7 @@ pub(crate) fn run() -> Result<(), Error> {
     let closed = run_program(
         &domain,
         &group,
-        &THREAD_EXIT_PROGRAM,
+        thread_exit_program(),
         "selftest/el0-abandoned",
         SiblingSetup::None,
         RunControl::Join,
@@ -313,7 +231,7 @@ pub(crate) fn run() -> Result<(), Error> {
     let rollover = run_program(
         &domain,
         &group,
-        &ROLLOVER_WAIT_PROGRAM,
+        rollover_wait_program(),
         "selftest/el0-asid-rollover",
         SiblingSetup::None,
         RunControl::ResumeAfterAsidRollover,
@@ -329,7 +247,7 @@ pub(crate) fn run() -> Result<(), Error> {
     let refault = run_program(
         &domain,
         &group,
-        &ROLLOVER_WAIT_PROGRAM,
+        rollover_wait_program(),
         "selftest/el0-file-refault",
         SiblingSetup::None,
         RunControl::ResumeAfterFileReclaim,
@@ -342,7 +260,7 @@ pub(crate) fn run() -> Result<(), Error> {
     }
     crate::pr_info!("HypeR test: Native execution refaulted after resident file-page retirement");
 
-    super::atomic_wait::run(&domain, &group, &PROGRAM)?;
+    super::atomic_wait::run(&domain, &group, program())?;
     verify_pending_creation_exit()?;
 
     group.request_stop().map_err(|_| Error::Group)?;
@@ -388,8 +306,10 @@ fn run_program(
             let info = process
                 .handle_info(handle, Rights::INSPECT)
                 .map_err(|_| Error::Construction)?;
-            let resolved = process
-                .resolve_user_thread_handle(handle, Rights::INSPECT)
+            let receiver = process
+                .resolve_invocation(handle)
+                .map_err(|_| Error::Construction)?;
+            let resolved = UserThread::resolve_receiver(&receiver, Rights::INSPECT)
                 .map_err(|_| Error::Construction)?;
             if info.kind != ObjectKind::THREAD
                 || info.koid != object.koid
@@ -488,7 +408,7 @@ fn run_program(
                 .map_err(|_| Error::AddressSpace)?;
             }
             process
-                .resolve_handle::<Event>(HandleValue::first_for_test(), Rights::SIGNAL)
+                .resolve_handle::<Event>(super::event_handle(&process)?, Rights::SIGNAL)
                 .map_err(|_| Error::Lifecycle)?
                 .object()
                 .signal(0, Event::SIGNALED.bits())
@@ -538,15 +458,14 @@ fn run_program(
 }
 
 fn wait_for_event_registration(process: &Process) -> Result<(), Error> {
-    let handle = HandleValue::first_for_test();
     if crate::kernel::task::wait_for_test_progress(
         crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
         || {
-            Ok::<_, Error>(
+            Ok::<_, Error>(super::event_handle(process).is_ok_and(|handle| {
                 process
                     .resolve_handle::<Event>(handle, Rights::WAIT)
-                    .is_ok_and(|event| event.object().waiter_count() == 1),
-            )
+                    .is_ok_and(|event| event.object().waiter_count() == 1)
+            }))
         },
     )? {
         Ok(())
@@ -566,7 +485,7 @@ fn verify_pending_creation_exit() -> Result<(), Error> {
     let group = TaskGroup::try_new(&domain).map_err(|_| Error::Group)?;
     let baseline = domain.usage();
     for _ in 0..8 {
-        let process = prepare_process(&domain, &group, &THREAD_EXIT_PROGRAM, MachineAbi::Aarch64)?;
+        let process = prepare_process(&domain, &group, thread_exit_program(), MachineAbi::Aarch64)?;
         let result = (|| {
             let thread = process
                 .create_initial_user_thread("selftest/pending-exit", CpuMask::ALL)
