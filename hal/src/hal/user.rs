@@ -676,7 +676,7 @@ impl<'context> CompletionFailure<'context> {
 
 #[cfg(all(
     any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64),
-    feature = "kernel-self-test"
+    all(feature = "kernel-test", feature = "kernel-self-test")
 ))]
 pub fn direct_native_call_count_for_test() -> usize {
     crate::arch::user::direct_native_call_count_for_test()
@@ -685,14 +685,17 @@ pub fn direct_native_call_count_for_test() -> usize {
 /// Diagnostic machine entries and actual syscall suspension boundaries.
 #[cfg(all(
     any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64),
-    feature = "kernel-self-test"
+    all(feature = "kernel-test", feature = "kernel-self-test")
 ))]
 pub fn native_run_counts_for_test() -> (usize, usize) {
     crate::arch::user::native_run_counts_for_test()
 }
 
 /// Whether the current syscall's original user frame still owns the FP bank.
-#[cfg(all(CONFIG_ARCH_AARCH64, feature = "kernel-self-test"))]
+#[cfg(all(
+    CONFIG_ARCH_AARCH64,
+    all(feature = "kernel-test", feature = "kernel-self-test")
+))]
 pub fn syscall_fp_resident_for_test(
     _mask: &InterruptMaskGuard<crate::hal::irq::LocalMask>,
 ) -> bool {
@@ -702,12 +705,18 @@ pub fn syscall_fp_resident_for_test(
     crate::arch::user::syscall_fp_resident_for_test()
 }
 
-#[cfg(all(CONFIG_ARCH_RISCV64, feature = "kernel-self-test"))]
+#[cfg(all(
+    CONFIG_ARCH_RISCV64,
+    all(feature = "kernel-test", feature = "kernel-self-test")
+))]
 pub fn native_register_test_program_for_test() -> &'static [u8] {
     crate::arch::user::native_register_test_program_for_test()
 }
 
-#[cfg(all(CONFIG_ARCH_RISCV64, feature = "kernel-self-test"))]
+#[cfg(all(
+    CONFIG_ARCH_RISCV64,
+    all(feature = "kernel-test", feature = "kernel-self-test")
+))]
 pub fn native_fault_test_programs_for_test() -> [&'static [u8]; 2] {
     crate::arch::user::native_fault_test_programs_for_test()
 }
@@ -766,7 +775,7 @@ pub unsafe fn copy_to_exposed(
 /// Returns register-bank restores and boundary saves for lower-world runtime probes.
 #[cfg(all(
     any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64),
-    feature = "kernel-self-test"
+    all(feature = "kernel-test", feature = "kernel-self-test")
 ))]
 pub fn fp_state_counts_for_test() -> (usize, usize) {
     crate::arch::user::fp_state_counts_for_test()

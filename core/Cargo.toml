@@ -15,13 +15,19 @@ bench = false
 doctest = false
 
 [features]
+default = []
+rtc = []
+runtime-symbols = ["dep:rustc-demangle"]
+crash-console = []
+heap-profiling = []
+kernel-test = []
 kernel-self-test = []
 kernel-stack-audit = []
 io-dma-revoke-test = []
 
 [dependencies]
 hyper-abi = { path = "../../sdk/abi" }
-rustc-demangle = { version = "0.1.28", default-features = false }
+rustc-demangle = { version = "0.1.28", default-features = false, optional = true }
 
 [lints.clippy]
 doc_markdown = "deny"

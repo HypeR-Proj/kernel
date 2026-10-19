@@ -8,10 +8,12 @@ edition = "2024"
 publish = false
 
 [features]
+kernel-test = ["hyper/kernel-test"]
+heap-profiling = ["hyper/heap-profiling"]
 io-dma-revoke-test = ["hyper/io-dma-revoke-test"]
 
 [dependencies]
-hyper = { package = "hyper-core", path = "../../core" }
+hyper = { package = "hyper-core", path = "../../core", features = ["rtc", "runtime-symbols"] }
 hyper-filesystem = { path = "../../../stdlib/rust/hyper-filesystem" }
 
 [lints.clippy]

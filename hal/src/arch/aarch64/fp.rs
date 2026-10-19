@@ -12,14 +12,14 @@
 
 use super::{exception::ExceptionFrame, registers};
 
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 use hyper::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 static RESTORES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 static SAVES: AtomicUsize = AtomicUsize::new(0);
 
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub(crate) fn fp_state_counts_for_test() -> (usize, usize) {
     (
         RESTORES.load(Ordering::Relaxed),
@@ -86,7 +86,7 @@ pub(super) fn restore(state: &State, frame: &mut ExceptionFrame) -> Result<(), (
     // The leaf temporarily admits FP with IRQs masked and gates it before
     // returning, so neither a kernel continuation nor IRQ can borrow it.
     unsafe { aarch64_fp_restore(state) };
-    #[cfg(feature = "kernel-self-test")]
+    #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
     RESTORES.fetch_add(1, Ordering::Relaxed);
     frame.return_cptr |= registers::CPTR_EL2_FPEN_ENABLED;
     Ok(())
@@ -102,6 +102,6 @@ pub(super) fn save(state: &mut State, frame: &ExceptionFrame) {
     // save completes before ownership can move/drop; clearing hardware state
     // also prevents a later owner from inheriting retired register contents.
     unsafe { aarch64_fp_save_and_clear(state) };
-    #[cfg(feature = "kernel-self-test")]
+    #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
     SAVES.fetch_add(1, Ordering::Relaxed);
 }

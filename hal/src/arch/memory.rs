@@ -34,8 +34,11 @@ pub(crate) fn service_stage1_tlb_shootdown() -> bool {
     super::imp::service_stage1_tlb_shootdown()
 }
 
-#[cfg(CONFIG_CRASH_CONSOLE)]
+#[cfg(feature = "crash-console")]
 pub(crate) use super::imp::inspect_stage1_mapping;
 
-#[cfg(all(CONFIG_ARCH_X86_64, feature = "kernel-self-test"))]
+#[cfg(all(
+    CONFIG_ARCH_X86_64,
+    all(feature = "kernel-test", feature = "kernel-self-test")
+))]
 pub(crate) use super::imp::stage1_shootdown_count_for_test;

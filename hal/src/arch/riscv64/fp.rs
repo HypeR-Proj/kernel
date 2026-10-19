@@ -4,14 +4,14 @@
 //! Run-scoped F/D residency. The IMAC kernel never borrows floating registers.
 
 use super::registers;
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 use hyper::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 static RESTORES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 static SAVES: AtomicUsize = AtomicUsize::new(0);
 
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub(crate) fn fp_state_counts_for_test() -> (usize, usize) {
     (
         RESTORES.load(Ordering::Relaxed),
@@ -73,7 +73,7 @@ pub(super) fn restore_for_run(state: &State) {
     // exclusively borrowed, pinned owner with IRQs masked. The leaf enables
     // FS only while loading and disables it before returning to IMAC Rust.
     unsafe { riscv64_fp_restore(state) };
-    #[cfg(feature = "kernel-self-test")]
+    #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
     RESTORES.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -85,6 +85,6 @@ pub(super) fn save(state: &mut State, status: u64) {
     // SAFETY: The stopped, interrupt-masked owner still has the physical bank;
     // all privileged code is IMAC. No physical residency survives suspension.
     unsafe { riscv64_fp_save_and_clear(state) };
-    #[cfg(feature = "kernel-self-test")]
+    #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
     SAVES.fetch_add(1, Ordering::Relaxed);
 }

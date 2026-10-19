@@ -9,7 +9,7 @@ extern crate alloc;
 use hyper_hal as hal;
 pub mod kernel;
 
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 #[path = "../tests/kernel/mod.rs"]
 mod kernel_tests;
 
@@ -53,7 +53,7 @@ kernel_start_errors! {
     Crash(crate::kernel::crash::InitializationError) => "crash",
     EarlyCrash(crate::kernel::crash::EarlyInitializationError) => "early-crash",
     FileSystem(crate::kernel::vfs::InitializationError) => "file-system",
-    #[cfg(not(feature = "kernel-self-test"))]
+    #[cfg(not(all(feature = "kernel-test", feature = "kernel-self-test")))]
     Init(crate::kernel::init::Error) => "init",
     Debug(crate::kernel::debug::InitializationError) => "debug",
     Device(crate::kernel::device::InitializationError) => "device",
@@ -92,7 +92,7 @@ extern "C" fn start_kernel() -> ! {
         crate::kernel::log::initialize()?;
         crate::kernel::io_cache::worker::initialize()?;
         crate::kernel::vfs::read_ahead::initialize()?;
-        #[cfg(feature = "kernel-self-test")]
+        #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
         crate::kernel_tests::verify_early_startup();
         crate::kernel::cpu::initialize()?;
         crate::kernel::time::initialize_workers()?;
@@ -103,17 +103,17 @@ extern "C" fn start_kernel() -> ! {
         crate::kernel::device::platform_device_initialize(&boot)?;
         crate::kernel::vm::initialize(&boot)?;
 
-        #[cfg(feature = "kernel-self-test")]
+        #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
         crate::kernel_tests::run();
 
         crate::kernel::log::report_startup_state();
 
-        #[cfg(feature = "kernel-self-test")]
+        #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
         {
             crate::pr_info!("HypeR test: kernel self-tests completed");
             crate::kernel::task::scheduler::exit_current()
         }
-        #[cfg(not(feature = "kernel-self-test"))]
+        #[cfg(not(all(feature = "kernel-test", feature = "kernel-self-test")))]
         {
             let never = crate::kernel::init::start()?;
             match never {}

@@ -5,7 +5,7 @@ mod address_space;
 mod layout;
 mod page_table;
 
-#[cfg(CONFIG_CRASH_CONSOLE)]
+#[cfg(feature = "crash-console")]
 pub use address_space::inspect_mapping;
 pub(crate) use address_space::prepare;
 pub use address_space::{

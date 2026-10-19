@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use hyper::hal::memory::KernelImageLayout;
-#[cfg(CONFIG_CRASH_CONSOLE)]
+#[cfg(feature = "crash-console")]
 use hyper::hal::memory::Stage1Mapping;
 use hyper::mm::{BootAllocator, PhysicalAddress};
 use hyper::platform::PlatformInfo;
@@ -51,7 +51,7 @@ pub struct StackMapping {
     pub top: usize,
 }
 
-#[cfg(CONFIG_CRASH_CONSOLE)]
+#[cfg(feature = "crash-console")]
 /// Walks an architecture stage-1 hierarchy captured by crash handling.
 ///
 /// # Safety

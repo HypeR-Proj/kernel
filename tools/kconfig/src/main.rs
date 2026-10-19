@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, env, error::Error, io::Write, path::PathBuf};
 
 use hyper_kconfig::{
     Configuration, ValueKind, defaults, dependency_is_met, load_fragment, parse_schema, read_line,
-    resolve, write_config,
+    resolve, resolve_existing, write_config,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -33,7 +33,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Some(path) => PathBuf::from(path),
                 None => output.clone(),
             };
-            resolve(&schema, load_fragment(&input)?)?
+            let (configuration, removed) = resolve_existing(&schema, load_fragment(&input)?)?;
+            for name in removed {
+                eprintln!("warning: removed obsolete configuration symbol CONFIG_{name}");
+            }
+            configuration
         }
         "config" => interactive(&schema)?,
         _ => return Err(format!("unknown command: {command}").into()),

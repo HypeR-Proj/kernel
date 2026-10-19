@@ -202,24 +202,29 @@ case "$arch" in
 esac
 
 dynamic_symbols=$($nm -D --defined-only "$elf")
-printf '%s\n' "$dynamic_symbols" | grep -q ' hyper_kallsyms_lookup$'
-printf '%s\n' "$sections" | grep -q 'Name: \.kallsyms'
+if [ "${KERNEL_RUNTIME_SYMBOLS:-1}" = 1 ]; then
+    printf '%s\n' "$dynamic_symbols" | grep -q ' hyper_kallsyms_lookup$'
+    printf '%s\n' "$sections" | grep -q 'Name: \.kallsyms'
 
-kallsyms_section_size=$(printf '%s\n' "$sections" | awk '
-    /Name: \.kallsyms / { in_kallsyms = 1; next }
-    in_kallsyms && /Size:/ { print $2; exit }
-')
-kallsyms_file_size=$(wc -c < "$kallsyms" | tr -d ' ')
-kallsyms_strings_offset=$(od -An -tu4 -j 16 -N 4 "$kallsyms" | tr -d ' ')
-kallsyms_strings_size=$(od -An -tu4 -j 20 -N 4 "$kallsyms" | tr -d ' ')
-kallsyms_used=$((kallsyms_strings_offset + kallsyms_strings_size))
-if [ "$kallsyms_section_size" -ne "$kallsyms_file_size" ] ||
-    [ "$kallsyms_used" -ne "$kallsyms_file_size" ]; then
-    echo "kallsyms section is not exact-sized: section=$kallsyms_section_size, used=$kallsyms_used, file=$kallsyms_file_size" >&2
+    kallsyms_section_size=$(printf '%s\n' "$sections" | awk '
+        /Name: \.kallsyms / { in_kallsyms = 1; next }
+        in_kallsyms && /Size:/ { print $2; exit }
+    ')
+    kallsyms_file_size=$(wc -c < "$kallsyms" | tr -d ' ')
+    kallsyms_strings_offset=$(od -An -tu4 -j 16 -N 4 "$kallsyms" | tr -d ' ')
+    kallsyms_strings_size=$(od -An -tu4 -j 20 -N 4 "$kallsyms" | tr -d ' ')
+    kallsyms_used=$((kallsyms_strings_offset + kallsyms_strings_size))
+    if [ "$kallsyms_section_size" -ne "$kallsyms_file_size" ] ||
+        [ "$kallsyms_used" -ne "$kallsyms_file_size" ]; then
+        echo "kallsyms section is not exact-sized: section=$kallsyms_section_size, used=$kallsyms_used, file=$kallsyms_file_size" >&2
+        exit 1
+    fi
+elif printf '%s\n' "$dynamic_symbols" | grep -q ' hyper_kallsyms_lookup$'; then
+    echo "runtime symbol lookup remains present with runtime-symbols disabled" >&2
     exit 1
 fi
 
-echo "verified $arch PIE relocations, kallsyms, Linux header, and runtime instruction paths"
+echo "verified $arch PIE relocations, configured symbols, Linux header, and runtime instruction paths"
 
 if [ "$arch" = aarch64 ] || [ "$arch" = riscv64 ]; then
     python3 -B "$(dirname "$0")/verify-fp-ownership.py" "$arch" "$objdump" "$elf"

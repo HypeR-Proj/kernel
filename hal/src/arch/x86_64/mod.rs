@@ -56,7 +56,7 @@ pub(crate) use interrupts::{
 };
 pub use kaslr::Error as KaslrError;
 pub(crate) use kaslr::select as select_kaslr_layout;
-#[cfg(CONFIG_CRASH_CONSOLE)]
+#[cfg(feature = "crash-console")]
 pub use memory::inspect_mapping as inspect_stage1_mapping;
 pub use memory::{
     ActivationContext, Error as MemoryError, PreparedAddressSpace, SecondaryActivationContext,
@@ -116,7 +116,7 @@ pub const fn local_memory_protection_enabled() -> bool {
     true
 }
 
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub(crate) fn stage1_shootdown_count_for_test() -> u64 {
     tlb::completed_count_for_test()
 }
@@ -286,7 +286,7 @@ pub fn validate_vsysreg() -> Result<(), guest::ValidationError> {
     guest::validate()
 }
 
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub fn guest_execution_available() -> bool {
     virtualization::validate().is_ok()
 }

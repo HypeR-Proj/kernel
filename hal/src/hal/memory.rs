@@ -9,7 +9,7 @@
 //! quiescence obligations of every unsafe operation. Cache maintenance and
 //! atomic-backend diagnostics have independent selected facades.
 
-#[cfg(CONFIG_CRASH_CONSOLE)]
+#[cfg(feature = "crash-console")]
 use hyper::hal::memory::Stage1Mapping;
 use hyper::hal::memory::{AddressTranslation, KernelImageLayout, VirtualMemoryLayout};
 use hyper::mm::{BootAllocator, PhysicalAddress, VirtualAddress};
@@ -220,12 +220,15 @@ pub fn service_stage1_tlb_shootdown() -> bool {
     crate::arch::memory::service_stage1_tlb_shootdown()
 }
 
-#[cfg(all(CONFIG_ARCH_X86_64, feature = "kernel-self-test"))]
+#[cfg(all(
+    CONFIG_ARCH_X86_64,
+    all(feature = "kernel-test", feature = "kernel-self-test")
+))]
 pub fn stage1_shootdown_count_for_test() -> u64 {
     crate::arch::memory::stage1_shootdown_count_for_test()
 }
 
-#[cfg(CONFIG_CRASH_CONSOLE)]
+#[cfg(feature = "crash-console")]
 /// Walks an externally identified, live stage-1 hierarchy.
 ///
 /// # Safety

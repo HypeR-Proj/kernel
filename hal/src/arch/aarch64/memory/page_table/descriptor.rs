@@ -8,7 +8,7 @@
 //! rather than duplicating masks or VHE execute-never rules. It performs no
 //! memory access and owns no table pages.
 
-#[cfg(CONFIG_CRASH_CONSOLE)]
+#[cfg(feature = "crash-console")]
 use hyper::hal::memory::{Stage1Mapping, Stage1MemoryType};
 
 use super::super::super::registers;
@@ -129,7 +129,7 @@ pub(super) fn leaf(physical_address: u64, level: usize, flags: MappingFlags) -> 
         | kind
 }
 
-#[cfg(CONFIG_CRASH_CONSOLE)]
+#[cfg(feature = "crash-console")]
 pub(super) fn decode_mapping(descriptor: u64, level: usize, address: u64) -> Option<Stage1Mapping> {
     if !is_leaf(descriptor, level) {
         return None;

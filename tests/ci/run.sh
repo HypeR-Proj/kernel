@@ -37,14 +37,11 @@ case "${1:-}" in
         cargo fmt --manifest-path tools/kallsyms/Cargo.toml -- --check
         make test ARCH=aarch64
         # Exercise actual allocator code with optional accounting compiled in.
-        profile_config=$(mktemp)
-        trap 'rm -f "$profile_config"' EXIT HUP INT TERM
-        cat configs/qemu_aarch64_defconfig >"$profile_config"
-        printf '\nCONFIG_HEAP_PROFILING=y\n' >>"$profile_config"
-        HYPER_CONFIG="$profile_config" cargo test --manifest-path tests/host/Cargo.toml \
+        cargo test --manifest-path tests/host/Cargo.toml --features heap-profiling \
             --target "$(rustc -vV | sed -n 's/^host: //p')" runtime_allocators::
         ;;
     scripts)
+        python3 -B tests/ci/test-features.py
         command -v shellcheck >/dev/null 2>&1 || {
             echo "shellcheck is required for the script-quality suite" >&2
             exit 2
@@ -69,8 +66,8 @@ case "${1:-}" in
             target/ci/aarch64/hyper.production.stripped.img
         ;;
     aarch64-self-test)
-        make image ARCH=aarch64 CARGO_FEATURES="--features kernel-self-test"
-        make test-image ARCH=aarch64 CARGO_FEATURES="--features kernel-self-test"
+        make image ARCH=aarch64 CARGO_FEATURES="--features kernel-test,kernel-self-test"
+        make test-image ARCH=aarch64 CARGO_FEATURES="--features kernel-test,kernel-self-test"
         copy_aarch64_artifacts self-test
         ;;
     aarch64-compact)
@@ -81,9 +78,9 @@ case "${1:-}" in
             -e 's/^CONFIG_ARM64_PA_BITS=.*/CONFIG_ARM64_PA_BITS=40/' \
             configs/qemu_aarch64_defconfig >"$compact_config"
         make image ARCH=aarch64 CONFIG_FILE="$compact_config" \
-            CARGO_FEATURES="--features kernel-self-test"
+            CARGO_FEATURES="--features kernel-test,kernel-self-test"
         make test-image ARCH=aarch64 CONFIG_FILE="$compact_config" \
-            CARGO_FEATURES="--features kernel-self-test"
+            CARGO_FEATURES="--features kernel-test,kernel-self-test"
         copy_aarch64_artifacts compact
         ;;
     aarch64-qemu)
@@ -110,8 +107,8 @@ case "${1:-}" in
         make check ARCH=x86_64
         make release ARCH=x86_64
         make test-image ARCH=x86_64
-        make image ARCH=x86_64 CARGO_FEATURES="--features kernel-self-test"
-        make test-image ARCH=x86_64 CARGO_FEATURES="--features kernel-self-test"
+        make image ARCH=x86_64 CARGO_FEATURES="--features kernel-test,kernel-self-test"
+        make test-image ARCH=x86_64 CARGO_FEATURES="--features kernel-test,kernel-self-test"
         ;;
     *)
         usage

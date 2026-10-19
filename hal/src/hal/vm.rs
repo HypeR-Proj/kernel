@@ -1202,7 +1202,7 @@ pub fn cancel_interrupt_access(interrupts: &InterruptController, vcpu: u32) {
     }
 }
 
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub fn guest_execution_available() -> bool {
     crate::arch::vm::guest_execution_available()
 }

@@ -20,6 +20,7 @@ mod kconfig;
 /// Cargo does not propagate build-script cfgs to dependencies. Each package
 /// resolves the same kernel-root-relative input rather than its own `.config`.
 pub fn export(kernel_root: &Path) -> Result<(), Box<dyn Error>> {
+    validate_test_features()?;
     let kernel_root = kernel_root.canonicalize()?;
     let configuration_path = match env::var_os("HYPER_CONFIG").filter(|path| !path.is_empty()) {
         Some(path) => kernel_root.join(path),
@@ -41,6 +42,31 @@ pub fn export(kernel_root: &Path) -> Result<(), Box<dyn Error>> {
     )
 }
 
+/// Cargo features are additive: no test selector may implicitly grant the
+/// independent permission to compile kernel test instrumentation.
+fn validate_test_features() -> Result<(), Box<dyn Error>> {
+    if env::var_os("CARGO_FEATURE_KERNEL_TEST").is_some() {
+        return Ok(());
+    }
+    for feature in [
+        "kernel-self-test",
+        "kernel-smmuv3-test",
+        "kernel-vgic-tc-test",
+        "io-dma-revoke-test",
+        "kernel-stack-audit",
+    ] {
+        let variable = format!("CARGO_FEATURE_{}", feature.replace('-', "_").to_uppercase());
+        if env::var_os(variable).is_some() {
+            return Err(format!(
+                "kernel test feature `{feature}` requires explicit `kernel-test`; \
+                 enable both only for an intentional test image"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 fn export_kernel_configuration(
     output_directory: &Path,
     target: &str,
@@ -53,7 +79,8 @@ fn export_kernel_configuration(
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "invalid kernel configuration {}: {error}; run `make defconfig`",
+                        "invalid kernel configuration {}: {error}; use `make olddefconfig` \
+                         to migrate existing settings or `make defconfig` for new defaults",
                         configuration_path.display()
                     ),
                 )

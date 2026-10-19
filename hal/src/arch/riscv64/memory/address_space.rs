@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use hyper::hal::memory::KernelImageLayout;
-#[cfg(CONFIG_CRASH_CONSOLE)]
+#[cfg(feature = "crash-console")]
 use hyper::hal::memory::Stage1Mapping;
 use hyper::mm::{BootAllocator, PhysicalAddress};
 use hyper::platform::PlatformInfo;
@@ -35,7 +35,7 @@ pub struct StackMapping {
     pub top: usize,
 }
 
-#[cfg(CONFIG_CRASH_CONSOLE)]
+#[cfg(feature = "crash-console")]
 /// Inspects a mapping rooted at an externally supplied page table.
 ///
 /// # Safety
@@ -43,6 +43,8 @@ pub struct StackMapping {
 /// `root` must identify a live, well-formed HS page-table hierarchy whose
 /// table pages remain accessible through the kernel linear mapping.
 pub unsafe fn inspect_mapping(root: u64, address: usize) -> Result<Option<Stage1Mapping>, Error> {
+    // SAFETY: The caller supplies a live HS hierarchy whose table pages remain
+    // accessible through the linear mapping for the complete inspection.
     unsafe { page_table::inspect_runtime_mapping(PhysicalAddress::new(root), address as u64) }
 }
 

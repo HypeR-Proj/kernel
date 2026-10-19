@@ -14,12 +14,15 @@ bench = false
 doctest = false
 
 [features]
+default = []
+crash-console = ["hyper/crash-console"]
+kernel-test = ["hyper/kernel-test"]
 kernel-vgic-tc-test = []
 kernel-self-test = ["hyper/kernel-self-test"]
 kernel-stack-audit = ["hyper/kernel-stack-audit"]
 
 [dependencies]
-hyper = { package = "hyper-core", path = "../core" }
+hyper = { package = "hyper-core", path = "../core", default-features = false }
 
 [lints.clippy]
 doc_markdown = "deny"

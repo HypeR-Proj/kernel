@@ -4,7 +4,7 @@
 //! Optional, bounded allocation traffic and occupancy counters. No addresses,
 //! allocation records, stack walks, or dynamically allocated bookkeeping.
 
-#[cfg(CONFIG_HEAP_PROFILING)]
+#[cfg(feature = "heap-profiling")]
 use crate::sync::atomic::{AtomicU64, Ordering};
 
 /// Eight slab classes and one large-allocation bucket in each heap pool.
@@ -27,7 +27,7 @@ pub struct HeapClassStats {
     pub deallocations: u64,
 }
 
-#[cfg(CONFIG_HEAP_PROFILING)]
+#[cfg(feature = "heap-profiling")]
 #[derive(Clone, Copy)]
 pub(super) struct Backing {
     pub(super) pages: usize,
@@ -35,7 +35,7 @@ pub(super) struct Backing {
     pub(super) reserved: usize,
 }
 
-#[cfg(CONFIG_HEAP_PROFILING)]
+#[cfg(feature = "heap-profiling")]
 impl Backing {
     pub(super) const EMPTY: Self = Self {
         pages: 0,
@@ -44,13 +44,13 @@ impl Backing {
     };
 }
 
-#[cfg(CONFIG_HEAP_PROFILING)]
+#[cfg(feature = "heap-profiling")]
 pub(super) fn bucket(pool: super::HeapPool, class: Option<super::HeapSlabClass>) -> usize {
     pool as usize * (super::SLAB_CLASS_COUNT + 1)
         + class.map_or(super::SLAB_CLASS_COUNT, |class| class.index())
 }
 
-#[cfg(CONFIG_HEAP_PROFILING)]
+#[cfg(feature = "heap-profiling")]
 pub(super) struct Traffic {
     live: AtomicU64,
     bytes: AtomicU64,
@@ -58,7 +58,7 @@ pub(super) struct Traffic {
     deallocations: AtomicU64,
 }
 
-#[cfg(CONFIG_HEAP_PROFILING)]
+#[cfg(feature = "heap-profiling")]
 impl Traffic {
     pub(super) const fn new() -> Self {
         Self {
@@ -91,7 +91,7 @@ impl Traffic {
     }
 }
 
-#[cfg(CONFIG_HEAP_PROFILING)]
+#[cfg(feature = "heap-profiling")]
 fn increment(value: &AtomicU64) {
     let _ = value.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
         Some(old.saturating_add(1))

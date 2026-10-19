@@ -41,7 +41,8 @@ export HYPER_BUILD_GIT_STATE := $(shell python3 -B tools/build-version.py --stat
 CONFIG_FILE ?= .config
 CONFIG_PATH := $(abspath $(CONFIG_FILE))
 KERNEL_CONFIG_ENV := HYPER_CONFIG=$(CONFIG_PATH)
-CARGO_KERNEL = $(KERNEL_CONFIG_ENV) $(CARGO) build --target $(TARGET) $(CARGO_PROFILE) $(CARGO_FEATURES)
+KERNEL_BUILD_ROOT ?= $(or $(CARGO_TARGET_DIR),target)
+CARGO_KERNEL = CARGO_TARGET_DIR="$(abspath $(KERNEL_BUILD_ROOT))" $(KERNEL_CONFIG_ENV) $(CARGO) build --target $(TARGET) $(CARGO_PROFILE) $(KERNEL_CARGO_FEATURES)
 QEMU_CPUS ?= 4
 QEMU_MEMORY ?= 1G
 INITRAMFS ?=
@@ -55,6 +56,21 @@ OBJDUMP ?= $(LLVM_BIN)/llvm-objdump
 DTC ?= dtc
 
 CARGO_FEATURES ?=
+# Production functionality has one explicit selection. Test selectors are
+# additional flags and must explicitly include the independent kernel-test gate.
+ifeq ($(ARCH),aarch64)
+KERNEL_FEATURES ?= rtc runtime-symbols crash-console
+else
+KERNEL_FEATURES ?= rtc runtime-symbols
+endif
+KERNEL_CARGO_FEATURES = --no-default-features $(if $(strip $(KERNEL_FEATURES)),--features "$(KERNEL_FEATURES)") $(CARGO_FEATURES)
+# Evaluate in the recipe's target context: test targets add feature arguments
+# inherited by their image prerequisites. The helper sees the same shell argv
+# as Cargo, including quoted lists and joined short options.
+KERNEL_FEATURE_SELECTION = $(shell python3 -B tools/kernel-features.py $(KERNEL_CARGO_FEATURES) || printf '__INVALID_KERNEL_FEATURES__')
+KERNEL_ENABLED_FEATURES = $(if $(filter __INVALID_KERNEL_FEATURES__,$(KERNEL_FEATURE_SELECTION)),$(error invalid kernel feature selection),$(KERNEL_FEATURE_SELECTION))
+KERNEL_RUNTIME_SYMBOLS = $(if $(filter runtime-symbols,$(KERNEL_ENABLED_FEATURES)),1,0)
+KERNEL_SELF_TEST_IMAGE = $(if $(filter kernel-self-test,$(KERNEL_ENABLED_FEATURES)),1,0)
 
 ifeq ($(shell uname -s),Darwin)
 UPSTREAM_CLANG := /opt/homebrew/opt/llvm/bin/clang
@@ -64,7 +80,7 @@ endif
 endif
 CLANG ?= clang
 
-KERNEL_OUTPUT := target/$(TARGET)/$(KERNEL_PROFILE)
+KERNEL_OUTPUT := $(KERNEL_BUILD_ROOT)/$(TARGET)/$(KERNEL_PROFILE)
 KERNEL_ELF := $(KERNEL_OUTPUT)/hyper
 KERNEL_IMAGE := $(KERNEL_OUTPUT)/hyper.img
 KERNEL_STRIPPED_ELF := $(KERNEL_OUTPUT)/hyper.stripped
@@ -75,7 +91,7 @@ X86_PAYLOAD_IMAGE := $(KERNEL_OUTPUT)/hyper.payload
 X86_HOST_DTB := $(KERNEL_OUTPUT)/x86_64-host.dtb
 KCONFIG_MANIFEST := tools/kconfig/Cargo.toml
 KALLSYMS_MANIFEST := tools/kallsyms/Cargo.toml
-KALLSYMS_SEED_TARGET := $(abspath target/kallsyms-seed)
+KALLSYMS_SEED_TARGET := $(abspath $(KERNEL_BUILD_ROOT)/kallsyms-seed)
 KALLSYMS_SEED_ELF := $(KALLSYMS_SEED_TARGET)/$(TARGET)/$(KERNEL_PROFILE)/hyper
 KALLSYMS_SEED_BLOB := $(KERNEL_OUTPUT)/hyper.kallsyms.seed
 KALLSYMS_BLOB := $(KERNEL_OUTPUT)/hyper.kallsyms
@@ -133,14 +149,20 @@ clean-guest-assets:
 # Keep the bare and embedded passes in separate Cargo caches. Their cfg and
 # environment inputs remain stable across invocations, including no-op builds.
 build: prepare-config
-	HYPER_KALLSYMS_BLOB= $(CARGO_KERNEL) --target-dir "$(KALLSYMS_SEED_TARGET)"
-	mkdir -p $(KERNEL_OUTPUT)
-	$(CARGO) run --quiet --manifest-path $(KALLSYMS_MANIFEST) --target $(HOST_TARGET) -- $(NM) $(KALLSYMS_SEED_ELF) $(KALLSYMS_SEED_BLOB)
-	HYPER_KALLSYMS_BLOB=$(abspath $(KALLSYMS_SEED_BLOB)) $(CARGO_KERNEL)
-	$(CARGO) run --quiet --manifest-path $(KALLSYMS_MANIFEST) --target $(HOST_TARGET) -- $(NM) $(KERNEL_ELF) $(KALLSYMS_BLOB)
-	test "$$(wc -c < $(KALLSYMS_SEED_BLOB))" -eq "$$(wc -c < $(KALLSYMS_BLOB))"
-	$(OBJCOPY) --update-section=.kallsyms=$(KALLSYMS_BLOB) $(KERNEL_ELF) $(KALLSYMS_ELF)
-	@if cmp -s $(KALLSYMS_ELF) $(KERNEL_ELF); then rm $(KALLSYMS_ELF); else mv $(KALLSYMS_ELF) $(KERNEL_ELF); fi
+	@set -eu; \
+	if [ "$(KERNEL_RUNTIME_SYMBOLS)" = 1 ]; then \
+		HYPER_KALLSYMS_BLOB= $(CARGO_KERNEL) --target-dir "$(KALLSYMS_SEED_TARGET)"; \
+		mkdir -p $(KERNEL_OUTPUT); \
+		$(CARGO) run --quiet --manifest-path $(KALLSYMS_MANIFEST) --target $(HOST_TARGET) -- $(NM) $(KALLSYMS_SEED_ELF) $(KALLSYMS_SEED_BLOB); \
+		HYPER_KALLSYMS_BLOB=$(abspath $(KALLSYMS_SEED_BLOB)) $(CARGO_KERNEL); \
+		$(CARGO) run --quiet --manifest-path $(KALLSYMS_MANIFEST) --target $(HOST_TARGET) -- $(NM) $(KERNEL_ELF) $(KALLSYMS_BLOB); \
+		test "$$(wc -c < $(KALLSYMS_SEED_BLOB))" -eq "$$(wc -c < $(KALLSYMS_BLOB))"; \
+		$(OBJCOPY) --update-section=.kallsyms=$(KALLSYMS_BLOB) $(KERNEL_ELF) $(KALLSYMS_ELF); \
+		if cmp -s $(KALLSYMS_ELF) $(KERNEL_ELF); then rm $(KALLSYMS_ELF); else mv $(KALLSYMS_ELF) $(KERNEL_ELF); fi; \
+	else \
+		HYPER_KALLSYMS_BLOB= $(CARGO_KERNEL); \
+		rm -f $(KALLSYMS_BLOB); \
+	fi
 
 image: build
 	$(if $(filter x86_64,$(ARCH)),$(OBJCOPY) --output-target=binary $(KERNEL_ELF) $(X86_PAYLOAD_IMAGE),$(OBJCOPY) --output-target=binary $(KERNEL_ELF) $(KERNEL_IMAGE).tmp)
@@ -161,16 +183,16 @@ release: image
 	cmp $(KERNEL_IMAGE) $(KERNEL_STRIPPED_IMAGE)
 
 check: prepare-config
-	$(KERNEL_CONFIG_ENV) $(CARGO) check --bins --target $(TARGET)
-	$(KERNEL_CONFIG_ENV) $(CARGO) clippy --target $(TARGET) -- -D warnings
-	$(KERNEL_CONFIG_ENV) $(CARGO) clippy --target $(TARGET) --features kernel-self-test -- -D warnings
+	$(KERNEL_CONFIG_ENV) $(CARGO) check --bins --target $(TARGET) $(KERNEL_CARGO_FEATURES)
+	$(KERNEL_CONFIG_ENV) $(CARGO) clippy --target $(TARGET) $(KERNEL_CARGO_FEATURES) -- -D warnings
+	$(KERNEL_CONFIG_ENV) $(CARGO) clippy --target $(TARGET) $(KERNEL_CARGO_FEATURES) --features kernel-test,kernel-self-test -- -D warnings
 	$(KERNEL_CONFIG_ENV) $(CARGO) clippy --manifest-path $(HOST_TEST_MANIFEST) --target $(HOST_TARGET) --all-targets -- -D warnings
 	$(KERNEL_CONFIG_ENV) $(CARGO) clippy --manifest-path $(CONCURRENCY_TEST_MANIFEST) --target $(HOST_TARGET) --all-targets --locked -- -D warnings
 	$(CARGO) clippy --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET) -- -D warnings
 	$(CARGO) clippy --manifest-path $(KALLSYMS_MANIFEST) --target $(HOST_TARGET) -- -D warnings
 
 doc: prepare-config
-	$(KERNEL_CONFIG_ENV) $(CARGO) doc --no-deps --package hyper --package hyper-core --package hyper-hal --package hyper-abi --document-private-items --locked --target $(TARGET)
+	$(KERNEL_CONFIG_ENV) $(CARGO) doc --no-deps --package hyper --package hyper-core --package hyper-hal --package hyper-abi --document-private-items --locked --target $(TARGET) $(KERNEL_CARGO_FEATURES)
 
 test: prepare-config
 	$(KERNEL_CONFIG_ENV) $(CARGO) test --manifest-path $(HOST_TEST_MANIFEST) --target $(HOST_TARGET)
@@ -198,25 +220,26 @@ else
 endif
 
 test-image:
-	KERNEL_SELF_TEST_IMAGE=$(if $(or $(findstring kernel-self-test,$(CARGO_FEATURES)),$(findstring kernel-smmuv3-test,$(CARGO_FEATURES))),1,0) \
+	KERNEL_SELF_TEST_IMAGE=$(KERNEL_SELF_TEST_IMAGE) \
+	KERNEL_RUNTIME_SYMBOLS=$(KERNEL_RUNTIME_SYMBOLS) \
 		sh tests/image/verify-image.sh $(ARCH) $(READOBJ) $(NM) $(OBJDUMP) $(KERNEL_ELF) $(KERNEL_IMAGE) $(KALLSYMS_BLOB)
 
 test-timer: image
 	sh $(QEMU_TIMER_SCRIPT) $(QEMU) $(KERNEL_IMAGE) $(QEMU_CPU) $(QEMU_MEMORY) "$(QEMU_BOOTARGS)"
 
-test-timer: CARGO_FEATURES=--features kernel-self-test
+test-timer: CARGO_FEATURES=--features kernel-test,kernel-self-test
 
 test-qemu: image
 	QEMU_CPUS=$(QEMU_CPUS) sh $(QEMU_TEST_SCRIPT) $(QEMU) $(KERNEL_IMAGE) $(QEMU_CPU) $(QEMU_MEMORY) "$(QEMU_BOOTARGS)"
 
-test-qemu: CARGO_FEATURES=--features kernel-self-test
+test-qemu: CARGO_FEATURES=--features kernel-test,kernel-self-test
 
 ifeq ($(ARCH),aarch64)
 test-smmuv3: image
 	python3 tests/qemu/verify-smmuv3.py $(QEMU) $(KERNEL_IMAGE) --cpus $(QEMU_CPUS)
 	python3 tests/qemu/verify-smmuv3.py $(QEMU) $(KERNEL_IMAGE) --cpus $(QEMU_CPUS) --failure timeout --log target/smmuv3-timeout-qemu.log
 
-test-smmuv3: CARGO_FEATURES=--features kernel-smmuv3-test
+test-smmuv3: CARGO_FEATURES=--features kernel-test,kernel-smmuv3-test
 else
 test-smmuv3:
 	@echo "test-smmuv3 requires ARCH=aarch64" >&2; exit 2
@@ -271,4 +294,4 @@ run:
 		-kernel $(KERNEL_IMAGE)
 
 clean:
-	$(CARGO) clean
+	CARGO_TARGET_DIR="$(abspath $(KERNEL_BUILD_ROOT))" $(CARGO) clean

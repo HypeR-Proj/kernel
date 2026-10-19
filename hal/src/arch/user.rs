@@ -7,7 +7,10 @@
 //! contains no process or ABI policy and exposes no runnable entry before
 //! address-space residency exists.
 
-#[cfg(all(target_arch = "riscv64", feature = "kernel-self-test"))]
+#[cfg(all(
+    target_arch = "riscv64",
+    all(feature = "kernel-test", feature = "kernel-self-test")
+))]
 pub(crate) use super::imp::{
     native_fault_test_programs_for_test, native_register_test_program_for_test,
 };
@@ -18,7 +21,10 @@ pub use super::imp::UserAddressSpaceError;
 pub use super::imp::UserEntryError;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub use super::imp::UserMachineContractError;
-#[cfg(all(target_arch = "aarch64", feature = "kernel-self-test"))]
+#[cfg(all(
+    target_arch = "aarch64",
+    all(feature = "kernel-test", feature = "kernel-self-test")
+))]
 pub(crate) use super::imp::syscall_fp_resident_for_test;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub(crate) use super::imp::{
@@ -38,7 +44,7 @@ pub(crate) use super::imp::{
 };
 #[cfg(all(
     any(target_arch = "aarch64", target_arch = "riscv64"),
-    feature = "kernel-self-test"
+    all(feature = "kernel-test", feature = "kernel-self-test")
 ))]
 pub(crate) use super::imp::{direct_native_call_count_for_test, native_run_counts_for_test};
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
@@ -53,6 +59,6 @@ pub(crate) use super::imp::{
 
 #[cfg(all(
     any(target_arch = "aarch64", target_arch = "riscv64"),
-    feature = "kernel-self-test"
+    all(feature = "kernel-test", feature = "kernel-self-test")
 ))]
 pub(crate) use super::imp::fp_state_counts_for_test;

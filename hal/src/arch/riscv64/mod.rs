@@ -47,7 +47,7 @@ pub(crate) use exception::{
     install_local_runtime_vectors, install_runtime_vectors, run_on_emergency_stack,
     validate_local_runtime_vectors, validate_runtime_vectors,
 };
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub(crate) use fp::fp_state_counts_for_test;
 pub use guest::ValidationError as GuestValidationError;
 pub(crate) use guest::handle_guest_sync;
@@ -63,7 +63,7 @@ pub(crate) use interrupts::{
 };
 pub use kaslr::Error as KaslrError;
 pub(crate) use kaslr::select as select_kaslr_layout;
-#[cfg(CONFIG_CRASH_CONSOLE)]
+#[cfg(feature = "crash-console")]
 pub use memory::inspect_mapping as inspect_stage1_mapping;
 pub use memory::{
     ActivationContext, Error as MemoryError, PreparedAddressSpace,
@@ -92,13 +92,13 @@ pub use timer::{
     SupervisorTimer as ArchitectureTimer,
 };
 pub use user_entry::Error as UserEntryError;
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub(crate) use user_entry::native_run_counts_for_test;
 pub(crate) use user_entry::{
     CompletionFailure as UserCompletionFailure, ReturnCapability as UserReturnCapability,
     UserContext, UserExit,
 };
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub(crate) use user_entry::{
     direct_native_call_count_for_test, native_fault_test_programs_for_test,
     native_register_test_program_for_test,
@@ -316,7 +316,7 @@ pub fn validate_vsysreg() -> Result<(), guest::ValidationError> {
     guest::validate()
 }
 
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub const fn guest_execution_available() -> bool {
     true
 }

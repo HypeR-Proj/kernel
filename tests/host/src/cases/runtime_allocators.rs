@@ -1744,7 +1744,7 @@ fn heap_profiling_distinguishes_callers_magazines_and_file_cache_backing() {
     let big_cache = allocator.allocate_file_cache(large);
     assert!(!ordinary.is_null() && !cache.is_null() && !big_cache.is_null());
     let baseline = crate::require_some(allocator.accounting_stats());
-    if hyper::config::HEAP_PROFILING {
+    if cfg!(feature = "heap-profiling") {
         let kernel = crate::require_some(allocator.heap_class_stats(3));
         assert_eq!((kernel.live, kernel.requested_bytes), (1, 96));
         assert!(kernel.cached > 0);
@@ -1772,7 +1772,7 @@ fn heap_profiling_distinguishes_callers_magazines_and_file_cache_backing() {
         allocator.dealloc(cache, small);
         allocator.dealloc(big_cache, large);
     }
-    if hyper::config::HEAP_PROFILING {
+    if cfg!(feature = "heap-profiling") {
         for index in [3, 12, 17] {
             let row = crate::require_some(allocator.heap_class_stats(index));
             assert_eq!((row.live, row.requested_bytes), (0, 0));
@@ -1789,7 +1789,7 @@ fn heap_profiling_distinguishes_callers_magazines_and_file_cache_backing() {
             .allocated_pages,
         0
     );
-    if hyper::config::HEAP_PROFILING {
+    if cfg!(feature = "heap-profiling") {
         let row = crate::require_some(allocator.heap_class_stats(3));
         assert_eq!(
             (row.pages, row.capacity, row.reserved, row.cached),
@@ -1827,11 +1827,11 @@ fn heap_profiling_survives_concurrent_allocation_and_sampling() {
         select_test_cpu(2);
         while done.load(Ordering::Acquire) != 2 {
             let sample = allocator.heap_class_stats(3);
-            assert_eq!(sample.is_some(), hyper::config::HEAP_PROFILING);
+            assert_eq!(sample.is_some(), cfg!(feature = "heap-profiling"));
             std::thread::yield_now();
         }
     });
-    if hyper::config::HEAP_PROFILING {
+    if cfg!(feature = "heap-profiling") {
         let row = crate::require_some(allocator.heap_class_stats(3));
         assert_eq!((row.live, row.requested_bytes), (0, 0));
         assert_eq!((row.allocations, row.deallocations), (2000, 2000));

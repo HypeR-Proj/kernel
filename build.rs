@@ -113,7 +113,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     if matches!(
         target.as_str(),
         "aarch64-unknown-none-softfloat" | "riscv64imac-unknown-none-elf"
-    ) && env::var_os("CARGO_FEATURE_KERNEL_SELF_TEST").is_some()
+    ) && env::var_os("CARGO_FEATURE_KERNEL_TEST").is_some()
+        && env::var_os("CARGO_FEATURE_KERNEL_SELF_TEST").is_some()
     {
         let source = if target == "riscv64imac-unknown-none-elf" {
             "tests/kernel/native_user_entry/fp-riscv64.S"
@@ -151,6 +152,9 @@ fn export_build_version() -> Result<(), Box<dyn Error>> {
 }
 
 fn configure_kallsyms_embedding() -> Result<(), Box<dyn Error>> {
+    if env::var_os("CARGO_FEATURE_RUNTIME_SYMBOLS").is_none() {
+        return Ok(());
+    }
     let Some(path) = env::var_os("HYPER_KALLSYMS_BLOB").filter(|path| !path.is_empty()) else {
         return Ok(());
     };

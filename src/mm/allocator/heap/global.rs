@@ -363,7 +363,7 @@ impl CacheAccounting {
 }
 
 pub struct KernelGlobalAllocator<P: CpuLocalCachePolicy> {
-    #[cfg(CONFIG_HEAP_PROFILING)]
+    #[cfg(feature = "heap-profiling")]
     profile: [super::profile::Traffic; super::profile::BUCKETS],
     state: InterruptSpinLock<AllocatorState, P>,
     caches: PerCpu<CacheSlot>,
@@ -378,7 +378,7 @@ pub struct KernelGlobalAllocator<P: CpuLocalCachePolicy> {
 impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
     pub const fn new() -> Self {
         Self {
-            #[cfg(CONFIG_HEAP_PROFILING)]
+            #[cfg(feature = "heap-profiling")]
             profile: [const { super::profile::Traffic::new() }; super::profile::BUCKETS],
             state: InterruptSpinLock::new(AllocatorState::uninitialized()),
             caches: PerCpu::new([const { CacheSlot::new() }; crate::cpu::MAX_CPUS]),
@@ -506,7 +506,7 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
             self.logical.record_failure();
         } else {
             self.logical.record_allocation(layout, class.is_some());
-            #[cfg(CONFIG_HEAP_PROFILING)]
+            #[cfg(feature = "heap-profiling")]
             self.profile[super::profile::bucket(super::HeapPool::FileCache, class)]
                 .allocate(layout.size());
         }
@@ -520,12 +520,12 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
     /// Does not drain magazines or allocate. None means profiling is disabled,
     /// initialization is incomplete, or the bucket index is outside the schema.
     pub fn heap_class_stats(&self, index: usize) -> Option<super::profile::HeapClassStats> {
-        #[cfg(not(CONFIG_HEAP_PROFILING))]
+        #[cfg(not(feature = "heap-profiling"))]
         {
             let _ = index;
             None
         }
-        #[cfg(CONFIG_HEAP_PROFILING)]
+        #[cfg(feature = "heap-profiling")]
         {
             let traffic = self.profile.get(index)?;
             let pool = index / (super::SLAB_CLASS_COUNT + 1);
@@ -1106,7 +1106,7 @@ unsafe impl<P: CpuLocalCachePolicy> GlobalAlloc for KernelGlobalAllocator<P> {
             self.logical.record_failure();
         } else {
             self.logical.record_allocation(layout, class.is_some());
-            #[cfg(CONFIG_HEAP_PROFILING)]
+            #[cfg(feature = "heap-profiling")]
             self.profile[super::profile::bucket(super::HeapPool::Kernel, class)]
                 .allocate(layout.size());
         }
@@ -1136,7 +1136,7 @@ unsafe impl<P: CpuLocalCachePolicy> GlobalAlloc for KernelGlobalAllocator<P> {
         // SAFETY: GlobalAlloc requires a live allocation with this exact layout.
         let pool = unsafe { super::allocation_pool(pointer.as_ptr(), layout) };
         let cache_owned = pool == super::HeapPool::FileCache;
-        #[cfg(CONFIG_HEAP_PROFILING)]
+        #[cfg(feature = "heap-profiling")]
         self.profile[super::profile::bucket(pool, class)].deallocate(layout.size());
         match class {
             Some(class)

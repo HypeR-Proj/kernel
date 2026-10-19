@@ -110,7 +110,7 @@ pub(crate) use super::imp::{
     quiesce_virtual_interrupt_delivery, validate_vsysreg as validate_register_interface,
 };
 
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub(crate) use super::imp::guest_execution_available;
 
 pub(crate) use super::imp::{

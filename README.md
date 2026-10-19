@@ -41,6 +41,12 @@ root Makefile for complete SDK, initramfs, and production boot composition.
 Generated artifacts and configuration remain under this component's `target/`
 and `.config` paths whether commands begin here or at the repository root.
 
+Kernel functionality is selected with `KERNEL_FEATURES`; architecture and numeric
+limits remain in Kconfig. Test instrumentation requires the independent,
+default-off `kernel-test` feature together with a specific test selector. See
+the [configuration contract](docs/configuration.md) for exact defaults, disabled
+behavior, and test-image safeguards.
+
 `make test-smmuv3 ARCH=aarch64` builds the dedicated PCI DMA isolation fixture
 and runs it against QEMU's standard SMMUv3 model. See the
 [driver and acceptance contract](docs/smmuv3.md) for coverage, ownership,

@@ -87,7 +87,7 @@ pub(crate) use interrupts::{
 pub use kaslr::Error as KaslrError;
 pub(crate) use kaslr::select as select_kaslr_layout;
 pub(crate) use memory::bootstrap_stack_bounds;
-#[cfg(CONFIG_CRASH_CONSOLE)]
+#[cfg(feature = "crash-console")]
 pub use memory::inspect_mapping as inspect_stage1_mapping;
 pub use memory::{
     Aarch64AddressTranslation as ArchitectureAddressTranslation, ActivationContext,
@@ -121,11 +121,11 @@ pub(crate) use user::{
 };
 pub(crate) use user::{copy_from_exposed, copy_to_exposed};
 pub use user_entry::Error as UserEntryError;
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub(crate) use user_entry::direct_native_call_count_for_test;
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub(crate) use user_entry::native_run_counts_for_test;
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub(crate) use user_entry::syscall_fp_resident_for_test;
 pub(crate) use user_entry::{
     CompletionFailure as UserCompletionFailure, ReturnCapability as UserReturnCapability,
@@ -174,7 +174,7 @@ pub(crate) use vsysreg::{
     decode_guest_sync, handle_guest_sync,
 };
 
-#[cfg(feature = "kernel-self-test")]
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub fn guest_execution_available() -> bool {
     gic_cpu_interface::guest_interrupts_supported()
 }
@@ -447,5 +447,8 @@ pub(crate) fn guest_translation_identifier_bits() -> u8 {
 
 pub(crate) use stage2::invalidate_namespace_local as invalidate_guest_translation_namespace_local;
 
-#[cfg(all(target_arch = "aarch64", feature = "kernel-self-test"))]
+#[cfg(all(
+    target_arch = "aarch64",
+    all(feature = "kernel-test", feature = "kernel-self-test")
+))]
 pub(crate) use fp::fp_state_counts_for_test;

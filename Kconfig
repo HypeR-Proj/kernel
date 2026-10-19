@@ -43,14 +43,6 @@ config ARM64_MAX_GIC_REDISTRIBUTOR_REGIONS
 
 endmenu
 
-menu "Platform"
-
-config PLATFORM_QEMU
-    bool "QEMU platform"
-    default y
-
-endmenu
-
 menu "Kernel"
 
 config RANDOMIZE_BASE
@@ -82,10 +74,6 @@ config EMERGENCY_STACK_SIZE_KB
     range 16 128
     default 32
 
-config CRASH_CONSOLE
-    bool "Interactive crash console"
-    default n
-
 config TIMER_HZ
     int "Kernel timer frequency"
     range 10 10000
@@ -115,9 +103,5 @@ config LOG_LINE_MAX
     int "Maximum formatted kernel log record length"
     range 128 2048
     default 512
-
-config HEAP_PROFILING
-    bool "Track heap occupancy and allocation traffic by size class"
-    default n
 
 endmenu

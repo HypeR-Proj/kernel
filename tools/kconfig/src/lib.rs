@@ -275,6 +275,24 @@ pub fn load_and_validate(kconfig: &Path, config: &Path) -> Result<(Schema, Confi
     Ok((schema, configuration))
 }
 
+/// Migrates an existing configuration without discarding its recognized values.
+/// Removed names are returned for the CLI to report. Builds and defconfig still
+/// use strict `resolve`, so misspelled or stale keys cannot be ignored silently.
+pub fn resolve_existing(
+    schema: &Schema,
+    mut overrides: BTreeMap<String, String>,
+) -> Result<(Configuration, Vec<String>), Error> {
+    let mut removed = Vec::new();
+    overrides.retain(|name, _| {
+        let known = schema.symbols.iter().any(|symbol| symbol.name == *name);
+        if !known {
+            removed.push(name.clone());
+        }
+        known
+    });
+    resolve(schema, overrides).map(|configuration| (configuration, removed))
+}
+
 pub fn write_config(
     path: &Path,
     schema: &Schema,
@@ -463,6 +481,30 @@ mod tests {
         let mut invalid = BTreeMap::new();
         invalid.insert(String::from("COUNT"), String::from("9"));
         assert!(resolve(&test_schema(), invalid).is_err());
+    }
+
+    #[test]
+    fn migration_preserves_known_values_and_reports_removed_symbols() {
+        let values = BTreeMap::from([
+            (String::from("PARENT"), String::from("y")),
+            (String::from("COUNT"), String::from("7")),
+            (String::from("REMOVED"), String::from("y")),
+        ]);
+        assert!(resolve(&test_schema(), values.clone()).is_err());
+        let (configuration, removed) = require_ok(resolve_existing(&test_schema(), values));
+        assert_eq!(configuration.value("PARENT"), Some("y"));
+        assert_eq!(configuration.value("CHILD"), Some("y"));
+        assert_eq!(configuration.value("COUNT"), Some("7"));
+        assert_eq!(removed, ["REMOVED"]);
+    }
+
+    #[test]
+    fn migration_still_rejects_invalid_recognized_values() {
+        let values = BTreeMap::from([
+            (String::from("COUNT"), String::from("9")),
+            (String::from("REMOVED"), String::from("y")),
+        ]);
+        assert!(resolve_existing(&test_schema(), values).is_err());
     }
 
     #[test]

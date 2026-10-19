@@ -727,13 +727,13 @@ unsafe impl DmaBuffer for ScatteredBuffer {
 
 struct HighAddressBuffer(ScatteredBuffer);
 
-#[cfg(feature = "io-dma-revoke-test")]
+#[cfg(all(feature = "kernel-test", feature = "io-dma-revoke-test"))]
 #[derive(Clone)]
 struct SharedBuffer(std::rc::Rc<ScatteredBuffer>);
 
 // SAFETY: Reference counting retains the same immutable physical-page list and
 // its allocations across every clone, including the test-only revocation owner.
-#[cfg(feature = "io-dma-revoke-test")]
+#[cfg(all(feature = "kernel-test", feature = "io-dma-revoke-test"))]
 unsafe impl DmaBuffer for SharedBuffer {
     fn length(&self) -> u64 {
         self.0.length()
@@ -743,7 +743,7 @@ unsafe impl DmaBuffer for SharedBuffer {
     }
 }
 
-#[cfg(feature = "io-dma-revoke-test")]
+#[cfg(all(feature = "kernel-test", feature = "io-dma-revoke-test"))]
 #[test]
 fn test_revocation_removes_only_selected_leaf_and_keeps_backing_on_sync_failure() {
     for fail_sync in [false, true] {
