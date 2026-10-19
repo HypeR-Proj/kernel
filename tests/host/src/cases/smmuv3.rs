@@ -34,6 +34,7 @@ struct State {
     previous_ack: u32,
     observed_producer: u32,
     commands: Vec<u8>,
+    pages_before_completion: Option<usize>,
 }
 thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
 struct Memory {
@@ -108,6 +109,12 @@ impl Environment for TestEnvironment {
     fn synchronize() {
         STATE.with(|state| {
             let mut state = state.borrow_mut();
+            if let Some(expected) = state.pages_before_completion {
+                assert_eq!(
+                    state.live_pages, expected,
+                    "DMA owners released before CMD_SYNC"
+                );
+            }
             let base = state.registers;
             if base == 0 {
                 return;
@@ -793,6 +800,31 @@ fn test_revocation_removes_only_selected_leaf_and_keeps_backing_on_sync_failure(
     }
 }
 
+#[cfg(all(feature = "kernel-test", feature = "io-dma-revoke-test"))]
+#[test]
+fn test_revoked_empty_subtree_keeps_its_payload_until_explicit_unmap() {
+    let fixture = Fixture::new();
+    let mut controller = require_ok(fixture.initialize_payload::<SharedBuffer>());
+    let domain = require_ok(controller.create_domain());
+    let buffer = SharedBuffer(std::rc::Rc::new(ScatteredBuffer::new(1)));
+    let owner = std::rc::Rc::downgrade(&buffer.0);
+    require_ok(controller.map_buffer(domain, 0x1000, buffer, Permissions::ReadWrite));
+    require_ok(controller.map_buffer(
+        domain,
+        0x40001000,
+        SharedBuffer(std::rc::Rc::new(ScatteredBuffer::new(1))),
+        Permissions::ReadWrite,
+    ));
+    drop(require_ok(controller.revoke_test_page(domain, 0x1000)));
+    // This unmap prunes all empty subtrees but must not release the other
+    // mapping's payload lease, nor make its subsequent explicit unmap fail.
+    drop(require_ok(controller.unmap_buffer(domain, 0x40001000)));
+    assert!(owner.upgrade().is_some());
+    drop(require_ok(controller.unmap_buffer(domain, 0x1000)));
+    assert!(owner.upgrade().is_none());
+    require_ok(controller.destroy_domain(domain));
+}
+
 // SAFETY: This payload-only mock associates its final retained page with the
 // stable synthetic RAM address 2^48; other pages use their host addresses.
 // The mock never dereferences payload physical addresses. All backing remains
@@ -861,6 +893,53 @@ fn retained_scattered_buffers_revoke_as_a_unit_across_table_boundaries() {
     for address in [0x202000, 0x1fe000, 0x1ff000] {
         drop(require_ok(controller.unmap_buffer(domain, address)));
     }
+    require_ok(controller.destroy_domain(domain));
+}
+
+#[test]
+fn live_domain_reclaims_empty_tables_without_disturbing_other_buffers() {
+    let fixture = Fixture::new();
+    let mut controller = require_ok(fixture.initialize_payload::<ScatteredBuffer>());
+    let domain = require_ok(controller.create_domain());
+    require_ok(controller.map_buffer(domain, 0x1000, ScatteredBuffer::new(1), Permissions::Read));
+    require_ok(controller.attach(8, domain));
+    let retained_leaf = fixture.stage2_leaf(8, 0x1000);
+    let baseline = STATE.with(|state| state.borrow().live_pages);
+    // Cover shared/full L3s, sibling L3s, and separate/last L2s. Reuse those
+    // paths to prove pruning leaves the attached domain usable across grants.
+    for (iova, pages) in [
+        (0x2000, 3),
+        (0x1ff000, 513),
+        (0x401ff000, 3),
+        (0x7fffe00000, 512),
+        (0x2000, 3),
+        (0x401ff000, 3),
+    ] {
+        require_ok(controller.map_buffer(
+            domain,
+            iova,
+            ScatteredBuffer::new(pages),
+            Permissions::ReadWrite,
+        ));
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            state.pages_before_completion = Some(state.live_pages);
+        });
+        let returned = require_ok(controller.unmap_buffer(domain, iova));
+        STATE.with(|state| state.borrow_mut().pages_before_completion = None);
+        drop(returned);
+        assert_eq!(fixture.stage2_leaf(8, 0x1000), retained_leaf);
+        for offset in (0..pages as u64 * 4096).step_by(4096) {
+            assert_eq!(fixture.stage2_leaf(8, iova + offset), 0);
+        }
+        assert_eq!(
+            STATE.with(|state| state.borrow().live_pages),
+            baseline,
+            "empty tables remained in a live domain after removing {iova:#x}"
+        );
+    }
+    drop(require_ok(controller.unmap_buffer(domain, 0x1000)));
+    require_ok(controller.detach(8));
     require_ok(controller.destroy_domain(domain));
 }
 

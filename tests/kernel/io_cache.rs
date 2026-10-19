@@ -103,11 +103,67 @@ pub(super) fn run() -> Result<(), Error> {
     directory_pages_under_pressure(cache, &domain)?;
     scheduled_domain_reclaim(cache, &domain)?;
     scheduled_impossible_order(cache, &domain)?;
+    metadata_and_last_mapping_under_pressure(cache, &domain)?;
     if crate::kernel::mm::cache_memory::availability()
         .is_none_or(|memory| memory.file_cache_pages != 0)
     {
         return Err(Error::PhysicalPages);
     }
+    Ok(())
+}
+
+/// Warm a large cache while retaining one canonical mapped page. Pressure
+/// must release both the cold payloads and their large index/header footprint;
+/// releasing the last mapping must wake the worker without allocator activity.
+#[inline(never)]
+fn metadata_and_last_mapping_under_pressure(
+    cache: &FileDataCache<crate::kernel::vfs::CachePage>,
+    domain: &ResourceDomain,
+) -> Result<(), Error> {
+    cache.maintain_capacity(64).map_err(|_| Error::Cache)?;
+    let key = fill_request_pages(cache, domain, 7, 1)?;
+    let mapped = cache
+        .lookup_mapping(key)
+        .map_err(|_| Error::Cache)?
+        .ok_or(Error::Cache)?;
+    let baseline = crate::kernel::mm::statistics()
+        .ok_or(Error::PhysicalPages)?
+        .runtime;
+    cache.maintain_capacity(8192).map_err(|_| Error::Cache)?;
+    fill_request_pages(cache, domain, 8, 4096)?;
+    let warm = crate::kernel::mm::statistics()
+        .ok_or(Error::PhysicalPages)?
+        .runtime;
+    if warm.file_cache_large_pages <= baseline.file_cache_large_pages
+        || warm.file_cache_slab_pages <= baseline.file_cache_slab_pages
+    {
+        return Err(Error::PhysicalPages);
+    }
+
+    let pressure = Pressure::start();
+    wait(|| {
+        let usage = cache.usage();
+        let Some(memory) = crate::kernel::mm::statistics() else {
+            return false;
+        };
+        usage.clean == 1
+            && usage.capacity == 64
+            && memory.runtime.file_cache_pages.pages == 1
+            && memory.runtime.file_cache_large_pages <= baseline.file_cache_large_pages
+            && memory.runtime.file_cache_slab_pages <= baseline.file_cache_slab_pages
+    })?;
+    if mapped.value().bytes() != CONTENTS || cache.reclaimable_pages() != Some(0) {
+        return Err(Error::PinnedBytes);
+    }
+    super::support::quiesce_workers().map_err(|_| Error::Quiescence)?;
+    drop(mapped);
+    wait_without_allocation(|| {
+        let usage = cache.usage();
+        Ok(usage.clean == 0 && usage.live_payloads == 0)
+    })?;
+    drop(pressure);
+    wait(|| !worker::draining_for_test())?;
+    super::support::quiesce_workers().map_err(|_| Error::Quiescence)?;
     Ok(())
 }
 
