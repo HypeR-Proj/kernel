@@ -155,7 +155,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn write_native_test_header(path: &Path) -> io::Result<()> {
-    println!("cargo:rerun-if-changed=../sdk/abi/schema/native.rs");
+    println!("cargo:rerun-if-changed=../sdk/abi/schema");
     let mut header =
         String::from("/* Generated from the Native ABI schema for machine invocation probes. */\n");
     for invocation in native_abi::NATIVE_ABI.invocations {
