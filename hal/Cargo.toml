@@ -14,6 +14,7 @@ bench = false
 doctest = false
 
 [features]
+pmu-profiling = []
 default = []
 crash-console = ["hyper/crash-console"]
 kernel-test = ["hyper/kernel-test"]

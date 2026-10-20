@@ -147,6 +147,19 @@ fn initializes_and_configures_the_boot_cpu_interface() {
         u64::from(AFFINITY)
     );
 
+    // Aff3 is encoded in IROUTER[39:32], not in packed MPIDR[31:24].
+    crate::require_ok(controller.route_spi(interrupt, 0x1234_5678));
+    assert_eq!(distributor[0x6140 / 8], 0x12_0034_5678);
+    assert!(
+        controller
+            .route_spi(InterruptId::new(31), AFFINITY)
+            .is_err()
+    );
+    assert!(
+        controller
+            .route_spi(InterruptId::new(64), AFFINITY)
+            .is_err()
+    );
     crate::require_ok(controller.enable(interrupt));
     assert_eq!(
         // SAFETY: Offset 0x104 is aligned for u32 and contained in the live

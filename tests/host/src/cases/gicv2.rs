@@ -46,6 +46,12 @@ fn banked_targets_and_sgi_sender_survive_acknowledgement() {
     crate::require_ok(unsafe { gic.initialize() });
     assert_eq!(gic.interrupt_count(), 96);
     assert_eq!(distributor[0x820 / 4], 0x04040404);
+    // Per-CPU PMU SPIs use discovered target bits, not a logical CPU index.
+    crate::require_ok(gic.route_spi(InterruptId::new(48), 0x20));
+    assert_eq!(distributor[0x830 / 4], 0x04040420);
+    assert!(gic.route_spi(InterruptId::new(31), 0x20).is_err());
+    assert!(gic.route_spi(InterruptId::new(48), 3).is_err());
+    assert!(gic.route_spi(InterruptId::new(96), 1).is_err());
     assert_eq!(cpu[0], 1);
     assert_eq!(distributor[0x80 / 4], 0);
     assert_eq!(distributor[0x84 / 4], 0);

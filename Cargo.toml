@@ -13,7 +13,7 @@ publish = false
 autolib = false
 
 [package.metadata.hyper]
-production-features = ["rtc", "runtime-symbols", "crash-console", "heap-profiling"]
+production-features = ["rtc", "runtime-symbols", "crash-console", "heap-profiling", "pmu-profiling"]
 
 [workspace]
 members = ["core", "hal"]
@@ -22,6 +22,7 @@ default-members = [".", "core", "hal"]
 resolver = "3"
 
 [features]
+pmu-profiling = ["hyper-hal/pmu-profiling"]
 default = ["rtc", "runtime-symbols", "crash-console"]
 rtc = ["hyper/rtc"]
 runtime-symbols = ["hyper/runtime-symbols"]

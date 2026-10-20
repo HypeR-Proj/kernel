@@ -8,6 +8,7 @@ edition = "2024"
 publish = false
 
 [features]
+pmu-profiling = []
 kernel-test = ["hyper/kernel-test"]
 heap-profiling = ["hyper/heap-profiling"]
 io-dma-revoke-test = ["hyper/io-dma-revoke-test"]

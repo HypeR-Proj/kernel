@@ -39,3 +39,7 @@ mod mounts;
 mod protection;
 #[path = "../../../src/kernel/vfs/protection_state.rs"]
 mod protection_state;
+
+#[path = "../../../src/kernel/profile/admission.rs"]
+mod profile_admission;
+mod profiling;

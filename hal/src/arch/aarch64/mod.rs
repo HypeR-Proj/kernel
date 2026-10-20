@@ -21,6 +21,8 @@ mod kaslr;
 mod lower_el;
 mod memory;
 mod platform;
+#[cfg(feature = "pmu-profiling")]
+pub(crate) mod pmu;
 mod protection;
 mod psci;
 pub mod registers;

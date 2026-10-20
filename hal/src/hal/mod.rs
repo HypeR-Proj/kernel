@@ -18,3 +18,6 @@ pub mod platform;
 pub mod time;
 pub mod user;
 pub mod vm;
+
+#[cfg(all(CONFIG_ARCH_AARCH64, feature = "pmu-profiling"))]
+pub mod pmu;

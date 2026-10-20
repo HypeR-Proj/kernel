@@ -183,7 +183,8 @@ aarch64_boot_initialize_el2:
     // Optional architectural state remains trapped in the soft-float host.
     msr     cptr_el2, xzr
     msr     hstr_el2, xzr
-    msr     mdcr_el2, xzr
+    ldr     x2, =HOST_MDCR_EL2
+    msr     mdcr_el2, x2
     msr     vttbr_el2, xzr
     msr     tpidr_el2, xzr
     msr     cntvoff_el2, xzr

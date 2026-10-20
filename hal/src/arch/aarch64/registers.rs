@@ -35,6 +35,13 @@ define_asm_constants! {
     CPTR_EL2_TAM = 1 << 30;
     // MDCR_EL2.TPM traps lower-EL performance-monitor accesses.
     MDCR_EL2_TPM = 1 << 6;
+    MDCR_EL2_TPMCR = 1 << 5;
+    MDCR_EL2_HPMD = 1 << 17;
+    HOST_MDCR_EL2 = if cfg!(feature = "pmu-profiling") { MDCR_EL2_TPM | MDCR_EL2_TPMCR } else { 0 };
+    PMU_CYCLE_BIT = 1 << 31;
+    PMCR_E = 1 << 0;
+    PMCR_LC = 1 << 6;
+    PMCCFILTR_NSH = 1 << 27;
 
     // HCR_EL2.
     HCR_EL2_VM = 1 << 0;

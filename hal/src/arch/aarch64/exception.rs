@@ -657,6 +657,20 @@ fn dispatch_irq(
         },
         None => hyper::hal::interrupt::InterruptOrigin::Host,
     };
+    #[cfg(feature = "pmu-profiling")]
+    crate::hal::pmu::observe(
+        interrupt,
+        crate::hal::pmu::SampleContext {
+            pc: frame.elr as usize,
+            sp: interrupted_stack_pointer(frame, entry.origin) as usize,
+            fp: frame.general[29] as usize,
+            world: match interrupt_origin {
+                hyper::hal::interrupt::InterruptOrigin::Host => 0,
+                hyper::hal::interrupt::InterruptOrigin::Native { .. } => 1,
+                hyper::hal::interrupt::InterruptOrigin::Guest => 2,
+            },
+        },
+    );
     let action = if Some(interrupt) == super::kernel_rpc_interrupt() {
         super::end_interrupt(interrupt);
         crate::arch::irq::service_kernel_rpc_interrupt(interrupt_origin)
