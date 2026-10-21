@@ -53,8 +53,8 @@ pub use super::imp::{
 };
 #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
 pub(crate) use super::imp::{
-    deactivate_stopped_vcpu_hardware, reconcile_active_interrupts, request_guest_exit,
-    update_guest_device_interrupt, update_saved_guest_device_interrupt,
+    deactivate_stopped_vcpu_hardware, request_guest_exit, update_guest_device_interrupt,
+    update_saved_guest_device_interrupt,
 };
 
 /// Checks the hart-local selection; an epoch observation alone does not prove

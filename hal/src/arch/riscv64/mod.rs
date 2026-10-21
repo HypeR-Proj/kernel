@@ -119,9 +119,8 @@ pub use vm_interrupt::{Error as VmInterruptError, VmInterruptController};
 pub use vm_vcpu::Error as VcpuInterruptError;
 pub use vm_vcpu::StoppedDeactivationFailure;
 pub(crate) use vm_vcpu::{
-    access_plic, deactivate_stopped as deactivate_stopped_vcpu_hardware,
-    reconcile_active_interrupts, request_guest_exit, stopped_guest_wfi_state,
-    update_guest_device_interrupt, update_saved_guest_device_interrupt,
+    access_plic, deactivate_stopped as deactivate_stopped_vcpu_hardware, request_guest_exit,
+    stopped_guest_wfi_state, update_guest_device_interrupt, update_saved_guest_device_interrupt,
 };
 pub(crate) use vm_vcpu::{
     activate as activate_vcpu_hardware, deactivate as deactivate_vcpu_hardware,

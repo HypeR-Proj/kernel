@@ -589,14 +589,6 @@ pub enum StoppedVcpuQueryError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ActiveInterruptReconcileError {
-    #[cfg_attr(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64), allow(dead_code))]
-    Unsupported,
-    #[cfg_attr(not(CONFIG_ARCH_AARCH64), allow(dead_code))]
-    Backend(VcpuInterruptError),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(not(CONFIG_ARCH_AARCH64), allow(dead_code))]
 pub enum VcpuRunDisposition {
     Wait(VcpuWaitReason),
@@ -1086,23 +1078,6 @@ pub fn update_saved_guest_device_interrupt(
     asserted: bool,
 ) -> Result<(), VcpuInterruptError> {
     crate::arch::vm::update_saved_guest_device_interrupt(interrupts, vcpu_id, interrupt, asserted)
-}
-
-pub fn reconcile_active_interrupts(
-    state: &mut VcpuHardwareState,
-    vcpu_id: u32,
-    interrupts: &InterruptController,
-) -> Result<(), ActiveInterruptReconcileError> {
-    #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
-    {
-        crate::arch::vm::reconcile_active_interrupts(&mut state.context, vcpu_id, interrupts)
-            .map_err(ActiveInterruptReconcileError::Backend)
-    }
-    #[cfg(not(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64)))]
-    {
-        let _ = (state, vcpu_id, interrupts);
-        Err(ActiveInterruptReconcileError::Unsupported)
-    }
 }
 
 /// Prompts the selected CPU to leave guest execution without publishing

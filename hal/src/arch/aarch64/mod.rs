@@ -165,8 +165,8 @@ pub(crate) use vm_vcpu::{
     handle_virtual_timer_interrupt as handle_guest_virtual_timer_interrupt,
     inject_saved_guest_device_interrupt, inject_timer_for_validation,
     maintenance_interrupt_pending as virtualization_maintenance_pending,
-    quiesce_virtual_interrupt_delivery, reconcile_active_interrupts, request_guest_exit,
-    update_guest_device_interrupt, update_saved_guest_device_interrupt,
+    quiesce_virtual_interrupt_delivery, request_guest_exit, update_guest_device_interrupt,
+    update_saved_guest_device_interrupt,
 };
 pub use vsysreg::ValidationError as GuestValidationError;
 pub(crate) use vsysreg::validate as validate_vsysreg;

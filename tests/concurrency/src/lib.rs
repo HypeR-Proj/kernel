@@ -43,3 +43,7 @@ mod protection_state;
 #[path = "../../../src/kernel/profile/admission.rs"]
 mod profile_admission;
 mod profiling;
+
+mod guest_entry;
+#[path = "../../../src/kernel/vm/reconcile.rs"]
+mod reconcile;

@@ -84,13 +84,13 @@ fn exercise(
     for binding in [&front_binding, &back_binding] {
         binding.publish_changed_interrupts();
         binding
-            .take_interrupt_reconcile(0)
+            .claim_detached_interrupt_reconcile(0)
             .map_err(|_| "initial reconcile")?;
     }
     let epoch = notification.control(1).map_err(|_| "enable notification")?;
     verify_guest_interrupt(front, domain)?;
     front_binding
-        .take_interrupt_reconcile(0)
+        .claim_detached_interrupt_reconcile(0)
         .map_err(|_| "source reconcile cleanup")?;
     verify_noop(&notification, &back_binding)?;
     verify_ack(&notification, &front_binding, epoch)?;
@@ -114,7 +114,7 @@ fn install(
 
 fn reconcile(binding: &VmBinding, expected: bool) -> Result {
     if binding
-        .take_interrupt_reconcile(0)
+        .claim_detached_interrupt_reconcile(0)
         .map_err(|_| "take reconcile")?
         != expected
     {
@@ -313,13 +313,13 @@ fn verify_pci(
         return Err("PCI queue kick lost");
     }
     back.publish_changed_interrupts();
-    back.take_interrupt_reconcile(0)
+    back.claim_detached_interrupt_reconcile(0)
         .map_err(|_| "PCI kick reconcile")?;
     notification
         .shared
         .mutate(|state| state.call((u64::from(epoch) << 32) | 3));
     front
-        .take_interrupt_reconcile(0)
+        .claim_detached_interrupt_reconcile(0)
         .map_err(|_| "PCI interrupt reconcile")?;
     machine
         .configure_notification(BASE, relocated, 1 | 2 | 4 | 8)
@@ -407,7 +407,7 @@ fn verify_pci(
     for binding in [front, back] {
         binding.publish_changed_interrupts();
         binding
-            .take_interrupt_reconcile(0)
+            .claim_detached_interrupt_reconcile(0)
             .map_err(|_| "PCI final reconcile")?;
     }
     Ok(())
