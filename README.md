@@ -51,3 +51,6 @@ behavior, and test-image safeguards.
 and runs it against QEMU's standard SMMUv3 model. See the
 [driver and acceptance contract](docs/smmuv3.md) for coverage, ownership,
 emulator limitations and the boundary with the current I/O VM deployment.
+
+The [general-purpose PRNG](docs/random.md) supplies kernel random values and
+KASLR selection without a cryptographic dependency or periodic IRQ work.

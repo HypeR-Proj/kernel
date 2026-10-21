@@ -25,6 +25,8 @@ mod platform;
 pub(crate) mod pmu;
 mod protection;
 mod psci;
+mod random;
+pub(crate) use random::seed as random_seed;
 pub mod registers;
 mod smp;
 mod stage2;

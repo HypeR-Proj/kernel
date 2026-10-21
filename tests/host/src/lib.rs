@@ -390,3 +390,7 @@ mod indexed_heap;
 #[cfg(test)]
 #[path = "cases/collection_links.rs"]
 mod collection_links;
+
+#[cfg(test)]
+#[path = "cases/random.rs"]
+mod random;

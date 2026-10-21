@@ -115,3 +115,16 @@ pub(crate) unsafe fn prepare_boot(
     // SAFETY: The selected backend consumes the same assembly boot arguments.
     unsafe { super::imp::prepare_boot(raw0, raw1, ticks) }
 }
+
+/// A boot-time hardware sample, if the selected architecture provides one.
+pub(crate) fn random_seed(power: Option<hyper::platform::CpuPowerInfo>) -> Option<u64> {
+    #[cfg(target_arch = "aarch64")]
+    {
+        super::imp::random_seed(power)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let _ = power;
+        None
+    }
+}

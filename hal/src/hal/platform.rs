@@ -150,3 +150,8 @@ pub unsafe fn prepare_boot(raw0: usize, raw1: usize, ticks: u64) -> ProtocolInpu
     // SAFETY: The caller establishes the architecture boot entry contract.
     unsafe { crate::arch::platform::prepare_boot(raw0, raw1, ticks) }
 }
+
+/// Obtains one optional hardware/firmware sample at boot. Never waits for entropy.
+pub fn random_seed(power: Option<hyper::platform::CpuPowerInfo>) -> Option<u64> {
+    crate::arch::platform::random_seed(power)
+}

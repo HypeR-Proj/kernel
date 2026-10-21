@@ -66,6 +66,10 @@ fn qemu_like_dtb_with_gic(compatible: &[u8]) -> Vec<u8> {
 }
 
 fn qemu_like_dtb_with_windows(compatible: &[u8], many_windows: bool) -> Vec<u8> {
+    qemu_like_dtb_with_seeds(compatible, many_windows, &[])
+}
+
+fn qemu_like_dtb_with_seeds(compatible: &[u8], many_windows: bool, seeds: &[&[u8]]) -> Vec<u8> {
     const ADDRESS_CELLS: u32 = 0;
     const SIZE_CELLS: u32 = 15;
     const REG: u32 = 27;
@@ -81,12 +85,15 @@ fn qemu_like_dtb_with_windows(compatible: &[u8], many_windows: bool) -> Vec<u8> 
     const INITRD_START: u32 = 113;
     const INITRD_END: u32 = 132;
 
-    let strings = b"#address-cells\0#size-cells\0reg\0compatible\0device_type\0ranges\0no-map\0interrupts\0method\0status\0bootargs\0kaslr-seed\0linux,initrd-start\0linux,initrd-end\0";
+    let strings = b"#address-cells\0#size-cells\0reg\0compatible\0device_type\0ranges\0no-map\0interrupts\0method\0status\0bootargs\0kaslr-seed\0linux,initrd-start\0linux,initrd-end\0rng-seed\0";
     let mut structure = Vec::new();
     begin_node(&mut structure, b"");
     property(&mut structure, ADDRESS_CELLS, &2u32.to_be_bytes());
     property(&mut structure, SIZE_CELLS, &2u32.to_be_bytes());
     begin_node(&mut structure, b"chosen");
+    for seed in seeds {
+        property(&mut structure, 149, seed);
+    }
     property(
         &mut structure,
         BOOTARGS,
@@ -995,4 +1002,36 @@ fn dependency_snapshot_keeps_opaque_interrupt_bytes_without_granting_resources()
     assert!(node.interrupt_cells().is_empty());
     assert!(node.registers().is_empty());
     assert!(node.pci_memory().is_none());
+}
+
+#[test]
+fn boot_rng_seed_is_folded_and_validated_independently_of_kaslr_seed() {
+    let parse = |seeds: &[&[u8]]| {
+        let blob = qemu_like_dtb_with_seeds(b"arm,gic-v3\0", false, seeds);
+        let mut discovery = chosen::Discovery::new();
+        crate::require_ok(fdt::discover_from_bytes_with(&blob, &mut discovery));
+        crate::require_ok(discovery.finish())
+    };
+    let first = parse(&[&[0x42; 32]]);
+    let second = parse(&[&[0x43; 32]]);
+    assert!(first.rng_seed().is_some());
+    assert_ne!(first.rng_seed(), second.rng_seed());
+    assert_eq!(first.kaslr_seed(), Some(0x0123_4567_89ab_cdef));
+    assert_eq!(first.rng_seed_error(), None);
+    assert_eq!(parse(&[]).rng_seed(), None);
+    for bad in [&[][..], &[0; 257][..]] {
+        let properties = parse(&[bad]);
+        assert_eq!(properties.rng_seed(), None);
+        assert_eq!(
+            properties.rng_seed_error(),
+            Some(chosen::Error::InvalidRngSeed)
+        );
+        assert!(properties.kaslr_seed().is_some());
+    }
+    let duplicate = parse(&[&[1; 32], &[2; 32]]);
+    assert_eq!(duplicate.rng_seed(), None);
+    assert_eq!(
+        duplicate.rng_seed_error(),
+        Some(chosen::Error::DuplicateRngSeed)
+    );
 }
