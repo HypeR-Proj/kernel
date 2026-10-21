@@ -8,6 +8,7 @@
 //! platform interrupt decoding, and scheduler cross-call notification. Guest
 //! interrupt virtualization belongs to `arch::vm`.
 
+use crate::hal::irq::InterruptFrame;
 use hyper::cpu::CpuIndex;
 use hyper::hal::interrupt::{EntryAction, InterruptId, InterruptOrigin};
 use hyper::sync::PublishedOnce;
@@ -23,16 +24,19 @@ static KERNEL_RPC_SERVICES: PublishedOnce<KernelRpcServices> = PublishedOnce::ne
 /// Immutable kernel policy callbacks reachable from physical-interrupt entry.
 #[derive(Clone, Copy)]
 pub(crate) struct InterruptEntryServices {
-    dispatch: fn(InterruptId, InterruptOrigin) -> EntryAction,
+    dispatch: fn(InterruptId, InterruptOrigin, &InterruptFrame<'_>) -> EntryAction,
     #[cfg(CONFIG_ARCH_RISCV64)]
-    claim_external: fn(InterruptOrigin) -> Option<EntryAction>,
+    claim_external: fn(InterruptOrigin, &InterruptFrame<'_>) -> Option<EntryAction>,
     stop: fn(super::exception::CrashContext) -> !,
 }
 
 impl InterruptEntryServices {
     pub(crate) const fn new(
-        dispatch: fn(InterruptId, InterruptOrigin) -> EntryAction,
-        #[cfg(CONFIG_ARCH_RISCV64)] claim_external: fn(InterruptOrigin) -> Option<EntryAction>,
+        dispatch: fn(InterruptId, InterruptOrigin, &InterruptFrame<'_>) -> EntryAction,
+        #[cfg(CONFIG_ARCH_RISCV64)] claim_external: fn(
+            InterruptOrigin,
+            &InterruptFrame<'_>,
+        ) -> Option<EntryAction>,
         stop: fn(super::exception::CrashContext) -> !,
     ) -> Self {
         Self {
@@ -72,13 +76,20 @@ fn interrupt_entry_services() -> InterruptEntryServices {
     services
 }
 
-pub(crate) fn dispatch_entry(interrupt: InterruptId, origin: InterruptOrigin) -> EntryAction {
-    (interrupt_entry_services().dispatch)(interrupt, origin)
+pub(crate) fn dispatch_entry(
+    interrupt: InterruptId,
+    origin: InterruptOrigin,
+    frame: &InterruptFrame<'_>,
+) -> EntryAction {
+    (interrupt_entry_services().dispatch)(interrupt, origin, frame)
 }
 
 #[cfg(CONFIG_ARCH_RISCV64)]
-pub(crate) fn claim_and_dispatch_external_entry(origin: InterruptOrigin) -> Option<EntryAction> {
-    (interrupt_entry_services().claim_external)(origin)
+pub(crate) fn claim_and_dispatch_external_entry(
+    origin: InterruptOrigin,
+    frame: &InterruptFrame<'_>,
+) -> Option<EntryAction> {
+    (interrupt_entry_services().claim_external)(origin, frame)
 }
 
 pub(crate) fn stop_entry(context: super::exception::CrashContext) -> ! {

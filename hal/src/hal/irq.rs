@@ -90,3 +90,55 @@ pub fn install_kernel_rpc_services(
 ) -> Result<(), KernelRpcServiceError> {
     crate::arch::irq::install_kernel_rpc_services(poll, interrupt)
 }
+
+/// Registers from the interrupted execution, copied only on explicit request.
+/// This does not expose the architecture's mutable exception frame.
+#[derive(Clone, Copy, Debug)]
+pub struct InterruptedRegisters {
+    pub pc: usize,
+    pub sp: usize,
+    pub fp: usize,
+    pub origin: hyper::hal::interrupt::InterruptOrigin,
+}
+
+/// Read-only, CPU-affine view valid only during synchronous IRQ dispatch.
+///
+/// Passing this view does not read registers or consult any observer. A handler
+/// may request an owned register snapshot after its IRQ route has been selected.
+/// The borrow cannot escape into deferred work or survive interrupt return.
+pub struct InterruptFrame<'a> {
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    inner: crate::arch::aarch64::InterruptFrame<'a>,
+    _local: core::marker::PhantomData<&'a *mut ()>,
+}
+
+impl<'a> InterruptFrame<'a> {
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    pub(crate) fn new(inner: crate::arch::aarch64::InterruptFrame<'a>) -> Self {
+        Self {
+            inner,
+            _local: core::marker::PhantomData,
+        }
+    }
+
+    /// Other backends do not yet supply a qualified interrupted register view.
+    #[cfg(not(CONFIG_ARCH_AARCH64))]
+    pub(crate) const fn unavailable() -> Self {
+        Self {
+            _local: core::marker::PhantomData,
+        }
+    }
+
+    /// Copies interrupted registers when this entry backend supports it.
+    /// This must be called with local IRQs masked, before IRQ-tail scheduling.
+    pub fn registers(&self) -> Option<InterruptedRegisters> {
+        #[cfg(CONFIG_ARCH_AARCH64)]
+        {
+            self.inner.registers()
+        }
+        #[cfg(not(CONFIG_ARCH_AARCH64))]
+        {
+            None
+        }
+    }
+}

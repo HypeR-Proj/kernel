@@ -485,12 +485,17 @@ extern "C" fn dispatch_trap(frame: &mut TrapFrame) -> TrapAction {
             }
             SUPERVISOR_TIMER => dispatch_irq_action(
                 frame,
-                crate::arch::irq::dispatch_entry(InterruptId::new(0), interrupt_origin(frame)),
+                crate::arch::irq::dispatch_entry(
+                    InterruptId::new(0),
+                    interrupt_origin(frame),
+                    &crate::hal::irq::InterruptFrame::unavailable(),
+                ),
             ),
             SUPERVISOR_EXTERNAL => {
-                if let Some(action) =
-                    crate::arch::irq::claim_and_dispatch_external_entry(interrupt_origin(frame))
-                {
+                if let Some(action) = crate::arch::irq::claim_and_dispatch_external_entry(
+                    interrupt_origin(frame),
+                    &crate::hal::irq::InterruptFrame::unavailable(),
+                ) {
                     return dispatch_irq_action(frame, action);
                 }
                 TrapAction::RESUME

@@ -53,6 +53,7 @@ pub use context::{
 pub use context::{ThreadContext, VcpuContext};
 pub(crate) use context::{reset_stack_and_enter, run_on_emergency_stack, switch_thread_context};
 pub use exception::CrashContext;
+pub(crate) use exception::InterruptFrame;
 pub use exception::ValidationError as RuntimeVectorError;
 pub(crate) use exception::{
     capture_crash_context, install_exception_stacks, install_local_runtime_vectors,

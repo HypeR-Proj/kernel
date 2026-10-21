@@ -114,9 +114,11 @@ pub fn install_entry_services(
     dispatch: fn(
         InterruptId,
         hyper::hal::interrupt::InterruptOrigin,
+        &crate::hal::irq::InterruptFrame<'_>,
     ) -> hyper::hal::interrupt::EntryAction,
     claim_external: fn(
         hyper::hal::interrupt::InterruptOrigin,
+        &crate::hal::irq::InterruptFrame<'_>,
     ) -> Option<hyper::hal::interrupt::EntryAction>,
     stop: fn(CrashContext) -> !,
 ) -> Result<EntryReady, EntryServiceError> {

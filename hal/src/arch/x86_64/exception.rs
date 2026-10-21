@@ -464,6 +464,7 @@ extern "C" fn x86_64_vector_dispatch(frame: &mut ExceptionFrame) {
         match crate::arch::irq::dispatch_entry(
             InterruptId::new(vector),
             hyper::hal::interrupt::InterruptOrigin::Host,
+            &crate::hal::irq::InterruptFrame::unavailable(),
         ) {
             hyper::hal::interrupt::EntryAction::Resume { postlude } => {
                 // This architecture retains the request for a cooperative

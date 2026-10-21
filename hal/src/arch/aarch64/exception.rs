@@ -121,6 +121,34 @@ pub(super) struct ExceptionFrame {
     pub(super) return_cptr: u64,
 }
 
+/// Architecture-private frame access; only the selected HAL can expose a view.
+pub(crate) struct InterruptFrame<'a>(&'a ExceptionFrame);
+
+impl InterruptFrame<'_> {
+    pub(crate) fn registers(&self) -> Option<crate::hal::irq::InterruptedRegisters> {
+        // Decode only on the selected handler's request. IRQ handlers cannot
+        // switch execution worlds: the entry owner remains published until
+        // this borrow ends and architecture entry runs its IRQ-tail action.
+        let frame = self.0;
+        let entry = decode_vector(frame.vector)?;
+        let origin = match lower_aarch64_owner(frame, entry.origin) {
+            Some(LowerAarch64Owner::Guest { .. }) => hyper::hal::interrupt::InterruptOrigin::Guest,
+            Some(LowerAarch64Owner::Native { .. }) => {
+                hyper::hal::interrupt::InterruptOrigin::Native {
+                    unwind: super::user_entry::unwind_callback(),
+                }
+            }
+            None => hyper::hal::interrupt::InterruptOrigin::Host,
+        };
+        Some(crate::hal::irq::InterruptedRegisters {
+            pc: frame.elr as usize,
+            sp: interrupted_stack_pointer(frame, entry.origin) as usize,
+            fp: frame.general[29] as usize,
+            origin,
+        })
+    }
+}
+
 const _: () = {
     assert!(size_of::<VectorAction>() == 16);
     assert!(offset_of!(VectorAction, kind) == 0);
@@ -657,22 +685,15 @@ fn dispatch_irq(
         },
         None => hyper::hal::interrupt::InterruptOrigin::Host,
     };
-    #[cfg(feature = "pmu-profiling")]
-    crate::hal::pmu::observe(interrupt, || crate::hal::pmu::SampleContext {
-        pc: frame.elr as usize,
-        sp: interrupted_stack_pointer(frame, entry.origin) as usize,
-        fp: frame.general[29] as usize,
-        world: match interrupt_origin {
-            hyper::hal::interrupt::InterruptOrigin::Host => 0,
-            hyper::hal::interrupt::InterruptOrigin::Native { .. } => 1,
-            hyper::hal::interrupt::InterruptOrigin::Guest => 2,
-        },
-    });
     let action = if Some(interrupt) == super::kernel_rpc_interrupt() {
         super::end_interrupt(interrupt);
         crate::arch::irq::service_kernel_rpc_interrupt(interrupt_origin)
     } else {
-        crate::arch::irq::dispatch_entry(interrupt, interrupt_origin)
+        crate::arch::irq::dispatch_entry(
+            interrupt,
+            interrupt_origin,
+            &crate::hal::irq::InterruptFrame::new(InterruptFrame(frame)),
+        )
     };
     match action {
         hyper::hal::interrupt::EntryAction::Resume { postlude } => {
