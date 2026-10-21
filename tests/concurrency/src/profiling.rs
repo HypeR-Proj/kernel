@@ -81,3 +81,68 @@ fn quiescence_acquires_every_cpu_writer_before_recycling() {
         }
     });
 }
+
+#[test]
+fn stop_during_ipi_start_retains_hardware_until_disarmed() {
+    loom::model(|| {
+        let gate = Arc::new(Admission::<1>::new());
+        let enabled = Arc::new(AtomicU64::new(0));
+        gate.publish(1);
+        let control = {
+            let gate = gate.clone();
+            let enabled = enabled.clone();
+            thread::spawn(move || {
+                let request = gate.requested();
+                if request != 0 && gate.claim(0, request) {
+                    // The request can close between admission and the register
+                    // write. Ownership must cover programming and disarming.
+                    enabled.store(request, Ordering::Relaxed);
+                    if gate.requested() != request {
+                        enabled.store(0, Ordering::Relaxed);
+                        gate.release(0);
+                    }
+                }
+            })
+        };
+        gate.close(1);
+        if gate.quiescent() {
+            assert_eq!(enabled.load(Ordering::Relaxed), 0);
+        }
+        super::require_ok(control.join());
+        // Models the following stop IPI on the same CPU, after local start.
+        if gate.owner(0) != 0 {
+            enabled.store(0, Ordering::Relaxed);
+            gate.release(0);
+        }
+        assert!(gate.quiescent());
+        assert_eq!(enabled.load(Ordering::Relaxed), 0);
+    });
+}
+
+#[test]
+fn delayed_start_prompt_cannot_claim_a_replaced_capture() {
+    loom::model(|| {
+        let gate = Arc::new(Admission::<1>::new());
+        let period = Arc::new(AtomicU64::new(10));
+        gate.publish(1);
+        let recipient = {
+            let gate = gate.clone();
+            let period = period.clone();
+            thread::spawn(move || {
+                // A coalesced IPI reads the durable request, not an opcode
+                // retained from its sender. Configuration is read after claim.
+                let request = gate.requested();
+                if request != 0 && gate.claim(0, request) {
+                    assert_eq!(period.load(Ordering::Relaxed), request * 10);
+                    gate.release(0);
+                }
+            })
+        };
+        gate.close(1);
+        if gate.quiescent() {
+            period.store(20, Ordering::Relaxed);
+            gate.publish(2);
+        }
+        super::require_ok(recipient.join());
+    });
+}

@@ -21,14 +21,14 @@ pub(crate) use super::imp::syscall_fp_resident_for_test;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub(crate) use super::imp::{
     PreparedUserAddressSpace, UserLocalActivation, UserLocalIdentity, UserLocalOperation,
-    UserLocalRequest, UserMappingPage,
+    UserLocalRequest,
 };
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub(crate) use super::imp::{UserCompletionFailure, UserContext, UserExit, UserReturnCapability};
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub(crate) use super::imp::{
-    activate_user_local, deactivate_user_local, prepare_host_user_address_space,
-    service_user_local_request, user_local_identity_is_active,
+    activate_user_local, deactivate_user_local, edit_host_user_address_space,
+    prepare_host_user_address_space, service_user_local_request, user_local_identity_is_active,
 };
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub(crate) use super::imp::{

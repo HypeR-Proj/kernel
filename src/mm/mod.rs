@@ -10,6 +10,7 @@ mod allocation;
 pub mod allocator;
 pub mod boot;
 pub mod kaslr;
+pub mod table_edit;
 mod translation_epoch;
 
 pub use access::{ForeignCopyError, ForeignMemory, copy_from_foreign, copy_to_foreign};

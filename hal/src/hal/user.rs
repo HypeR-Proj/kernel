@@ -54,13 +54,6 @@ pub struct AddressSpacePlan {
     identifier_bits: u8,
 }
 
-/// Conservative page bound for a four-level host hierarchy, including its root.
-pub fn table_page_capacity(leaf_count: usize) -> Option<usize> {
-    leaf_count
-        .checked_mul(3)
-        .and_then(|pages| pages.checked_add(1))
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HostMachine {
     Aarch64,
@@ -124,15 +117,7 @@ impl AddressSpacePlan {
     }
 }
 
-#[derive(Clone, Copy)]
-#[cfg_attr(not(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64)), allow(dead_code))]
-pub struct MappingPage {
-    pub address: u64,
-    pub physical: PhysicalAddress,
-    pub readable: bool,
-    pub writable: bool,
-    pub executable: bool,
-}
+pub use hyper::hal::user::{MappingPage, MappingUpdate};
 
 /// Opaque, inert hierarchy prepared before kernel mapping publication.
 pub struct PreparedAddressSpace {
@@ -276,22 +261,11 @@ pub unsafe fn prepare_host_address_space(
 ) -> Result<PreparedAddressSpace, AddressSpaceError> {
     #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
     {
-        let mut arch_enumerate = |visit: &mut dyn FnMut(crate::arch::user::UserMappingPage)| {
-            enumerate(&mut |page| {
-                visit(crate::arch::user::UserMappingPage {
-                    address: page.address,
-                    physical: page.physical,
-                    readable: page.readable,
-                    writable: page.writable,
-                    executable: page.executable,
-                });
-            });
-        };
         // SAFETY: The facade forwards the table ownership contract unchanged.
         let backend = unsafe {
             crate::arch::user::prepare_host_user_address_space(
                 generation,
-                &mut arch_enumerate,
+                &mut enumerate,
                 allocator,
             )
         }
@@ -301,6 +275,38 @@ pub unsafe fn prepare_host_address_space(
     #[cfg(not(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64)))]
     {
         let _ = (generation, &mut enumerate, allocator);
+        Err(AddressSpaceError::Unsupported)
+    }
+}
+
+/// Prepares a new immutable root by copying only edited table paths.
+///
+/// # Safety
+/// The old hierarchy stays retained throughout preparation. `pages` must return
+/// exclusively writable copied/new pages, preserve every old root's ownership,
+/// and retain all reachable tables through acknowledged retirement. The caller
+/// abandons the entire candidate on error and retains the mapped data pages.
+pub unsafe fn edit_host_address_space(
+    previous: &PreparedAddressSpace,
+    mut enumerate: impl FnMut(&mut dyn FnMut(MappingUpdate)),
+    pages: &mut impl hyper::mm::table_edit::Pages,
+) -> Result<PreparedAddressSpace, AddressSpaceError> {
+    #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
+    {
+        // SAFETY: Forward the retained old-root and unpublished candidate contract.
+        let backend = unsafe {
+            crate::arch::user::edit_host_user_address_space(
+                &previous.backend,
+                &mut enumerate,
+                pages,
+            )
+        }
+        .map_err(AddressSpaceError::Backend)?;
+        Ok(PreparedAddressSpace { backend })
+    }
+    #[cfg(not(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64)))]
+    {
+        let _ = (previous, &mut enumerate, pages);
         Err(AddressSpaceError::Unsupported)
     }
 }

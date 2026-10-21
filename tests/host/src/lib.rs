@@ -10,6 +10,10 @@
 extern crate alloc;
 
 #[cfg(test)]
+#[path = "cases/table_edit.rs"]
+mod table_edit;
+
+#[cfg(test)]
 #[path = "../../../src/kernel/block/transfer.rs"]
 mod block_transfer;
 #[cfg(test)]

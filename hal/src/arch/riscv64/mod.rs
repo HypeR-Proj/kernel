@@ -105,11 +105,12 @@ pub use user_machine::{ContractError as UserMachineContractError, Error as UserA
 pub(crate) use user_machine::{
     LocalActivation as UserLocalActivation, LocalIdentity as UserLocalIdentity,
     LocalOperation as UserLocalOperation, LocalRequest as UserLocalRequest,
-    MappingPage as UserMappingPage, PreparedAddressSpace as PreparedUserAddressSpace,
+    PreparedAddressSpace as PreparedUserAddressSpace,
 };
 pub(crate) use user_machine::{
     activate_local as activate_user_local, application_address_limit, assert_kernel_access,
     copy_from_exposed, copy_to_exposed, deactivate_local as deactivate_user_local,
+    edit_address_space as edit_host_user_address_space,
     identifier_bits as user_translation_identifier_bits,
     local_identity_is_active as user_local_identity_is_active,
     prepare_host as prepare_host_user_address_space,

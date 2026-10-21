@@ -16,18 +16,37 @@ pub struct SampleContext {
     pub world: u64,
 }
 
-static OBSERVER: PublishedOnce<fn(InterruptId, SampleContext)> = PublishedOnce::new();
+struct Observer {
+    routes: [u32; hyper::cpu::MAX_CPUS],
+    sample: fn(SampleContext),
+}
+
+static OBSERVER: PublishedOnce<Observer> = PublishedOnce::new();
 
 #[derive(Debug)]
 pub struct AlreadyInstalled;
 /// Installs the bounded, allocation-free observer before enabling PMU delivery.
-pub fn install(observer: fn(InterruptId, SampleContext)) -> Result<(), AlreadyInstalled> {
-    OBSERVER.publish(observer).map_err(|_| AlreadyInstalled)
+/// Routes are indexed by logical CPU; zero denotes an unassigned CPU. PMU
+/// interrupts are PPIs or SPIs, so zero cannot name a valid PMU route.
+pub fn install(
+    routes: [u32; hyper::cpu::MAX_CPUS],
+    sample: fn(SampleContext),
+) -> Result<(), AlreadyInstalled> {
+    OBSERVER
+        .publish(Observer { routes, sample })
+        .map_err(|_| AlreadyInstalled)
 }
 
-pub(crate) fn observe(interrupt: InterruptId, context: SampleContext) {
-    if let Some(observer) = OBSERVER.get() {
-        observer(interrupt, context);
+/// Ordinary IRQs only check the immutable local route. Capture the interrupted
+/// registers and enter profiling policy only for a matching PMU interrupt,
+/// including a late pending interrupt after recording has stopped.
+#[inline]
+pub(crate) fn observe(interrupt: InterruptId, context: impl FnOnce() -> SampleContext) {
+    if let Some(observer) = OBSERVER.get()
+        && let Some(cpu) = crate::hal::cpu::current_index()
+        && observer.routes[cpu.get()] == interrupt.get()
+    {
+        (observer.sample)(context());
     }
 }
 

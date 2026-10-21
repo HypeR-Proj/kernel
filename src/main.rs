@@ -83,6 +83,8 @@ extern "C" fn start_kernel() -> ! {
         crate::kernel::vfs::initialize(&mut boot)?;
         crate::kernel::debug::initialize()?;
         crate::kernel::task::initialize()?;
+        #[cfg(all(CONFIG_ARCH_AARCH64, feature = "pmu-profiling"))]
+        crate::kernel::profile::initialize_local_cpu();
         crate::kernel::reaper::initialize()?;
 
         crate::kernel::irq::initialize(&mut boot)?;

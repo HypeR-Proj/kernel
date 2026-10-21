@@ -1673,6 +1673,108 @@ fn atomic_word_pin_rejects_invalid_access_and_distinguishes_remapping() {
     assert_eq!(usage.pages.load(Ordering::Relaxed), 0);
 }
 
+#[test]
+fn atomic_wake_identity_needs_no_page_pin_or_cow_materialization() {
+    let (backend, account) = fixtures();
+    let source = crate::require_ok(user::SnapshotVmo::try_from_bytes(
+        &[0x42; PAGE_SIZE as usize],
+        backend.clone(),
+        account.clone(),
+    ));
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE),
+        backend,
+        account.clone(),
+    ));
+    let token = private_mapping(
+        &space,
+        source,
+        0x1000,
+        PAGE_SIZE,
+        0,
+        PAGE_SIZE,
+        user::PrivateMappingMode::CopyOnWrite,
+    );
+    let calls = account.0.charge_calls.load(Ordering::Relaxed);
+    account.0.fail_next.store(true, Ordering::Relaxed);
+    assert_eq!(
+        crate::require_ok(space.atomic_wait_key(UserAddress::new(0x1000))),
+        token
+    );
+    assert_eq!(account.0.charge_calls.load(Ordering::Relaxed), calls);
+    assert!(matches!(
+        space.atomic_wait_key(UserAddress::new(0x1001)),
+        Err(AddressSpaceError::InvalidRange)
+    ));
+    assert!(matches!(
+        space.atomic_wait_key(UserAddress::new(0x2000)),
+        Err(AddressSpaceError::NotMapped)
+    ));
+    assert!(matches!(
+        space.pin_atomic_u32(UserAddress::new(0x1000)),
+        Err(AddressSpaceError::CowRequired)
+    ));
+    account.0.fail_next.store(false, Ordering::Relaxed);
+    materialize(&space, slice(0x1000, 4));
+    assert_eq!(
+        crate::require_ok(space.atomic_wait_key(UserAddress::new(0x1000))),
+        token
+    );
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_protect(
+            space.root_vmar(),
+            slice(0x1000, PAGE_SIZE),
+            Permissions::read_only(),
+        ))
+        .commit_for_test(),
+    ));
+    assert!(matches!(
+        space.atomic_wait_key(UserAddress::new(0x1000)),
+        Err(AddressSpaceError::WriteDenied)
+    ));
+    space.begin_process_stop();
+    assert!(matches!(
+        space.atomic_wait_key(UserAddress::new(0x1000)),
+        Err(AddressSpaceError::Stopped)
+    ));
+}
+
+#[test]
+fn single_mapping_copy_and_output_reservation_need_no_temporary_allocation() {
+    let (backend, account) = fixtures();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE),
+        backend.clone(),
+        account.clone(),
+    ));
+    let storage = crate::require_ok(WritableVmo::try_new(PAGE_SIZE, backend, account.clone()));
+    crate::require_ok(storage.populate(0, PAGE_SIZE));
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_map_writable(
+            space.root_vmar(),
+            slice(0x1000, PAGE_SIZE),
+            storage,
+            0,
+            Permissions::read_write(),
+            Permissions::read_write(),
+        ))
+        .commit_for_test(),
+    ));
+    let calls = account.0.charge_calls.load(Ordering::Relaxed);
+    account.0.fail_next.store(true, Ordering::Relaxed);
+    crate::require_ok(space.copy_to_user(slice(0x1000, 4), &[1, 2, 3, 4]));
+    let mut bytes = [0; 4];
+    crate::require_ok(space.copy_from_user(slice(0x1000, 4), &mut bytes));
+    assert_eq!(bytes, [1, 2, 3, 4]);
+    let output = crate::require_ok(space.prepare_user_write_for_test(slice(0x1000, 4)));
+    crate::require_ok(space.write_user_reservation_for_test(&output, &[4, 3, 2, 1]));
+    space.release_user_write_for_test(output);
+    assert_eq!(account.0.charge_calls.load(Ordering::Relaxed), calls);
+    account.0.fail_next.store(false, Ordering::Relaxed);
+}
+
 fn private_mapping(
     space: &UserAddressSpace<Backend, Account>,
     source: user::SnapshotVmo<Backend, Account>,
@@ -2585,10 +2687,10 @@ fn output_reservation_registry_releases_capacity_and_rolls_back_failed_admission
     let baseline = account.0.bytes.load(Ordering::Relaxed);
     let first = crate::require_ok(space.prepare_user_write_for_test(slice(0x1001, 3)));
     let with_first = account.0.bytes.load(Ordering::Relaxed);
-    // Copy-plan metadata and the exact private page pin succeed; admission's
-    // registry allocation charge fails before any new reservation is visible.
+    // The copy segment is inline. The exact private page pin succeeds, then
+    // overflow registry admission fails before a new reservation is visible.
     account.0.fail_at_call.store(
-        account.0.charge_calls.load(Ordering::Relaxed) + 3,
+        account.0.charge_calls.load(Ordering::Relaxed) + 2,
         Ordering::Relaxed,
     );
     assert!(matches!(
@@ -4006,4 +4108,133 @@ fn shared_clean_file_pages_share_physical_storage_and_private_writes_cannot_modi
     ));
     assert!(crate::require_ok(b.prepare_file_reclaim(slice(0x1000, PAGE_SIZE))).is_none());
     assert_eq!(account.0.pinned.load(Ordering::Relaxed), 1);
+}
+
+// Compare incremental edits with the independently enumerated logical snapshot.
+// The model retains untouched translations across commits, as the HAL must.
+fn apply_translation_delta(
+    change: user::PreparedMappingChange<'_, Backend, Account>,
+    translations: &mut std::collections::BTreeMap<u64, hyper::hal::user::MappingPage>,
+) -> usize {
+    use hyper::hal::user::{MappingPage, MappingUpdate};
+    let mut count = 0;
+    crate::require_ok(change.visit_updates(|update| {
+        count += 1;
+        match update {
+            MappingUpdate::Unmap { address, length } => {
+                translations.retain(|key, _| *key < address || *key >= address + length);
+            }
+            MappingUpdate::Map(page) => {
+                translations.insert(page.address, page);
+            }
+        }
+    }));
+    let mut expected = std::collections::BTreeMap::new();
+    for mapping in change.snapshots() {
+        let pages = crate::require_ok(change.resident_pages(mapping.token));
+        for (index, physical) in pages.pages().iter().enumerate() {
+            if let Some(physical) = physical {
+                let address = mapping.range.base().get() + index as u64 * PAGE_SIZE;
+                expected.insert(
+                    address,
+                    MappingPage {
+                        address,
+                        physical: *physical,
+                        readable: mapping.permissions.contains(user::Access::Read),
+                        writable: mapping.permissions.contains(user::Access::Write)
+                            && pages.page_is_writable(index),
+                        executable: mapping.permissions.contains(user::Access::Execute),
+                    },
+                );
+            }
+        }
+    }
+    assert_eq!(*translations, expected);
+    complete(crate::require_ok(change.commit_for_test()));
+    count
+}
+
+#[test]
+fn translation_deltas_preserve_fragments_cow_reclaim_and_refault() {
+    let (backend, account) = fixtures();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE * 8),
+        backend,
+        account,
+    ));
+    let (source, _, _, _) = protected_source(vec![0x71; PAGE_SIZE as usize * 4]);
+    let view = crate::require_ok(space.prepare_file_view(
+        source,
+        PAGE_SIZE * 4,
+        0,
+        PAGE_SIZE * 4,
+        0,
+        false,
+        user::PrivateMappingMode::CopyOnWrite,
+    ));
+    let mut model = std::collections::BTreeMap::new();
+    assert_eq!(
+        apply_translation_delta(
+            crate::require_ok(space.prepare_map_private_view(
+                space.root_vmar(),
+                slice(0x1000, PAGE_SIZE * 4),
+                view,
+                Permissions::read_write(),
+                Permissions::read_write(),
+            )),
+            &mut model
+        ),
+        5
+    );
+    // Split one version into three protection fragments before changing backing.
+    apply_translation_delta(
+        crate::require_ok(space.prepare_protect(
+            space.root_vmar(),
+            slice(0x2000, PAGE_SIZE),
+            Permissions::read_only(),
+        )),
+        &mut model,
+    );
+    let cow = crate::require_some(crate::require_ok(
+        space.prepare_private_write(slice(0x3000, 4)),
+    ));
+    assert_eq!(apply_translation_delta(cow, &mut model), 1);
+    crate::require_ok(space.copy_to_user(slice(0x3000, 4), b"kept"));
+    let (evict, count) = crate::require_some(crate::require_ok(
+        space.prepare_file_reclaim(slice(0x1000, PAGE_SIZE * 4)),
+    ));
+    assert_eq!(count, 3);
+    assert_eq!(apply_translation_delta(evict, &mut model), 3);
+    assert_eq!(model.len(), 1);
+    let refill = crate::require_some(crate::require_ok(
+        space.prepare_file_population(slice(0x2000, 1)),
+    ));
+    assert_eq!(apply_translation_delta(refill, &mut model), 1);
+    // Removing a resident and an already reclaimed page leaves the dirty page.
+    apply_translation_delta(
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x1000, PAGE_SIZE * 2))),
+        &mut model,
+    );
+    let mut bytes = [0; 4];
+    crate::require_ok(space.copy_from_user(slice(0x3000, 4), &mut bytes));
+    assert_eq!(&bytes, b"kept");
+    let stale = crate::require_some(crate::require_ok(
+        space.prepare_file_population(slice(0x4000, 1)),
+    ));
+    apply_translation_delta(
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x4000, PAGE_SIZE))),
+        &mut model,
+    );
+    let mut visited = false;
+    assert!(matches!(
+        stale.visit_updates(|_| visited = true),
+        Err(AddressSpaceError::StaleTransaction)
+    ));
+    assert!(!visited);
+    apply_translation_delta(
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x3000, PAGE_SIZE))),
+        &mut model,
+    );
+    assert!(model.is_empty());
 }

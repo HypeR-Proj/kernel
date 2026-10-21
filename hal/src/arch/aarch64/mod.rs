@@ -138,10 +138,11 @@ pub use user_machine::Error as UserAddressSpaceError;
 pub(crate) use user_machine::{
     LocalActivation as UserLocalActivation, LocalIdentity as UserLocalIdentity,
     LocalOperation as UserLocalOperation, LocalRequest as UserLocalRequest,
-    MappingPage as UserMappingPage, PreparedAddressSpace as PreparedUserAddressSpace,
+    PreparedAddressSpace as PreparedUserAddressSpace,
 };
 pub(crate) use user_machine::{
     activate_local as activate_user_local, deactivate_local as deactivate_user_local,
+    edit_address_space as edit_host_user_address_space,
     local_identity_is_active as user_local_identity_is_active,
     prepare_address_space as prepare_host_user_address_space,
     service_local_request as service_user_local_request,

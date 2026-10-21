@@ -15,10 +15,10 @@ pub fn available() -> bool {
     matches!((id >> 8) & 15, 1..=8)
 }
 
-/// Takes exclusive ownership after feature detection, in a masked local IRQ.
+/// Takes exclusive ownership after feature detection, with local IRQs masked.
 /// Clear inherited event-counter state too: the profiler only uses PMCCNTR.
 pub fn initialize() {
-    // SAFETY: Feature detection succeeded and the observer exclusively owns
+    // SAFETY: Feature detection succeeded and the host exclusively owns
     // this CPU's PMU. Lower exception levels cannot program its registers.
     unsafe {
         asm!("msr pmintenclr_el1, {all}", "msr pmcntenclr_el0, {all}",
@@ -35,7 +35,7 @@ pub fn start(period: u64) {
     // VHE host EL2 uses P=0; Native/guest EL0 and guest EL1 remain enabled.
     let filter = PMCCFILTR_NSH;
     let mdcr: u64;
-    // SAFETY: Only the masked local IRQ observer owns PMU state. PMUSERENR
+    // SAFETY: Masked local control and sampling exclusively own PMU state. PMUSERENR
     // denies direct Native access; TPM/TPMCR trap lower-EL PMU programming.
     unsafe {
         asm!(
@@ -72,7 +72,7 @@ pub fn reload(period: u64) {
 }
 
 pub fn stop() {
-    // SAFETY: Called only on a PMUv3 CPU, in its masked local IRQ observer.
+    // SAFETY: Called only on a PMUv3 CPU, with local IRQs masked.
     unsafe {
         asm!("msr pmintenclr_el1, {mask}", "msr pmcntenclr_el0, {mask}", "msr pmovsclr_el0, {mask}", "isb", mask = in(reg) PMU_CYCLE_BIT, options(nostack, preserves_flags))
     };
