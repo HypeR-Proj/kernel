@@ -887,6 +887,79 @@ fn spi_target_mask_selects_one_recipient_and_retains_complete_mask() {
 }
 
 #[test]
+fn current_bank_refill_consumes_only_the_work_it_has_observed() {
+    let cpu0 = VirtualCpuId::new(0);
+    let cpu1 = VirtualCpuId::new(1);
+    let id = interrupt(27);
+    let mut builder = crate::require_ok(VirtualGicBuilder::new(2));
+    for cpu in [cpu0, cpu1] {
+        crate::require_ok(builder.configure(
+            id,
+            cpu,
+            0x80,
+            InterruptGroup::Group1,
+            InterruptTrigger::Level,
+        ));
+    }
+    let mut gic = crate::require_ok(builder.finish(1));
+    for cpu in [cpu0, cpu1] {
+        crate::require_ok(gic.set_enabled(id, cpu, true));
+        crate::require_ok(gic.set_line(id, cpu, true));
+    }
+    let mut slots = [None];
+    assert_eq!(crate::require_ok(gic.refill_current(cpu0, &mut slots)), 1);
+    assert_eq!(crate::require_some(slots[0]).interrupt, id);
+    // Current hardware will receive this bank before guest return. CPU 1
+    // still needs its independent wake/reconcile notification.
+    assert_eq!(gic.take_reconcile_targets(), 1 << 1);
+
+    // A later producer must create a new prompt even for the current owner.
+    crate::require_ok(gic.set_line(id, cpu0, false));
+    assert_eq!(gic.take_reconcile_targets(), 1);
+    crate::require_ok(gic.refill_current(cpu0, &mut slots));
+    assert_eq!(slots, [None]);
+    crate::require_ok(gic.set_line(id, cpu0, true));
+    assert_eq!(gic.take_reconcile_targets(), 1);
+}
+
+#[test]
+fn failed_current_bank_refill_preserves_the_notification() {
+    let cpu = VirtualCpuId::new(0);
+    let id = interrupt(27);
+    let mut gic = one_interrupt(27, 1, 1);
+    crate::require_ok(gic.set_enabled(id, cpu, true));
+    crate::require_ok(gic.set_line(id, cpu, true));
+    assert!(gic.refill_current(cpu, &mut []).is_err());
+    assert_eq!(gic.take_reconcile_targets(), 1);
+}
+
+#[test]
+fn current_refill_keeps_the_wakeup_for_a_retargeted_spi() {
+    let cpu0 = VirtualCpuId::new(0);
+    let cpu1 = VirtualCpuId::new(1);
+    let id = interrupt(64);
+    let mut gic = one_interrupt(64, 2, 1);
+    crate::require_ok(gic.set_enabled(id, cpu0, true));
+    crate::require_ok(gic.set_line(id, cpu0, true));
+    let mut old = [None];
+    crate::require_ok(gic.refill_current(cpu0, &mut old));
+    assert_eq!(gic.take_reconcile_targets(), 0);
+    crate::require_some(old[0].as_mut()).state = ListState::Active;
+    crate::require_ok(gic.synchronize(cpu0, &old));
+    crate::require_ok(gic.route(id, cpu1));
+    // Discard the route-change prompt: this models its delivery to the old
+    // owner while the active interrupt must still remain there until EOI.
+    let _ = gic.take_reconcile_targets();
+    old[0] = None;
+    crate::require_ok(gic.synchronize(cpu0, &old));
+    crate::require_ok(gic.refill_current(cpu0, &mut old));
+    assert_eq!(gic.take_reconcile_targets(), 1 << 1);
+    let mut new = [None];
+    assert_eq!(crate::require_ok(gic.refill_current(cpu1, &mut new)), 1);
+    assert_eq!(crate::require_some(new[0]).interrupt, id);
+}
+
+#[test]
 fn level_line_reasserts_after_eoi_without_repeated_reconcile_prompts() {
     let cpu = VirtualCpuId::new(0);
     let id = interrupt(32);
