@@ -3,6 +3,8 @@
 
 //! Kernel object and process-local generation-handle transactions.
 
+use kernel::capability::handle_wire;
+
 use core::num::NonZeroU32;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,7 +20,7 @@ use kernel::capability::{
     DirectHandleTransfer, HandleBatchReservationStorage, HandleError, HandleFlags,
     HandleScanCursor, HandleTable, HandleTableLockOrder, HandleTableStoragePlan,
     HandleTransferOperation, HandleTransferRequest, HandleTransferRoute, HandleTransferStorage,
-    HandleValue, InTransitHandleBatch, PreparedHandle, Rights,
+    InTransitHandleBatch, PreparedHandle, Rights,
 };
 use kernel::object::{
     ExportPolicy, KernelObject, KernelRef, KernelService, ObjectHandleState, ObjectKind,
@@ -405,9 +407,9 @@ fn object_snapshot_distinguishes_unpublished_active_and_retired_authority() {
 #[test]
 fn handle_diagnostics_page_generation_qualified_object_edges() {
     let transitions = Arc::new(AtomicUsize::new(0));
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let reservation = crate::require_ok(table.reserve_batch(40));
-    let mut expected = reservation.values().to_vec();
+    let expected = reservation.values().to_vec();
     let handles = (0_u64..40)
         .map(|value| prepared(object(value, &transitions), Rights::INSPECT))
         .collect();
@@ -425,9 +427,15 @@ fn handle_diagnostics_page_generation_qualified_object_edges() {
     }
 
     remove_all(&mut table);
-    expected.sort_by_key(|value| value.get());
-    observed.sort_by_key(|value| value.get());
-    assert_eq!(observed, expected);
+    assert_eq!(observed.len(), expected.len());
+    assert_eq!(
+        observed
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>(),
+        expected
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>()
+    );
     assert!(cursor.is_none());
     assert_eq!(transitions.load(Ordering::Relaxed), 40);
 }
@@ -436,7 +444,7 @@ fn handle_diagnostics_page_generation_qualified_object_edges() {
 fn reservation_values_are_unresolvable_until_one_final_publication() {
     let transitions = Arc::new(AtomicUsize::new(0));
     let first_object = object(17, &transitions);
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let reservation = crate::require_ok(table.reserve::<2>());
     let values = reservation.values();
     let second_transitions = Arc::new(AtomicUsize::new(0));
@@ -461,7 +469,7 @@ fn reservation_values_are_unresolvable_until_one_final_publication() {
 
 #[test]
 fn aborted_reservations_invalidate_every_exposed_future_value() {
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     assert!(table.free_list_is_consistent_for_test());
     let first_values = {
         let reservation = crate::require_ok(table.reserve::<2>());
@@ -494,7 +502,7 @@ fn runtime_batch_reservation_publishes_exact_handle_count() {
     let transitions = Arc::new(AtomicUsize::new(0));
     let first_object = object(71, &transitions);
     let second_object = object(72, &transitions);
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let reservation = crate::require_ok(table.reserve_batch(2));
     let future = reservation.values().to_vec();
     let handles = vec![
@@ -542,7 +550,7 @@ fn runtime_batch_storage_rejects_unbounded_lock_work() {
 
 #[test]
 fn stale_segment_plan_is_discarded_before_table_mutation() {
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let snapshot = crate::require_ok(table.reservation_storage_snapshot_for(1));
     let plan = crate::require_ok(HandleTableStoragePlan::try_new(snapshot));
 
@@ -558,7 +566,7 @@ fn stale_segment_plan_is_discarded_before_table_mutation() {
 
 #[test]
 fn segment_growth_failure_leaves_existing_table_state_unchanged() {
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let before = crate::require_ok(table.reservation_storage_snapshot_for(1));
 
     assert_eq!(
@@ -578,7 +586,7 @@ fn segment_growth_failure_leaves_existing_table_state_unchanged() {
 #[test]
 fn segment_install_preserves_existing_numeric_handles() {
     let transitions = Arc::new(AtomicUsize::new(0));
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let first_segment = crate::require_ok(table.reserve_batch(64));
     let values = first_segment.values().to_vec();
     let handles = (0_u64..64)
@@ -606,30 +614,27 @@ fn segment_install_preserves_existing_numeric_handles() {
 }
 
 #[test]
-fn untrusted_handle_values_are_validated_before_slot_arithmetic() {
-    assert_eq!(
-        HandleValue::try_from_raw(0),
-        Err(HandleError::InvalidHandle)
-    );
-    assert_eq!(
-        HandleValue::try_from_raw(1),
-        Err(HandleError::InvalidHandle)
-    );
-    assert_eq!(
-        HandleValue::try_from_raw(1 << 24),
-        Err(HandleError::InvalidHandle)
-    );
-    assert_eq!(
-        crate::require_ok(HandleValue::try_from_raw((1 << 24) | 1)).get(),
-        (1 << 24) | 1
-    );
+fn wire_tokens_require_validation_in_the_owning_table() {
+    for raw in [0, 1, 0x3fff_ffff_ffff_ffff, 0x8000_0000_0000_0000, u64::MAX] {
+        assert_eq!(handle_wire::from_abi(raw), Err(HandleError::InvalidHandle));
+    }
+    let table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
+    for raw in [
+        0x0f00_0000_0000_0000,
+        0x0f23_4567_89ab_cdef,
+        0x0fff_ffff_ffff_ffff,
+    ] {
+        let value = crate::require_ok(handle_wire::from_abi(raw));
+        assert_eq!(handle_wire::to_abi(value), raw);
+        assert_eq!(table.get_info(value), Err(HandleError::InvalidHandle));
+    }
 }
 
 #[test]
 fn closing_a_handle_invalidates_its_generation_before_slot_reuse() {
     let transitions = Arc::new(AtomicUsize::new(0));
     let first_object = object(1, &transitions);
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let first = {
         let reservation = crate::require_ok(table.reserve::<1>());
         reservation.publish(&mut table, [prepared(first_object, Rights::INSPECT)])[0]
@@ -662,7 +667,7 @@ fn duplicate_can_only_attenuate_existing_authority() {
     let transitions = Arc::new(AtomicUsize::new(0));
     let object = object(7, &transitions);
     let source_rights = Rights::DUPLICATE.union(Rights::INSPECT);
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let source = {
         let reservation = crate::require_ok(table.reserve::<1>());
         reservation.publish(&mut table, [prepared(object.clone(), source_rights)])[0]
@@ -711,7 +716,7 @@ fn supervisor_derives_same_identity_without_copying_control_authority() {
     let object = crate::require_ok(PublishableRef::<ObservedProcess, KernelService>::try_new(
         ObservedProcess,
     ));
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let reservation = crate::require_ok(table.reserve::<1>());
     let prepared = crate::require_ok(PreparedHandle::try_from_new_object(
         object.publication(),
@@ -756,7 +761,7 @@ fn replace_moves_active_authority_in_one_infallible_commit() {
     let transitions = Arc::new(AtomicUsize::new(0));
     let object = object(8, &transitions);
     let source_rights = Rights::DUPLICATE.union(Rights::WAIT).union(Rights::INSPECT);
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let source = {
         let reservation = crate::require_ok(table.reserve::<1>());
         reservation.publish(&mut table, [prepared(object.clone(), source_rights)])[0]
@@ -784,10 +789,10 @@ fn replace_moves_active_authority_in_one_infallible_commit() {
 }
 
 #[test]
-fn replace_retires_an_exhausted_generation_without_losing_authority() {
+fn replace_wraps_generation_in_place_without_losing_authority() {
     let transitions = Arc::new(AtomicUsize::new(0));
     let object = object(81, &transitions);
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let source = {
         let reservation = crate::require_ok(table.reserve::<1>());
         reservation.publish(&mut table, [prepared(object.clone(), Rights::INSPECT)])[0]
@@ -797,6 +802,7 @@ fn replace_retires_an_exhausted_generation_without_losing_authority() {
 
     let replacement = crate::require_ok(table.replace(exhausted, Rights::INSPECT));
 
+    assert_eq!(replacement, source);
     assert_ne!(replacement, exhausted);
     assert_eq!(table.get_info(exhausted), Err(HandleError::InvalidHandle));
     assert_eq!(object.active_handle_count(), 1);
@@ -820,7 +826,7 @@ fn typed_resolution_uses_compiler_checked_downcast_and_survives_close() {
     let transitions = Arc::new(AtomicUsize::new(0));
     let object = object(99, &transitions);
     let koid = object.koid();
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let value = {
         let reservation = crate::require_ok(table.reserve::<1>());
         reservation.publish(&mut table, [prepared(object.clone(), Rights::INSPECT)])[0]
@@ -871,7 +877,7 @@ fn scheduler_ownership_is_counted_separately_from_service_ownership() {
 fn committed_operation_pin_becomes_vm_device_ownership_before_handle_release() {
     let transitions = Arc::new(AtomicUsize::new(0));
     let object = object(103, &transitions);
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let value = {
         let reservation = crate::require_ok(table.reserve::<1>());
         reservation.publish(
@@ -905,7 +911,7 @@ fn committed_operation_pin_becomes_vm_device_ownership_before_handle_release() {
 fn concurrent_close_and_page_reuse_preserve_an_existing_operation_pin() {
     let transitions = Arc::new(AtomicUsize::new(0));
     let original = object(101, &transitions);
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let value = {
         let reservation = crate::require_ok(table.reserve::<1>());
         reservation.publish(&mut table, [prepared(original, Rights::INSPECT)])[0]
@@ -945,7 +951,7 @@ fn concurrent_close_and_page_reuse_preserve_an_existing_operation_pin() {
 fn invocation_retains_only_the_captured_grant_and_an_operation_pin() {
     let transitions = Arc::new(AtomicUsize::new(0));
     let object = object(104, &transitions);
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let [handle] = crate::require_ok(table.reserve::<1>())
         .publish(&mut table, [prepared(object.clone(), Rights::INSPECT)]);
     let receiver = crate::require_ok(table.resolve_invocation(handle));
@@ -990,7 +996,7 @@ fn waitable_resolution_uses_the_erased_object_capability() {
     let transitions = Arc::new(AtomicUsize::new(0));
     let object = object(100, &transitions);
     let koid = object.koid();
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let value = {
         let reservation = crate::require_ok(table.reserve::<1>());
         reservation.publish(
@@ -1071,7 +1077,7 @@ fn teardown_cursor_blocks_publication_and_scans_each_slot_once() {
     let first_object = object(20, &transitions);
     let second_transitions = Arc::new(AtomicUsize::new(0));
     let second_object = object(21, &second_transitions);
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let values = {
         let reservation = crate::require_ok(table.reserve::<2>());
         reservation.publish(
@@ -1100,7 +1106,7 @@ fn teardown_cursor_blocks_publication_and_scans_each_slot_once() {
 
 #[test]
 fn teardown_waits_for_detached_slot_reservations() {
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let reservation = crate::require_ok(table.reserve::<1>());
     let future = reservation.values()[0];
 
@@ -1121,7 +1127,7 @@ fn transfer_claim_rollback_restores_exact_values_and_authority() {
     let first_object = object(31, &transitions);
     let second_object = object(32, &transitions);
     let rights = Rights::TRANSFER.union(Rights::INSPECT);
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let values = {
         let reservation = crate::require_ok(table.reserve::<2>());
         reservation.publish(
@@ -1191,7 +1197,7 @@ fn lifecycle_consumption_requires_operation_right_not_transfer() {
     let target = object(35, &transitions);
     let other = object(36, &transitions);
     let rights = Rights::START.union(Rights::INSPECT);
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let reservation = crate::require_ok(table.reserve::<1>());
     let value = reservation.publish(&mut table, [prepared(target.clone(), rights)])[0];
 
@@ -1239,7 +1245,7 @@ fn lifecycle_consumption_requires_operation_right_not_transfer() {
 #[test]
 fn consecutive_batch_publication_preserves_startup_handle_order() {
     let transitions = Arc::new(AtomicUsize::new(0));
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let first = crate::require_ok(table.reserve_batch(2));
     let first_values = first.values().to_vec();
     let second = crate::require_ok(table.reserve_batch(1));
@@ -1281,7 +1287,7 @@ fn transfer_commit_moves_active_owners_and_advances_source_generations() {
     let first_object = object(41, &transitions);
     let second_object = object(42, &transitions);
     let rights = Rights::TRANSFER.union(Rights::WAIT).union(Rights::INSPECT);
-    let mut source_table = HandleTable::new();
+    let mut source_table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let source_values = {
         let reservation = crate::require_ok(source_table.reserve::<2>());
         reservation.publish(
@@ -1317,6 +1323,7 @@ fn transfer_commit_moves_active_owners_and_advances_source_generations() {
         None,
         HandleTransferRoute::Buffered,
     ));
+    assert_eq!(claim.values().collect::<Vec<_>>(), source_values);
     let batch = claim.commit(&mut source_table);
     assert_eq!(batch.len(), 2);
     assert_eq!(
@@ -1334,11 +1341,28 @@ fn transfer_commit_moves_active_owners_and_advances_source_generations() {
     let second = crate::require_some(handles.next());
     assert!(handles.next().is_none());
 
-    let mut destination_table = HandleTable::new();
+    let mut destination_table = HandleTable::new(0x2d34_b21a_819f_0c52);
     let destination_values = {
         let reservation = crate::require_ok(destination_table.reserve::<2>());
         reservation.publish(&mut destination_table, [first, second])
     };
+    assert_ne!(source_values, destination_values);
+    let page = crate::require_ok(destination_table.scan_handles(HandleScanCursor::from_token(0)));
+    for value in destination_values {
+        let observed = crate::require_some(page.entries().find(|entry| entry.value == value));
+        assert_eq!(
+            handle_wire::to_abi(observed.value),
+            handle_wire::to_abi(value)
+        );
+        assert_eq!(
+            crate::require_ok(destination_table.get_info(value)),
+            observed.info
+        );
+        assert_eq!(
+            source_table.get_info(value),
+            Err(HandleError::InvalidHandle)
+        );
+    }
     assert_eq!(
         crate::require_ok(destination_table.get_info(destination_values[0])).rights,
         Rights::WAIT
@@ -1359,7 +1383,7 @@ fn transfer_validation_is_all_or_nothing() {
     let transferable = object(51, &transitions);
     let immovable = object(52, &transitions);
     let rights = Rights::TRANSFER.union(Rights::INSPECT);
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let values = {
         let reservation = crate::require_ok(table.reserve::<2>());
         reservation.publish(
@@ -1545,7 +1569,7 @@ fn copy_transfer_requires_both_propagation_rights_and_attenuates_them() {
         .union(Rights::TRANSFER)
         .union(Rights::WAIT)
         .union(Rights::INSPECT);
-    let mut source_table = HandleTable::new();
+    let mut source_table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let values = {
         let reservation = crate::require_ok(source_table.reserve::<3>());
         reservation.publish(
@@ -1628,7 +1652,7 @@ fn copy_transfer_requires_both_propagation_rights_and_attenuates_them() {
         source_rights
     );
 
-    let mut destination_table = HandleTable::new();
+    let mut destination_table = HandleTable::new(0x2d34_b21a_819f_0c52);
     let destination = crate::require_ok(destination_table.reserve_batch(1));
     let transfer = DirectHandleTransfer::new(1, 2, claim, destination);
     assert_eq!(
@@ -1661,7 +1685,7 @@ fn direct_move_commit_supports_one_table_without_aliasing_references() {
     let transitions = Arc::new(AtomicUsize::new(0));
     let source_object = object(62, &transitions);
     let rights = Rights::TRANSFER.union(Rights::INSPECT);
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let source_value = {
         let reservation = crate::require_ok(table.reserve::<1>());
         reservation.publish(&mut table, [prepared(source_object.clone(), rights)])[0]
@@ -1702,7 +1726,7 @@ fn direct_move_commit_supports_one_table_without_aliasing_references() {
 
 #[test]
 fn batch_reservation_trim_releases_only_the_unused_tail() {
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let mut reservation = crate::require_ok(table.reserve_batch(3));
     let original = reservation.values().to_vec();
     reservation.trim_to(&mut table, 2);
@@ -1725,7 +1749,7 @@ fn direct_transfer_rollback_restores_moves_and_releases_copies_out_of_lock() {
     let rights = Rights::DUPLICATE
         .union(Rights::TRANSFER)
         .union(Rights::INSPECT);
-    let mut source_table = HandleTable::new();
+    let mut source_table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let values = {
         let reservation = crate::require_ok(source_table.reserve::<2>());
         reservation.publish(
@@ -1760,7 +1784,7 @@ fn direct_transfer_rollback_restores_moves_and_releases_copies_out_of_lock() {
         None,
         HandleTransferRoute::Rendezvous,
     ));
-    let mut destination_table = HandleTable::new();
+    let mut destination_table = HandleTable::new(0x2d34_b21a_819f_0c52);
     let destination = crate::require_ok(destination_table.reserve_batch(2));
     let transfer = DirectHandleTransfer::new(9, 3, claim, destination);
     assert_eq!(
@@ -1801,7 +1825,7 @@ fn buffered_routes_reject_graph_objects_but_rendezvous_accepts_them() {
     let rights = Rights::DUPLICATE
         .union(Rights::TRANSFER)
         .union(Rights::INSPECT);
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let value = {
         let reservation = crate::require_ok(table.reserve::<1>());
         reservation.publish(&mut table, [prepared(object, rights)])[0]
@@ -1879,9 +1903,9 @@ fn instance_rights_narrow_a_sum_type_without_cross_variant_authority() {
 }
 
 #[test]
-fn empty_page_recreation_never_revives_old_or_aborted_handles() {
+fn empty_page_recreation_advances_generations_of_closed_and_aborted_handles() {
     let transitions = Arc::new(AtomicUsize::new(0));
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let mut old_values = Vec::new();
     for _ in 0..100 {
         let reservation = crate::require_ok(table.reserve::<1>());
@@ -1912,7 +1936,7 @@ fn empty_page_recreation_never_revives_old_or_aborted_handles() {
 fn transfer_reservations_pin_pages_until_commit_but_not_until_message_delivery() {
     let transitions = Arc::new(AtomicUsize::new(0));
     let object = object(91, &transitions);
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let [value] = crate::require_ok(table.reserve::<1>()).publish(
         &mut table,
         [prepared(
@@ -1952,9 +1976,67 @@ fn transfer_reservations_pin_pages_until_commit_but_not_until_message_delivery()
 }
 
 #[test]
+fn transfer_at_generation_wrap_keeps_ownership_and_reuses_source_slot() {
+    let transitions = Arc::new(AtomicUsize::new(0));
+    let original = object(95, &transitions);
+    let mut table = HandleTable::new(7);
+    let [first] = crate::require_ok(table.reserve::<1>()).publish(
+        &mut table,
+        [prepared(
+            original.clone(),
+            Rights::TRANSFER.union(Rights::INSPECT),
+        )],
+    );
+    let value =
+        table.set_occupied_generation_for_test(first, HandleTable::maximum_generation_for_test());
+    let requests = [HandleTransferRequest {
+        value,
+        offered_rights: None,
+        rights: Rights::INSPECT,
+        offered_kind: None,
+        expected_kind: None,
+        operation: HandleTransferOperation::Move,
+    }];
+    let claim = crate::require_ok(table.prepare_transfer(
+        &requests,
+        None,
+        None,
+        HandleTransferRoute::Buffered,
+    ));
+    assert!(matches!(table.remove(value), Err(HandleError::Busy)));
+    assert!(table.take_empty_page().is_none());
+    claim.rollback(&mut table);
+    assert_eq!(
+        crate::require_ok(table.get_info(value)).koid,
+        original.koid()
+    );
+    let claim = crate::require_ok(table.prepare_transfer(
+        &requests,
+        None,
+        None,
+        HandleTransferRoute::Buffered,
+    ));
+    let moved = claim.commit(&mut table);
+    let replacement = object(96, &transitions);
+    let [new_value] = crate::require_ok(table.reserve::<1>())
+        .publish(&mut table, [prepared(replacement.clone(), Rights::INSPECT)]);
+    assert_eq!(new_value, first);
+    assert_eq!(
+        crate::require_ok(table.get_info(new_value)).koid,
+        replacement.koid()
+    );
+    assert_eq!(original.active_handle_count(), 1);
+    moved.release();
+    assert_eq!(original.active_handle_count(), 0);
+    assert_eq!(replacement.active_handle_count(), 1);
+    remove_all(&mut table);
+    assert_eq!(transitions.load(Ordering::Relaxed), 2);
+}
+
+#[test]
 fn sparse_reclamation_preserves_other_pages_and_teardown_indices() {
     let transitions = Arc::new(AtomicUsize::new(0));
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let mut values = Vec::new();
     for _ in 0..256 {
         let [value] = crate::require_ok(table.reserve::<1>()).publish(
@@ -1982,7 +2064,7 @@ fn sparse_reclamation_preserves_other_pages_and_teardown_indices() {
 
 #[test]
 fn reclamation_invalidates_a_prepared_storage_snapshot_even_after_slot_count_aba() {
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let reservation = crate::require_ok(table.reserve::<1>());
     reservation.abort(&mut table);
     let snapshot = crate::require_ok(table.reservation_storage_snapshot_for(1));
@@ -1999,10 +2081,10 @@ fn reclamation_invalidates_a_prepared_storage_snapshot_even_after_slot_count_aba
 }
 
 #[test]
-fn generation_exhausted_pages_are_released_but_their_identities_are_not_reused() {
+fn generation_wrap_preserves_reclaimed_page_capacity() {
     let transitions = Arc::new(AtomicUsize::new(0));
     let original = object(93, &transitions);
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let [value] = crate::require_ok(table.reserve::<1>())
         .publish(&mut table, [prepared(original, Rights::INSPECT)]);
     let exhausted =
@@ -2015,16 +2097,23 @@ fn generation_exhausted_pages_are_released_but_their_identities_are_not_reused()
         &mut table,
         [prepared(object(94, &transitions), Rights::INSPECT)],
     );
+    // This is intentional numeric reuse after a complete generation cycle.
+    assert_eq!(replacement, value);
     assert_eq!(table.get_info(exhausted), Err(HandleError::InvalidHandle));
     crate::require_ok(table.remove(replacement)).complete();
-    assert_ne!(crate::require_some(table.take_empty_page()).index(), 0);
+    assert_eq!(crate::require_some(table.take_empty_page()).index(), 0);
+    let reservation = crate::require_ok(table.reserve::<1>());
+    // Reconstructed pages advance again instead of staying stuck at the wrap.
+    assert_ne!(reservation.values()[0], replacement);
+    reservation.abort(&mut table);
+    assert_eq!(crate::require_some(table.take_empty_page()).index(), 0);
     remove_all(&mut table);
 }
 
 #[test]
 fn sparse_directory_growth_reuses_holes_without_changing_live_handles() {
     let transitions = Arc::new(AtomicUsize::new(0));
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let mut values = Vec::new();
     // Cross several geometric directory chunks, not just several slot pages.
     for value in 0..2048 {
@@ -2072,7 +2161,7 @@ fn every_physical_claim_preparation_failure_aborts_its_real_handle_reservation()
         PublicationAllocation,
         PreparedHandleAllocation,
     }
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     crate::require_ok(table.reserve::<1>()).abort(&mut table);
     let baseline_growth = crate::require_ok(table.reservation_growth_for(8));
     for failure in [
@@ -2115,7 +2204,7 @@ fn every_physical_claim_preparation_failure_aborts_its_real_handle_reservation()
 fn diagnostic_pin_does_not_preserve_active_handle_authority() {
     let transitions = Arc::new(AtomicUsize::new(0));
     let object = object(12, &transitions);
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let reservation = crate::require_ok(table.reserve::<1>());
     let value = reservation.values()[0];
     reservation.publish(&mut table, [prepared(object.clone(), Rights::INSPECT)]);
@@ -2136,7 +2225,7 @@ fn diagnostic_pin_does_not_preserve_active_handle_authority() {
 #[test]
 fn stopping_withdraws_unclaimed_owners_without_stranding_inflight_transactions() {
     let transitions = Arc::new(AtomicUsize::new(0));
-    let mut table = HandleTable::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
     let mut cursor = 0;
     let rights = Rights::TRANSFER.union(Rights::INSPECT);
     let values = crate::require_ok(table.reserve::<2>()).publish(

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-//! Identity reuse, exhaustion, and the final object-destruction boundary.
+//! Identity reuse, generation wrap, and the final object-destruction boundary.
 
 extern crate alloc;
 
@@ -35,7 +35,7 @@ fn slot(koid: u64) -> u32 {
 }
 
 #[test]
-fn koid_slots_recycle_without_repeating_full_identities() {
+fn koid_slots_recycle_with_advancing_generations() {
     let allocator = allocator::KoidAllocator::new();
     let mut observed = BTreeSet::new();
     for _ in 0..10_000 {
@@ -65,6 +65,8 @@ fn koid_rollback_and_exhaustion_preserve_available_slots() {
 
     recycled.exhaust_generation_for_test();
     drop(recycled);
+    let wrapped = crate::require_ok(allocator.reserve());
+    assert_eq!(wrapped.koid(), previous);
     assert!(matches!(
         allocator.reserve(),
         Err(ObjectCreationError::KoidExhausted)
@@ -72,22 +74,28 @@ fn koid_rollback_and_exhaustion_preserve_available_slots() {
 }
 
 #[test]
-fn koid_generation_exhaustion_retires_only_the_exhausted_slot() {
+fn koid_generation_wrap_returns_the_slot_without_disturbing_live_identities() {
     let allocator = allocator::KoidAllocator::new();
     let mut exhausted = crate::require_ok(allocator.reserve());
+    let first = exhausted.koid();
     let available = crate::require_ok(allocator.reserve());
     let reusable_slot = slot(available.koid().get());
+    let live = crate::require_ok(allocator.reserve());
+    let live_koid = live.koid();
     exhausted.exhaust_generation_for_test();
     drop(available);
     drop(exhausted);
     let reused = crate::require_ok(allocator.reserve());
-    assert_eq!(slot(reused.koid().get()), reusable_slot);
-    let fresh = crate::require_ok(allocator.reserve());
-    assert_eq!(slot(fresh.koid().get()), 3);
+    assert_eq!(reused.koid(), first);
+    let other = crate::require_ok(allocator.reserve());
+    assert_eq!(slot(other.koid().get()), reusable_slot);
+    assert_eq!(live.koid(), live_koid);
+    assert_ne!(reused.koid(), live_koid);
+    assert_ne!(other.koid(), live_koid);
 }
 
 #[test]
-fn concurrent_koid_reservations_never_share_slots_or_repeat_identities() {
+fn concurrent_koid_reservations_never_share_live_slots() {
     let allocator = allocator::KoidAllocator::new();
     let live = Mutex::new(BTreeSet::new());
     let identities = std::thread::scope(|scope| {
@@ -118,6 +126,34 @@ fn concurrent_koid_reservations_never_share_slots_or_repeat_identities() {
 }
 
 struct Probe;
+
+#[test]
+fn concurrent_koid_wrap_never_reuses_a_live_slot() {
+    let allocator = allocator::KoidAllocator::new();
+    let live = Mutex::new(BTreeSet::new());
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                scope.spawn(|| {
+                    for _ in 0..1_000 {
+                        let mut reservation = crate::require_ok(allocator.reserve());
+                        let koid = reservation.koid().get();
+                        assert_eq!(koid >> 32, 1);
+                        assert!(crate::require_ok(live.lock()).insert(slot(koid)));
+                        reservation.exhaust_generation_for_test();
+                        std::thread::yield_now();
+                        assert!(crate::require_ok(live.lock()).remove(&slot(koid)));
+                        drop(reservation);
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            crate::require_ok(worker.join());
+        }
+    });
+    assert!(crate::require_ok(live.lock()).is_empty());
+}
 
 impl kernel::object::private::Sealed for Probe {}
 

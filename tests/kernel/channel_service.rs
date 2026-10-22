@@ -3,6 +3,8 @@
 
 //! Process-facing `ByteChannel` transactions through real native mappings.
 
+use crate::kernel::capability::handle_wire;
+
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -431,7 +433,7 @@ fn verify_cross_process_capability_transfer(
     let mut received_record = [0; CAPABILITY_RECORD_BYTES];
     destination.copy_from_user(destination_record, &mut received_record)?;
     let received =
-        HandleValue::try_from_raw(read_u64(&received_record, 0)?).map_err(|_| Error::State(28))?;
+        handle_wire::from_abi(read_u64(&received_record, 0)?).map_err(|_| Error::State(28))?;
     let info = destination.handle_info(received, transferred_rights)?;
     if info.kind.get() != hyper::abi::native::HYPER_NATIVE_OBJECT_EVENT
         || info.rights != transferred_rights
@@ -439,6 +441,40 @@ fn verify_cross_process_capability_transfer(
         return Err(Error::State(29));
     }
 
+    // The inspector belongs to the source process, but enumerates and resolves
+    // the destination's exact received wire value, never the observer's codec.
+    let inspector_handle = source.create_object(
+        crate::kernel::inspect::ObjectInspector::try_system(domain)
+            .map_err(|_| Error::Construction)?,
+        Rights::INSPECT.union(Rights::INSPECT_DETAILS),
+    )?;
+    let inspector = source.resolve_handle::<crate::kernel::inspect::ObjectInspector>(
+        inspector_handle,
+        Rights::INSPECT.union(Rights::INSPECT_DETAILS),
+    )?;
+    let observation = inspector
+        .object()
+        .scan_process_handles(destination.koid().get(), 0)
+        .map_err(|_| Error::State(100))?;
+    let observed = observation
+        .entries()
+        .find(|entry| entry.handle.value == received)
+        .ok_or(Error::State(101))?;
+    if observed.process_koid != destination.koid()
+        || handle_wire::to_abi(observed.handle.value) != read_u64(&received_record, 0)?
+        || observed.handle.info != destination.handle_info(received, Rights::NONE)?
+    {
+        return Err(Error::State(102));
+    }
+    let details = inspector
+        .object()
+        .read_details(destination.koid().get(), handle_wire::to_abi(receiver), 0)
+        .map_err(|_| Error::State(103))?;
+    if details.koid != destination.handle_info(receiver, Rights::NONE)?.koid {
+        return Err(Error::State(104));
+    }
+    source.close_handle(inspector_handle)?;
+    drop(inspector);
     source.close_handle(sender)?;
     destination.close_handle(receiver)?;
     destination.close_handle(received)?;
@@ -481,7 +517,7 @@ extern "C" fn capability_receive_worker(context: usize) {
 
 fn send_disposition(value: HandleValue, rights: Rights) -> [u8; CAPABILITY_RECORD_BYTES] {
     let mut record = [0; CAPABILITY_RECORD_BYTES];
-    record[0..8].copy_from_slice(&value.get().to_ne_bytes());
+    record[0..8].copy_from_slice(&handle_wire::to_abi(value).to_ne_bytes());
     record[8..16].copy_from_slice(&rights.bits().to_ne_bytes());
     record[16..20].copy_from_slice(&hyper::abi::native::HYPER_NATIVE_OBJECT_EVENT.to_ne_bytes());
     record[20..24].copy_from_slice(

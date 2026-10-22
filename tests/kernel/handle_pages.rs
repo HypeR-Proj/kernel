@@ -6,8 +6,8 @@
 use crate::kernel::capability::{HandleSidecar, HandleTable, HandleTableStoragePlan};
 
 pub(super) fn run() -> Result<(), &'static str> {
-    let mut table = HandleTable::new();
-    let mut sidecar = HandleSidecar::<u64>::new();
+    let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
+    let mut sidecar = table.new_sidecar::<u64>();
     let snapshot = table
         .reservation_storage_snapshot_for(64)
         .map_err(|_| "snapshot")?;
@@ -19,6 +19,14 @@ pub(super) fn run() -> Result<(), &'static str> {
     sidecar.install(&mut index_plan);
     if table.take_empty_page().is_some() {
         return Err("reservation did not pin page");
+    }
+    for (index, value) in reservation.values().into_iter().enumerate() {
+        if sidecar.replace(value, Some(index as u64)).is_some()
+            || sidecar.get(value) != Some(&(index as u64))
+            || sidecar.replace(value, None) != Some(index as u64)
+        {
+            return Err("masked handle accounting index mismatch");
+        }
     }
     reservation.abort(&mut table);
     let mut count = 0;

@@ -3,7 +3,7 @@
 
 use super::services::ProcessServices;
 use crate::kernel::abi::native::{InspectServices, IpcServices};
-use crate::kernel::capability::{HandleError, Rights};
+use crate::kernel::capability::{HandleError, Rights, handle_wire};
 use crate::kernel::inspect::{Error, ObjectInspector};
 use crate::kernel::object::diagnostics::DetailRecord;
 use crate::kernel::process::{Process, ProcessError, UserThread};
@@ -46,7 +46,10 @@ pub(crate) fn verify_object_details_for_test(
         let right = process
             .handle_info(pair[1], Rights::NONE)
             .map_err(|_| "right metadata")?;
-        for (owner, target) in [(0, left.koid.get()), (process.koid().get(), pair[0].get())] {
+        for (owner, target) in [
+            (0, left.koid.get()),
+            (process.koid().get(), handle_wire::to_abi(pair[0])),
+        ] {
             if !matches!(
                 services.read_object_details(&basic_receiver, owner, target, 0),
                 Err(Error::Process(ProcessError::Handle(
@@ -76,7 +79,7 @@ pub(crate) fn verify_object_details_for_test(
             services.read_object_details(
                 &detailed_receiver,
                 process.koid().get(),
-                pair[1].get(),
+                handle_wire::to_abi(pair[1]),
                 0
             ),
             Err(Error::NotFound)

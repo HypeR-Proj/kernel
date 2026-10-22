@@ -127,7 +127,7 @@ fn check(table: &HandleTable, model: &Model) {
     let mut observed = Vec::new();
     while let Some(position) = cursor {
         let page = crate::require_ok(table.scan_handles(position));
-        observed.extend(page.entries().map(|entry| entry.value.get()));
+        observed.extend(page.entries().map(|entry| entry.value));
         let next = page.next();
         if let Some(next) = next {
             assert!(
@@ -138,15 +138,24 @@ fn check(table: &HandleTable, model: &Model) {
         assert!(observed.len() <= model.live.len());
         cursor = next;
     }
-    let mut expected: Vec<_> = model.live.iter().map(|entry| entry.handle.get()).collect();
-    observed.sort_unstable();
-    expected.sort_unstable();
-    assert_eq!(observed, expected);
+    let expected: Vec<_> = model.live.iter().map(|entry| entry.handle).collect();
+    assert_eq!(observed.len(), expected.len());
+    assert_eq!(
+        observed
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>(),
+        expected
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>()
+    );
 }
 
 fn run(seed: u64, steps: usize) {
     let mut random = Random(seed);
-    let mut tables = [HandleTable::new(), HandleTable::new()];
+    let mut tables = [
+        HandleTable::new(seed),
+        HandleTable::new(seed.rotate_left(17)),
+    ];
     let mut models = [Model::default(), Model::default()];
     let mut objects = Vec::new();
     let transitions = Arc::new(AtomicUsize::new(0));
