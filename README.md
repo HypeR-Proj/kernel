@@ -51,13 +51,13 @@ Cargo manifest rather than duplicated in Make.
 Kernel functionality is selected with `KERNEL_FEATURES`; architecture and numeric
 limits remain in Kconfig. Test instrumentation requires the independent,
 default-off `kernel-test` feature together with a specific test selector. See
-the [configuration contract](docs/configuration.md) for exact defaults, disabled
+the [configuration contract](docs/usage/configuration.md) for exact defaults, disabled
 behavior, and test-image safeguards.
 
 `make test-smmuv3 ARCH=aarch64` builds the dedicated PCI DMA isolation fixture
 and runs it against QEMU's standard SMMUv3 model. See the
-[driver and acceptance contract](docs/smmuv3.md) for coverage, ownership,
+[driver and acceptance contract](docs/design/smmuv3.md) for coverage, ownership,
 emulator limitations and the boundary with the current I/O VM deployment.
 
-The [general-purpose PRNG](docs/random.md) supplies kernel random values and
+The [general-purpose PRNG](docs/design/random.md) supplies kernel random values and
 KASLR selection without a cryptographic dependency or periodic IRQ work.
