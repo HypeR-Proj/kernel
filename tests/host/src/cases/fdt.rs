@@ -25,6 +25,32 @@ const FDT_PROP: u32 = 3;
 const FDT_END: u32 = 9;
 const HEADER_SIZE: usize = 40;
 
+#[test]
+fn command_line_removes_only_recognized_names() {
+    let line = crate::require_ok(chosen::CommandLine::parse(
+        "\tflag=one earlycon=pl011,0x9000000\nnokaslr flag=two hyper.boot-profile=alternate earlycon-extra=x value=a=b unicode=λ  ",
+    ));
+    assert_eq!(
+        line.without_arguments(&["earlycon", "nokaslr"]).as_str(),
+        "flag=one flag=two hyper.boot-profile=alternate earlycon-extra=x value=a=b unicode=λ"
+    );
+    let only_kernel = crate::require_ok(chosen::CommandLine::parse(
+        "earlycon=off earlycon nokaslr nokaslr=1",
+    ));
+    assert_eq!(
+        only_kernel
+            .without_arguments(&["earlycon", "nokaslr"])
+            .as_str(),
+        ""
+    );
+    let maximum = "x".repeat(chosen::MAX_COMMAND_LINE_SIZE);
+    let line = crate::require_ok(chosen::CommandLine::parse(&maximum));
+    assert_eq!(
+        line.without_arguments(&["earlycon", "nokaslr"]).as_str(),
+        maximum
+    );
+}
+
 fn push_u32(output: &mut Vec<u8>, value: u32) {
     output.extend_from_slice(&value.to_be_bytes());
 }
