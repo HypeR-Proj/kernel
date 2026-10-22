@@ -1,37 +1,18 @@
 # SPDX-FileCopyrightText: 2026 roolrz
 # SPDX-License-Identifier: Apache-2.0
 
-ARCH ?= aarch64
+include mk/platform.mk
+TARGET := $(KERNEL_TARGET)
+DEFCONFIG := configs/qemu_$(ARCH)_defconfig
 ifeq ($(ARCH),aarch64)
-TARGET := aarch64-unknown-none-softfloat
-QEMU ?= qemu-system-aarch64
-QEMU_CPU ?= max
-QEMU_MACHINE := virt,virtualization=on,gic-version=3,dtb-randomness=on
-DEFCONFIG := configs/qemu_aarch64_defconfig
-QEMU_BOOTARGS ?= earlycon=pl011,mmio32,0x09000000
 QEMU_TEST_SCRIPT := tests/qemu/verify-smp.sh
 else ifeq ($(ARCH),riscv64)
-TARGET := riscv64imac-unknown-none-elf
-QEMU ?= qemu-system-riscv64
-QEMU_CPU ?= rv64
-QEMU_MACHINE := virt
-DEFCONFIG := configs/qemu_riscv64_defconfig
-QEMU_BOOTARGS ?= earlycon=uart8250,mmio,0x10000000
 QEMU_TEST_SCRIPT := tests/qemu/verify-riscv64.sh
 else ifeq ($(ARCH),x86_64)
-TARGET := x86_64-unknown-none
-QEMU ?= qemu-system-x86_64
-QEMU_CPU ?= max
-QEMU_MACHINE := q35,accel=tcg
 QEMU_DTB_ARG = -dtb $(X86_HOST_DTB)
 QEMU_RUN_PREREQUISITES = $(X86_HOST_DTB)
-DEFCONFIG := configs/qemu_x86_64_defconfig
-QEMU_BOOTARGS ?= earlycon=uart8250,io,0x3f8
 QEMU_TEST_SCRIPT := tests/qemu/verify-x86_64.sh
-else
-$(error unsupported ARCH '$(ARCH)')
 endif
-KERNEL_PROFILE := kernel
 CARGO_PROFILE := --profile $(KERNEL_PROFILE)
 CARGO ?= cargo
 export HYPER_BUILD_GIT_STATE := $(shell python3 -B tools/build-version.py --state)
@@ -40,8 +21,6 @@ CONFIG_PATH := $(abspath $(CONFIG_FILE))
 KERNEL_CONFIG_ENV := HYPER_CONFIG=$(CONFIG_PATH)
 KERNEL_BUILD_ROOT ?= $(or $(CARGO_TARGET_DIR),target)
 CARGO_KERNEL = CARGO_TARGET_DIR="$(abspath $(KERNEL_BUILD_ROOT))" $(KERNEL_CONFIG_ENV) $(CARGO) build --target $(TARGET) $(CARGO_PROFILE) $(KERNEL_CARGO_FEATURES)
-QEMU_CPUS ?= 4
-QEMU_MEMORY ?= 1G
 INITRAMFS ?=
 HOST_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 RUST_HOST := $(shell rustc -vV | sed -n 's/^host: //p')
@@ -55,10 +34,8 @@ DTC ?= dtc
 CARGO_FEATURES ?=
 # Production functionality has one explicit selection. Test selectors are
 # additional flags and must explicitly include the independent kernel-test gate.
-ifeq ($(ARCH),aarch64)
-KERNEL_FEATURES ?= rtc runtime-symbols crash-console
-else
-KERNEL_FEATURES ?= rtc runtime-symbols
+ifeq ($(origin KERNEL_FEATURES),undefined)
+KERNEL_FEATURES := $(shell python3 -B tools/kernel-features.py --defaults $(ARCH) || printf '__INVALID_KERNEL_FEATURES__')
 endif
 KERNEL_CARGO_FEATURES = --no-default-features $(if $(strip $(KERNEL_FEATURES)),--features "$(KERNEL_FEATURES)") $(CARGO_FEATURES)
 # Evaluate in the recipe's target context: test targets add feature arguments
@@ -107,7 +84,9 @@ GUEST_FETCH := tools/guest/fetch-alpine-x86_64.sh
 GUEST_ASSET_STAMP := $(GUEST_OUTPUT)/.alpine-3.23.5.stamp
 endif
 
-.PHONY: all prepare-config config defconfig olddefconfig guest-assets clean-guest-assets build image release check test doc test-image test-qemu test-vhe-required verify verify-runtime verify-image verify-boot verify-smp run clean
+.PHONY: all prepare-config config menuconfig defconfig olddefconfig \
+	guest-assets clean-guest-assets build image release check test doc \
+	test-image test-qemu test-vhe-required run clean
 
 all: image
 
@@ -118,17 +97,19 @@ prepare-config:
 		$(CARGO) run --quiet --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET) -- defconfig $(DEFCONFIG) "$(CONFIG_FILE)"; \
 	fi
 
-.config: Kconfig $(DEFCONFIG) $(KCONFIG_MANIFEST) tools/kconfig/src/lib.rs tools/kconfig/src/main.rs
-	$(CARGO) run --quiet --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET) -- defconfig $(DEFCONFIG) .config
-
 defconfig:
 	$(CARGO) run --quiet --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET) -- defconfig $(DEFCONFIG) "$(CONFIG_FILE)"
 
 olddefconfig:
 	$(CARGO) run --quiet --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET) -- olddefconfig "$(CONFIG_FILE)" "$(CONFIG_FILE)"
 
-config:
+config: prepare-config
 	$(CARGO) run --quiet --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET) -- config "$(CONFIG_FILE)" "$(CONFIG_FILE)"
+
+# Unlike prepare-config, merely opening the menu must not create or reset the
+# destination. An absent input starts from this architecture's defconfig.
+menuconfig:
+	$(CARGO) run --quiet --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET) -- menuconfig "$(CONFIG_FILE)" "$(CONFIG_FILE)" "$(DEFCONFIG)"
 
 $(GUEST_ASSET_STAMP): $(GUEST_FETCH) tools/guest/init tools/guest/prepare-rootfs.py
 	sh $(GUEST_FETCH)
@@ -161,7 +142,7 @@ build: prepare-config
 		rm -f $(KALLSYMS_BLOB); \
 	fi
 
-image: build
+image: build $(QEMU_RUN_PREREQUISITES)
 	$(if $(filter x86_64,$(ARCH)),$(OBJCOPY) --output-target=binary $(KERNEL_ELF) $(X86_PAYLOAD_IMAGE),$(OBJCOPY) --output-target=binary $(KERNEL_ELF) $(KERNEL_IMAGE).tmp)
 	$(if $(filter x86_64,$(ARCH)),$(CLANG) -target i386-none-elf -c hal/src/arch/x86_64/setup.S -o $(X86_SETUP_OBJECT),true)
 	$(if $(filter x86_64,$(ARCH)),$(OBJCOPY) --only-section=.setup --output-target=binary $(X86_SETUP_OBJECT) $(X86_SETUP_IMAGE),true)
@@ -197,25 +178,6 @@ test: prepare-config
 	$(CARGO) test --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET)
 	$(CARGO) test --manifest-path $(KALLSYMS_MANIFEST) --target $(HOST_TARGET)
 
-verify: check test
-	$(CARGO) fmt -- --check
-	$(CARGO) fmt --manifest-path $(HOST_TEST_MANIFEST) -- --check
-	$(CARGO) fmt --manifest-path $(CONCURRENCY_TEST_MANIFEST) -- --check
-	$(CARGO) fmt --manifest-path $(KCONFIG_MANIFEST) -- --check
-	$(CARGO) fmt --manifest-path $(KALLSYMS_MANIFEST) -- --check
-	$(MAKE) verify-runtime ARCH=$(ARCH)
-	$(MAKE) release
-	$(MAKE) test-image ARCH=$(ARCH)
-
-verify-runtime:
-ifeq ($(ARCH),aarch64)
-	$(MAKE) test-qemu ARCH=aarch64 QEMU_CPU=max
-else ifeq ($(ARCH),riscv64)
-	$(MAKE) test-qemu ARCH=riscv64
-else
-	@echo "$(ARCH) has no runtime acceptance contract"
-endif
-
 test-image:
 	KERNEL_SELF_TEST_IMAGE=$(KERNEL_SELF_TEST_IMAGE) \
 	KERNEL_RUNTIME_SYMBOLS=$(KERNEL_RUNTIME_SYMBOLS) \
@@ -247,12 +209,6 @@ else
 test-vhe-required:
 	@echo "test-vhe-required requires ARCH=aarch64" >&2; exit 2
 endif
-
-# Compatibility targets build the image before running the corresponding test.
-verify-image: image
-	$(MAKE) test-image
-
-verify-boot verify-smp: test-qemu
 
 run:
 	@test -f "$(KERNEL_IMAGE)" || { echo "Missing kernel image; run make first" >&2; exit 2; }

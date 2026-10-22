@@ -5,17 +5,20 @@ mainmenu "HypeR Kernel Configuration"
 
 menu "Architecture"
 
+choice ARCH
+    prompt "Target architecture"
+    default ARCH_AARCH64
+
 config ARCH_AARCH64
     bool "AArch64 architecture"
-    default y
 
 config ARCH_RISCV64
     bool "RISC-V 64-bit architecture"
-    default n
 
 config ARCH_X86_64
     bool "x86-64 architecture"
-    default n
+
+endchoice
 
 config ARM64_VA_BITS
     int "AArch64 host virtual-address width"
@@ -28,6 +31,9 @@ config ARM64_PA_BITS
     range 32 48
     default 48
     depends on ARCH_AARCH64
+    help
+        Supported physical-address widths are 32, 36, 40, 42, 44 and 48 bits.
+        Other integers in the displayed range are rejected by validation.
 
 config ARM64_IPA_BITS
     int "AArch64 guest intermediate-physical-address width"
@@ -35,54 +41,73 @@ config ARM64_IPA_BITS
     default 39
     depends on ARCH_AARCH64
 
-config ARM64_MAX_GIC_REDISTRIBUTOR_REGIONS
-    int "Maximum GICv3 Redistributor regions"
-    range 1 64
-    default 16
-    depends on ARCH_AARCH64
-
-endmenu
-
-menu "Kernel"
-
 config RANDOMIZE_BASE
     bool "Randomize the kernel virtual address"
     default y
+    depends on ARCH_AARCH64
+    help
+        Randomize the kernel virtual address at boot. Currently implemented
+        only on AArch64; RISC-V and x86-64 use fixed kernel virtual addresses
+        and cannot enable this option.
+
+endmenu
+
+menu "CPU and scheduler capacity"
 
 config MAX_CPUS
     int "Maximum supported CPU count"
     range 1 256
     default 8
 
-config MAX_KERNEL_STACKS
-    int "Maximum simultaneously allocated kernel stacks"
+config SCHED_MAX_THREADS
+    int "Scheduler thread capacity (including kernel workers and vCPUs)"
     range 64 16384
     default 1024
+    help
+        Number of entries reserved in the scheduler's stable thread table
+        and allocation-free retirement queue. Includes bootstrap, idle,
+        kernel worker, Native and vCPU threads. Stack pages are allocated
+        on demand; per-CPU IRQ and emergency stacks have separate slots.
 
-config KERNEL_STACK_SIZE_KB
-    int "Kernel thread stack size in KiB"
-    range 16 256
-    default 32
-
-config IRQ_STACK_SIZE_KB
-    int "Per-CPU IRQ stack size in KiB"
-    range 16 128
-    default 32
-
-config EMERGENCY_STACK_SIZE_KB
-    int "Per-CPU emergency stack size in KiB"
-    range 16 128
-    default 32
+config SCHED_FAIR_QUANTUM_MS
+    int "Initial fair scheduler quantum in milliseconds"
+    range 1 1000
+    default 10
 
 config TIMER_HZ
     int "Kernel timer frequency"
     range 10 10000
     default 100
 
-config SCHED_FAIR_QUANTUM_MS
-    int "Initial fair scheduler quantum in milliseconds"
-    range 1 1000
-    default 10
+endmenu
+
+menu "Stack sizes"
+
+config KERNEL_STACK_SIZE_KB
+    int "Kernel thread stack size in KiB"
+    range 16 256
+    default 32
+    help
+        Select a power of two: 16, 32, 64, 128 or 256 KiB. Physical pages
+        are allocated per live Thread, not for every scheduler slot.
+
+config IRQ_STACK_SIZE_KB
+    int "Per-CPU IRQ stack size in KiB"
+    range 16 128
+    default 32
+    help
+        Select a power of two: 16, 32, 64 or 128 KiB per CPU.
+
+config EMERGENCY_STACK_SIZE_KB
+    int "Per-CPU emergency stack size in KiB"
+    range 16 128
+    default 32
+    help
+        Select a power of two: 16, 32, 64 or 128 KiB per CPU.
+
+endmenu
+
+menu "Kernel logging"
 
 config LOG_COMPILE_LEVEL
     int "Maximum kernel log severity compiled into the image"

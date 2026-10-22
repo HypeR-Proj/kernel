@@ -15,6 +15,12 @@ autolib = false
 [package.metadata.hyper]
 production-features = ["rtc", "runtime-symbols", "crash-console", "heap-profiling", "pmu-profiling"]
 
+# Defaults are defined by features.default below; Make filters capabilities
+# unavailable on its selected architecture without maintaining another list.
+[package.metadata.hyper.feature-architectures]
+crash-console = ["aarch64"]
+pmu-profiling = ["aarch64"]
+
 [workspace]
 members = ["core", "hal"]
 exclude = ["tests/host", "tests/concurrency", "tools/kallsyms", "tools/kconfig"]

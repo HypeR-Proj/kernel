@@ -86,15 +86,24 @@ fn export_kernel_configuration(
                 )
             },
         )?;
-    validate_architecture_configuration(&configuration, target)?;
+    kconfig::validate_kernel_configuration(&configuration, Some(target))?;
     export_log_compile_configuration(&configuration)?;
     let mut rust_source = String::from("// Generated kernel configuration. Do not edit.\n\n");
     for symbol in &schema.symbols {
         let rust_name = format!("CONFIG_{}", symbol.name);
+        if !kconfig::dependency_is_met(symbol, &configuration)
+            || (symbol.choice.is_some() && configuration.value(&symbol.name) != Some("y"))
+        {
+            match symbol.kind {
+                kconfig::ValueKind::Bool => println!("cargo:rustc-check-cfg=cfg({rust_name})"),
+                _ => println!("cargo:rustc-check-cfg=cfg({rust_name}, values())"),
+            }
+            continue;
+        }
         let value = configuration.value(&symbol.name).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("{rust_name} is missing from the resolved configuration"),
+                format!("{rust_name} has no resolved value"),
             )
         })?;
         println!("cargo:rustc-env={rust_name}={value}");
@@ -159,71 +168,6 @@ fn export_log_compile_configuration(
         if value <= maximum {
             println!("cargo:rustc-cfg={cfg}");
         }
-    }
-    Ok(())
-}
-
-fn validate_architecture_configuration(
-    configuration: &kconfig::Configuration,
-    target: &str,
-) -> Result<(), Box<dyn Error>> {
-    let aarch64 = configuration.value("ARCH_AARCH64") == Some("y");
-    let riscv64 = configuration.value("ARCH_RISCV64") == Some("y");
-    let x86_64 = configuration.value("ARCH_X86_64") == Some("y");
-    if usize::from(aarch64) + usize::from(riscv64) + usize::from(x86_64) != 1 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "exactly one architecture configuration must be enabled",
-        )
-        .into());
-    }
-    let matches_target = match target {
-        "aarch64-unknown-none-softfloat" => aarch64,
-        "riscv64imac-unknown-none-elf" => riscv64,
-        "x86_64-unknown-none" => x86_64,
-        _ => true,
-    };
-    if !matches_target {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("kernel architecture configuration does not match target {target}"),
-        )
-        .into());
-    }
-    if aarch64 {
-        validate_aarch64_address_configuration(configuration)?;
-    }
-    Ok(())
-}
-
-fn validate_aarch64_address_configuration(
-    configuration: &kconfig::Configuration,
-) -> Result<(), Box<dyn Error>> {
-    let parse = |name: &str| -> Result<u32, Box<dyn Error>> {
-        configuration
-            .value(name)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("CONFIG_{name} is missing"),
-                )
-            })?
-            .parse::<u32>()
-            .map_err(|error| format!("CONFIG_{name} is invalid: {error}").into())
-    };
-    let va_bits = parse("ARM64_VA_BITS")?;
-    let pa_bits = parse("ARM64_PA_BITS")?;
-    let ipa_bits = parse("ARM64_IPA_BITS")?;
-    if !(42..=48).contains(&va_bits) {
-        return Err(
-            "CONFIG_ARM64_VA_BITS must be in 42..=48 for the four-level 4 KiB layout".into(),
-        );
-    }
-    if !matches!(pa_bits, 32 | 36 | 40 | 42 | 44 | 48) {
-        return Err("CONFIG_ARM64_PA_BITS must be one of 32, 36, 40, 42, 44, or 48".into());
-    }
-    if !(32..=39).contains(&ipa_bits) {
-        return Err("CONFIG_ARM64_IPA_BITS must be in 32..=39 for the three-level root".into());
     }
     Ok(())
 }

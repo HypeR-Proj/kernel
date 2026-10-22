@@ -30,6 +30,7 @@ From this directory:
 
 ```sh
 make defconfig
+make menuconfig
 make image ARCH=aarch64
 make check ARCH=aarch64
 ```
@@ -37,9 +38,15 @@ make check ARCH=aarch64
 The kernel consumes the dependency-free Native ABI crate from `../sdk/abi`.
 It does not build the Native runtime or applications. Use the repository
 root Makefile for complete SDK, initramfs, and production boot composition.
+Its `make menuconfig` opens the product menu, with an entry into this kernel
+menu alongside separate stage1 and formal-system selections.
 
 Generated artifacts and configuration remain under this component's `target/`
 and `.config` paths whether commands begin here or at the repository root.
+
+Both Make entry points share target triples and QEMU defaults from
+`mk/platform.mk`. Production feature defaults are resolved from this workspace's
+Cargo manifest rather than duplicated in Make.
 
 Kernel functionality is selected with `KERNEL_FEATURES`; architecture and numeric
 limits remain in Kconfig. Test instrumentation requires the independent,

@@ -45,10 +45,28 @@ def resolve(arguments, features):
     return sorted(selected)
 
 
+def defaults(manifest, architecture):
+    """Derive Make defaults from Cargo's graph and capability availability."""
+    if architecture not in ('aarch64', 'riscv64', 'x86_64'):
+        raise ValueError(f'unsupported kernel architecture: {architecture}')
+    policy = manifest['package']['metadata']['hyper']
+    supported = policy.get('feature-architectures', {})
+    selected = set(resolve([], manifest['features'])) - {'default'}
+    if unknown := selected - set(policy['production-features']):
+        raise ValueError(f'kernel defaults contain non-production features: {sorted(unknown)}')
+    return sorted(name for name in selected
+                  if architecture in supported.get(name, [architecture]))
+
+
 def main():
     try:
-        features = tomllib.loads(MANIFEST.read_text())['features']
-        print(' '.join(resolve(sys.argv[1:], features)))
+        manifest = tomllib.loads(MANIFEST.read_text())
+        arguments = sys.argv[1:]
+        if arguments[:1] == ['--defaults'] and len(arguments) == 2:
+            selected = defaults(manifest, arguments[1])
+        else:
+            selected = resolve(arguments, manifest['features'])
+        print(' '.join(selected))
     except (OSError, ValueError) as error:
         sys.exit(f'kernel features: {error}')
 

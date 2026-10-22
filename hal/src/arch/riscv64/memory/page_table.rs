@@ -233,7 +233,7 @@ pub(super) unsafe fn build_final_address_space(
     // slot in the declared mutable stack arena now; later stack construction
     // changes only shared descendants, never a copied root entry.
     let arena_end = KERNEL_STACK_ARENA_BASE
-        .checked_add(hyper::config::MAX_KERNEL_STACKS as u64 * STACK_SLOT_PAGES as u64 * PAGE_SIZE)
+        .checked_add(hyper::config::KERNEL_STACK_SLOTS as u64 * STACK_SLOT_PAGES as u64 * PAGE_SIZE)
         .ok_or(Error::AddressOverflow)?;
     let mut address = KERNEL_STACK_ARENA_BASE;
     while address < arena_end {

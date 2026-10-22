@@ -5,6 +5,7 @@
 """Check Make feature decisions against Cargo argument and alias semantics."""
 
 import importlib.util
+import copy
 from pathlib import Path
 import shlex
 import subprocess
@@ -18,7 +19,8 @@ TOOL = KERNEL / 'tools/kernel-features.py'
 SPEC = importlib.util.spec_from_file_location('kernel_features', TOOL)
 FEATURES = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(FEATURES)
-GRAPH = tomllib.loads((KERNEL / 'Cargo.toml').read_text())['features']
+MANIFEST = tomllib.loads((KERNEL / 'Cargo.toml').read_text())
+GRAPH = MANIFEST['features']
 
 
 class FeatureTests(unittest.TestCase):
@@ -56,6 +58,22 @@ class FeatureTests(unittest.TestCase):
                          sorted(GRAPH))
         smmu = FEATURES.resolve(['--no-default-features', '-Fkernel-smmuv3-test'], GRAPH)
         self.assertEqual(smmu, ['kernel-self-test', 'kernel-smmuv3-test'])
+
+    def test_make_defaults_follow_cargo_and_architecture_availability(self):
+        fragment = '__defaults:\n\t@printf "%s\\n" "$(KERNEL_FEATURES)"\n'
+        for architecture in ('aarch64', 'riscv64', 'x86_64'):
+            result = self.make('__defaults', 'ARCH=' + architecture, fragment=fragment)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            expected = FEATURES.defaults(MANIFEST, architecture)
+            self.assertEqual(result.stdout.split(), expected)
+            self.assertEqual('crash-console' in expected, architecture == 'aarch64')
+        modified = copy.deepcopy(MANIFEST)
+        modified['features']['default'].append('heap-profiling')
+        for architecture in ('aarch64', 'riscv64', 'x86_64'):
+            self.assertIn('heap-profiling', FEATURES.defaults(modified, architecture))
+        modified['features']['default'].append('kernel-test')
+        with self.assertRaisesRegex(ValueError, 'non-production'):
+            FEATURES.defaults(modified, 'aarch64')
 
     def test_unknown_or_ambiguous_inputs_fail_explicitly(self):
         for flags in (['-Fmissing'], ['-Fhyper/runtime-symbols'], ['--release'], ['--help'], ['--features'],
