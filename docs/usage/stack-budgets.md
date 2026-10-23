@@ -49,6 +49,12 @@ scheduler admission. These frame checks supplement runtime acceptance; they do
 not bound the complete call graph or every preemption point. No unstable compiler
 flags or `.stack_sizes` metadata are required.
 
+Capability sends separate input admission from receiver matching and publication.
+The image check bounds both the input frames and their combined size, so rollback
+owners for the later delivery phase cannot occupy stack below sender input
+admission's usercopy/COW and allocator calls. No message capacity or transfer
+semantics change at this boundary.
+
 `sh tests/ci/run.sh native-stack-16k` builds a production image with 16 KiB
 kernel thread stacks and runs Native acceptance on one and four CPUs. This is
 an independent CI job requiring init/root handoff, interactive shell commands,

@@ -16,6 +16,7 @@ doctest = false
 
 [features]
 default = []
+kernel-trace = []
 rtc = []
 runtime-symbols = ["dep:rustc-demangle"]
 crash-console = []

@@ -13,7 +13,7 @@ publish = false
 autolib = false
 
 [package.metadata.hyper]
-production-features = ["rtc", "runtime-symbols", "crash-console", "heap-profiling", "pmu-profiling"]
+production-features = ["rtc", "runtime-symbols", "crash-console", "heap-profiling", "pmu-profiling", "kernel-trace"]
 
 # Defaults are defined by features.default below; Make filters capabilities
 # unavailable on its selected architecture without maintaining another list.
@@ -28,6 +28,7 @@ default-members = [".", "core", "hal"]
 resolver = "3"
 
 [features]
+kernel-trace = ["hyper/kernel-trace"]
 pmu-profiling = ["hyper-hal/pmu-profiling"]
 default = ["rtc", "runtime-symbols", "crash-console"]
 rtc = ["hyper/rtc"]

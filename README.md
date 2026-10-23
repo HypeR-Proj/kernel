@@ -61,3 +61,6 @@ emulator limitations and the boundary with the current I/O VM deployment.
 
 The [general-purpose PRNG](docs/design/random.md) supplies kernel random values and
 KASLR selection without a cryptographic dependency or periodic IRQ work.
+
+[Static tracepoints](docs/design/tracepoints.md) provide opt-in, one-line event
+instrumentation with runtime category flags and bounded per-CPU capture.

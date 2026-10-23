@@ -34,10 +34,13 @@ make -C kernel image ARCH=aarch64 KERNEL_FEATURES=
 | `crash-console` | Interactive allocation-free fatal monitor, UART polling and mapping inspection | Report the crash and halt; no interactive commands or inspection code |
 | `pmu-profiling` | AArch64 PMUv3 cycle-overflow sampling and bounded per-CPU call chains | No sampling hook or buffers; profiling queries report unsupported |
 | `heap-profiling` | Track allocation traffic and occupancy by heap size class | Basic memory accounting remains; the detailed profiling query reports unsupported |
+| `kernel-trace` | Static tracepoint metadata, flag-controlled recording and bounded per-CPU rings | Call sites, field evaluation and recorder storage are omitted |
 
 Make defaults are `rtc runtime-symbols crash-console` on AArch64 and
-`rtc runtime-symbols` on RISC-V and x86-64. `heap-profiling` and `pmu-profiling` are off everywhere. See
+`rtc runtime-symbols` on RISC-V and x86-64. `heap-profiling`, `pmu-profiling` and `kernel-trace` are off everywhere. See
 [PMU recording and export](../../../docs/usage/diagnostics/profiling.md) for limits and authority.
+The [tracepoint foundation](../design/tracepoints.md) currently exposes kernel-internal
+control/read APIs; it has no userspace collector or Perfetto export yet.
 The defaults come from `features.default` in `Cargo.toml`, filtered by that
 manifest's architecture availability metadata; Make has no parallel feature list.
 Direct Cargo builds default to the AArch64 set; use `--no-default-features`

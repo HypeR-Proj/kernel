@@ -84,6 +84,11 @@ def check(disassembly, *, self_test=False):
         # its construction temporaries remain below COW/allocator/scheduler.
         '30sys_capability_channel_receive.*15ProcessServices': 4096,
         '25PreparedCapabilityReceive7try_new': 2048,
+        # Sender input admission may enter mapping/COW, allocator and scheduler
+        # paths. Keep receiver matching/rollback owners off that live chain.
+        '31sys_capability_channel_try_send.*15ProcessServices': 768,
+        '22PreparedCapabilitySend14copy_from_user': 1024,
+        '26send_prepared_capabilities': 4096,
     }
     functions = re.split(r'^\s*[0-9a-f]+ <([^\n]+)>:\s*$', disassembly,
                          flags=re.MULTILINE)
@@ -116,6 +121,11 @@ def check(disassembly, *, self_test=False):
     live = measured['30sys_capability_channel_receive.*15ProcessServices'] + target_frame
     if live > 4096:
         raise ValueError(f'capability receive output admission: live frames {live} exceed 4096')
+
+    send_input = (measured['31sys_capability_channel_try_send.*15ProcessServices']
+                  + measured['22PreparedCapabilitySend14copy_from_user'])
+    if send_input > 1536:
+        raise ValueError(f'capability send input admission: live frames {send_input} exceed 1536')
 
 
 if __name__ == '__main__':

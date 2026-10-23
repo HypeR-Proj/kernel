@@ -39,6 +39,8 @@ case "${1:-}" in
         # Exercise actual allocator code with optional accounting compiled in.
         cargo test --manifest-path tests/host/Cargo.toml --features heap-profiling \
             --target "$(rustc -vV | sed -n 's/^host: //p')" runtime_allocators::
+        cargo test --manifest-path tests/host/Cargo.toml --features kernel-trace \
+            --target "$(rustc -vV | sed -n 's/^host: //p')" trace
         ;;
     scripts)
         python3 -B tests/ci/test-features.py
@@ -66,8 +68,8 @@ case "${1:-}" in
             target/ci/aarch64/hyper.production.stripped.img
         ;;
     aarch64-self-test)
-        make image ARCH=aarch64 CARGO_FEATURES="--features kernel-test,kernel-self-test"
-        make test-image ARCH=aarch64 CARGO_FEATURES="--features kernel-test,kernel-self-test"
+        make image ARCH=aarch64 CARGO_FEATURES="--features kernel-test,kernel-self-test,kernel-trace"
+        make test-image ARCH=aarch64 CARGO_FEATURES="--features kernel-test,kernel-self-test,kernel-trace"
         copy_aarch64_artifacts self-test
         ;;
     aarch64-compact)

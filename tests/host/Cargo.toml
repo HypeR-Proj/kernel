@@ -8,6 +8,7 @@ edition = "2024"
 publish = false
 
 [features]
+kernel-trace = ["hyper/kernel-trace"]
 pmu-profiling = []
 kernel-test = ["hyper/kernel-test"]
 heap-profiling = ["hyper/heap-profiling"]

@@ -10,6 +10,13 @@
 extern crate alloc;
 
 #[cfg(test)]
+#[path = "cases/trace.rs"]
+mod trace;
+#[cfg(test)]
+#[path = "cases/trace_macros.rs"]
+mod trace_macros;
+
+#[cfg(test)]
 #[path = "cases/table_edit.rs"]
 mod table_edit;
 

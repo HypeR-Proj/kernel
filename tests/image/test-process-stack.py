@@ -39,6 +39,9 @@ SYMBOLS = (
     '18NativeAddressSpace19populate_file_range',
     '30sys_capability_channel_receive15ProcessServices',
     '25PreparedCapabilityReceive7try_new',
+    '31sys_capability_channel_try_send15ProcessServices',
+    '22PreparedCapabilitySend14copy_from_user',
+    '26send_prepared_capabilities',
 )
 
 
@@ -174,6 +177,22 @@ class ProcessStackTests(unittest.TestCase):
     def test_unrecognized_optional_receive_preparation_frame_is_rejected(self):
         self.functions['target'] = function('23CapabilityReceiveTarget7prepare', 'ret')
         with self.assertRaisesRegex(ValueError, 'unrecognized capability receive target'):
+            self.check()
+
+    def test_send_delivery_scratch_cannot_survive_into_input_admission(self):
+        symbol = '31sys_capability_channel_try_send15ProcessServices'
+        self.functions[symbol] = function(
+            symbol, 'stp x29, x30, [sp, #-0x60]!\n'
+            'sub sp, sp, #0xfc0\nbl 0x20000\nret')
+        with self.assertRaisesRegex(ValueError, 'entry frame 4128 exceeds'):
+            self.check()
+
+    def test_outlining_send_input_cannot_hide_live_stack_growth(self):
+        caller = '31sys_capability_channel_try_send15ProcessServices'
+        preparation = '22PreparedCapabilitySend14copy_from_user'
+        self.functions[caller] = function(caller, 'sub sp, sp, #640\nret')
+        self.functions[preparation] = function(preparation, 'sub sp, sp, #960\nret')
+        with self.assertRaisesRegex(ValueError, 'live frames 1600 exceed 1536'):
             self.check()
 
 
