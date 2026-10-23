@@ -5,8 +5,7 @@
 
 #[path = "../../../../src/kernel/task/scheduler/balance_policy.rs"]
 mod balance_policy;
-#[path = "../../../../src/kernel/task/policy.rs"]
-mod policy;
+use crate::scheduler_policy_model as policy;
 
 use hyper::cpu::CpuIndex;
 use policy::{
@@ -21,24 +20,13 @@ fn scheduling_profiles_encode_only_class_relevant_parameters() {
     assert_eq!(fifo.priority(), Some(ThreadPriority::NORMAL));
     assert_eq!(SchedulingPolicy::fair().class(), SchedulingClass::Fair);
     assert_eq!(SchedulingPolicy::fair().priority(), None);
+    assert_eq!(SchedulingPolicy::Budget.class(), SchedulingClass::Budget);
+    assert_eq!(SchedulingPolicy::Budget.priority(), None);
     assert_eq!(SchedulingPolicy::Idle.class(), SchedulingClass::Idle);
     assert_eq!(SchedulingPolicy::Idle.priority(), None);
     assert!(ThreadPriority::HIGHEST < ThreadPriority::NORMAL);
     assert!(ThreadPriority::NORMAL < ThreadPriority::LOWEST);
     assert_eq!(ThreadPriority::new(7).get(), 7);
-
-    let higher = SchedulingPolicy::fifo(ThreadPriority::new(40));
-    let current = SchedulingPolicy::fifo(ThreadPriority::new(80));
-    let equal = SchedulingPolicy::fifo(ThreadPriority::new(80));
-    let lower = SchedulingPolicy::fifo(ThreadPriority::new(120));
-    assert!(current.is_preempted_by(higher));
-    assert!(!current.is_preempted_by(equal));
-    assert!(!current.is_preempted_by(lower));
-    assert!(SchedulingPolicy::fair().is_preempted_by(current));
-    assert!(!current.is_preempted_by(SchedulingPolicy::fair()));
-    assert!(!SchedulingPolicy::fair().is_preempted_by(SchedulingPolicy::fair()));
-    assert!(SchedulingPolicy::Idle.is_preempted_by(current));
-    assert!(!current.is_preempted_by(SchedulingPolicy::Idle));
 }
 
 #[test]

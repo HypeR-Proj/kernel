@@ -52,32 +52,60 @@ config RANDOMIZE_BASE
 
 endmenu
 
-menu "CPU and scheduler capacity"
+menu "CPU topology and scheduling"
 
 config MAX_CPUS
     int "Maximum supported CPU count"
     range 1 256
     default 8
 
-config SCHED_MAX_THREADS
-    int "Scheduler thread capacity (including kernel workers and vCPUs)"
-    range 64 16384
-    default 1024
-    help
-        Number of entries reserved in the scheduler's stable thread table
-        and allocation-free retirement queue. Includes bootstrap, idle,
-        kernel worker, Native and vCPU threads. Stack pages are allocated
-        on demand; per-CPU IRQ and emergency stacks have separate slots.
-
 config SCHED_FAIR_QUANTUM_MS
-    int "Initial fair scheduler quantum in milliseconds"
+    int "Fair scheduler maximum competing turn in milliseconds"
     range 1 1000
     default 10
 
-config TIMER_HZ
-    int "Kernel timer frequency"
-    range 10 10000
-    default 100
+choice SCHED_FAIR_BACKEND
+    prompt "Fair scheduling algorithm"
+    default SCHED_FAIR_STRIDE
+config SCHED_FAIR_STRIDE
+    bool "Weighted stride"
+config SCHED_FAIR_RR
+    bool "Round robin"
+endchoice
+
+config SCHED_PERIOD_MS
+    int "Common scheduling arbitration and budget period (ms)"
+    range 2 1000
+    default 20
+
+config SCHED_PRIORITY_ALLOWANCE_MS
+    int "Priority services allowance per CPU and period (ms)"
+    range 1 1000
+    default 4
+
+config SCHED_PROTECTED_MIN_MS
+    int "Minimum competing ordinary work opportunity (ms)"
+    range 1 1000
+    default 2
+
+config SCHED_VCPU_BUDGET_MS
+    int "Default vCPU budget per period (ms)"
+    range 1 1000
+    default 14
+
+config SCHED_VCPU_BURST_MS
+    int "Maximum uninterrupted vCPU turn with competing work (ms)"
+    range 1 1000
+    default 10
+
+choice SCHED_GUEST_PREFERENCE
+    prompt "Ordinary guest versus ordinary Native work"
+    default SCHED_PREFER_GUEST
+config SCHED_PREFER_GUEST
+    bool "Prefer guest budget, preserve Native minimum"
+config SCHED_PREFER_NATIVE
+    bool "Prefer Native work, preserve competing guest budget"
+endchoice
 
 endmenu
 

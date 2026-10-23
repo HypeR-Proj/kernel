@@ -18,6 +18,7 @@ spec.loader.exec_module(process_stack)
 SYMBOLS = (
     '15PreparedProcess7try_new',
     '7Process17finish_retirement',
+    '7Process34create_user_thread_with_scheduling',
     '24sys_process_builder_seal15ProcessServices',
     '36sys_memory_inspector_read_statistics15ProcessServices',
     '6loader11load_native',
@@ -26,6 +27,18 @@ SYMBOLS = (
     '32sys_pending_virtual_machine_seal15ProcessServices',
     '9VmBuilder17prepare_boot_vcpu',
     '13VcpuExecution13try_installed',
+    '12CpuScheduler15local_selection',
+    '12CpuScheduler12choose_ready',
+    'ready_index7rebuild19ReadyQueueAuthority',
+    'ready_index7rebuild24LocalReadyQueueAuthority',
+    'ready_index7balance19ReadyQueueAuthority',
+    'ready_index7balance24LocalReadyQueueAuthority',
+    'ready_index4Tree6remove19ReadyQueueAuthority',
+    'ready_index4Tree6remove24LocalReadyQueueAuthority',
+    '18NativeAddressSpace21resolve_private_write',
+    '18NativeAddressSpace19populate_file_range',
+    '30sys_capability_channel_receive15ProcessServices',
+    '25PreparedCapabilityReceive7try_new',
 )
 
 
@@ -90,6 +103,77 @@ class ProcessStackTests(unittest.TestCase):
         symbol = '15PreparedProcess7try_new'
         self.functions[symbol] = function(symbol, 'ret')
         with self.assertRaisesRegex(ValueError, 'entry frame 0 exceeds'):
+            self.check()
+
+    def test_dispatch_candidate_array_regression_is_rejected(self):
+        symbol = '12CpuScheduler15local_selection'
+        self.functions[symbol] = function(symbol, 'stp x29, x30, [sp, #-0x60]!\n'
+                                          'sub sp, sp, #0xc30\n'
+                                          'str xzr, [sp]\nbl 0x20000\nret')
+        with self.assertRaisesRegex(ValueError, 'local_selection: entry frame 3216 exceeds'):
+            self.check()
+
+    def test_worker_creation_cannot_retain_register_image_scratch(self):
+        symbol = '7Process34create_user_thread_with_scheduling'
+        self.functions[symbol] = function(symbol, 'sub sp, sp, #3808\nret')
+        with self.assertRaisesRegex(ValueError, 'entry frame 3808 exceeds'):
+            self.check()
+
+    def test_dispatch_bounds_apply_to_self_test_images(self):
+        symbol = '12CpuScheduler12choose_ready'
+        self.functions[symbol] = function(symbol, 'sub sp, sp, #0x410\nret')
+        with self.assertRaisesRegex(ValueError, 'choose_ready: entry frame 1040 exceeds'):
+            self.check(self_test=True)
+
+    def test_avl_link_access_cannot_copy_the_full_runtime_snapshot(self):
+        symbol = 'ready_index7rebuild19ReadyQueueAuthority'
+        self.functions[symbol] = function(symbol, 'sub sp, sp, #0x140\n'
+                                          'stp x29, x30, [sp, #0xe0]\nbl 0x20000\nret')
+        with self.assertRaisesRegex(ValueError, 'rebuild.*entry frame 320 exceeds'):
+            self.check()
+
+    def test_mapping_prepare_scratch_cannot_survive_into_commit(self):
+        for symbol, size in (
+                ('18NativeAddressSpace21resolve_private_write', 2688),
+                ('18NativeAddressSpace19populate_file_range', 2768)):
+            with self.subTest(symbol=symbol):
+                original = self.functions[symbol]
+                self.functions[symbol] = function(
+                    symbol, f'sub sp, sp, #{size}\nbl 0x20000\nret')
+                with self.assertRaisesRegex(ValueError,
+                                            f'entry frame {size} exceeds'):
+                    self.check()
+                self.functions[symbol] = original
+
+    def test_queue_mutation_cannot_restore_stack_allocated_ancestor_paths(self):
+        for authority in ('19ReadyQueueAuthority', '24LocalReadyQueueAuthority'):
+            symbol = 'ready_index4Tree6remove' + authority
+            with self.subTest(authority=authority):
+                original = self.functions[symbol]
+                self.functions[symbol] = function(symbol, 'sub sp, sp, #560\nret')
+                with self.assertRaisesRegex(ValueError, 'entry frame 560 exceeds'):
+                    self.check()
+                self.functions[symbol] = original
+
+    def test_receive_registration_scratch_cannot_survive_into_output_admission(self):
+        symbol = '30sys_capability_channel_receive15ProcessServices'
+        self.functions[symbol] = function(
+            symbol, 'stp x29, x30, [sp, #-0x60]!\n'
+            'sub sp, sp, #0xfc0\nbl 0x20000\nret')
+        with self.assertRaisesRegex(ValueError, 'entry frame 4128 exceeds'):
+            self.check()
+
+    def test_outlining_receive_output_preparation_cannot_hide_live_stack_growth(self):
+        symbol = '30sys_capability_channel_receive15ProcessServices'
+        self.functions[symbol] = function(symbol, 'sub sp, sp, #2464\nret')
+        self.functions['target'] = function(
+            '23CapabilityReceiveTarget7prepare', 'sub sp, sp, #2912\nret')
+        with self.assertRaisesRegex(ValueError, 'live frames 5376 exceed 4096'):
+            self.check()
+
+    def test_unrecognized_optional_receive_preparation_frame_is_rejected(self):
+        self.functions['target'] = function('23CapabilityReceiveTarget7prepare', 'ret')
+        with self.assertRaisesRegex(ValueError, 'unrecognized capability receive target'):
             self.check()
 
 

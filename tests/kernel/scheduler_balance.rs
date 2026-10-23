@@ -10,6 +10,10 @@ use crate::kernel::sync::Semaphore;
 use crate::kernel::task::scheduler::{self, CpuMask};
 use crate::kernel::task::thread::ThreadId;
 
+#[cfg(target_arch = "aarch64")]
+#[path = "scheduler_balance_continuation.rs"]
+mod continuation;
+
 const WORKERS: usize = 4;
 const MIN_ROUNDS: usize = 32;
 static GATE: Semaphore = Semaphore::new(0);
@@ -66,6 +70,8 @@ impl From<super::support::QuiescenceError> for Error {
 pub(super) fn run() -> Result<(), Error> {
     exercise(false)?;
     exercise(true)?;
+    #[cfg(target_arch = "aarch64")]
+    continuation::run()?;
     crate::pr_info!("HypeR test: runnable balancing, wake bursts and affinity confinement passed");
     Ok(())
 }
@@ -131,7 +137,7 @@ fn exercise(widen: bool) -> Result<(), Error> {
                 }
             }
             // Four workers must settle 2:2, not merely become runnable on two
-            // CPUs. This distinguishes periodic correction of a busy 3:1
+            // CPUs. This distinguishes event-driven correction of a busy 3:1
             // split from a one-off transfer when a target was idle.
             let expected_remote = if required == 0b11 { WORKERS / 2 } else { 0 };
             Ok(OBSERVED_CPUS.load(Ordering::Acquire) == required
@@ -140,7 +146,7 @@ fn exercise(widen: bool) -> Result<(), Error> {
                     .iter()
                     .all(|progress| progress.load(Ordering::Acquire) >= MIN_ROUNDS))
         })?;
-        // Keep both cases runnable over multiple balance periods, including
+        // Keep both cases runnable over repeated scheduling events, including
         // single-CPU boots, rather than observing only the first dispatch.
         crate::kernel::task::sleep_ms(80)?;
         check_failure()?;

@@ -69,7 +69,7 @@ same bounded little-endian `u64` CPU-mask words as process-builder affinity.
 The nonempty mask must include an allowed registered CPU; bits above the kernel
 CPU limit are rejected. If the current CPU remains allowed, placement is kept.
 Otherwise the scheduler chooses an allowed CPU and safely migrates the saved
-context. Automatic Fair balancing may subsequently move a Ready vCPU within
+context. Automatic runnable balancing may subsequently move a Ready vCPU within
 the allowed set; a singleton mask keeps it on the selected CPU.
 
 Success means the update or required source-context handoff was accepted; the

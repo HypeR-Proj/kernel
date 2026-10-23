@@ -239,6 +239,19 @@ mod sbsa_uart;
 #[path = "cases/scheduler_policy.rs"]
 mod scheduler_policy;
 #[cfg(test)]
+#[path = "../../../src/kernel/task/policy.rs"]
+mod scheduler_policy_model;
+
+#[cfg(test)]
+#[path = "../../../src/kernel/vm/timer_recovery.rs"]
+mod guest_timer_recovery;
+#[cfg(test)]
+#[path = "cases/scheduler_algorithms.rs"]
+mod scheduler_algorithms;
+#[cfg(test)]
+#[path = "../../../src/kernel/time/deadline_slot.rs"]
+mod scheduler_deadline_slot;
+#[cfg(test)]
 #[path = "cases/scheduler_requests.rs"]
 mod scheduler_requests;
 #[cfg(test)]
@@ -394,3 +407,11 @@ mod collection_links;
 #[cfg(test)]
 #[path = "cases/random.rs"]
 mod random;
+
+#[cfg(test)]
+#[path = "cases/scheduling_authority.rs"]
+mod scheduling_authority;
+#[cfg(test)]
+mod kernel {
+    pub(crate) use crate::scheduling_authority::authority;
+}

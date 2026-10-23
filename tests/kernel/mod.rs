@@ -29,6 +29,8 @@ mod reaper_retry;
 #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_X86_64))]
 mod reschedule_ipi;
 mod reserved_timer;
+#[cfg(CONFIG_ARCH_AARCH64)]
+mod scheduler_algorithms;
 mod scheduler_balance;
 mod scheduler_parallel;
 mod scheduler_sync;
@@ -42,6 +44,7 @@ mod stack_model;
 mod stage2_blocks;
 mod startup_readiness;
 mod support;
+mod thread_growth;
 mod thread_migration;
 mod thread_sleep;
 mod type_contracts;
@@ -73,6 +76,10 @@ pub(crate) fn run() {
     );
     run_case("kernel scheduler/sync tests", scheduler_sync::run);
     run_case(
+        "dynamic Thread population and retirement",
+        thread_growth::run,
+    );
+    run_case(
         "file-cache growth and pressure ownership tests",
         io_cache::run,
     );
@@ -95,6 +102,11 @@ pub(crate) fn run() {
     run_case(
         "kernel runnable load-balancing tests",
         scheduler_balance::run,
+    );
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    run_case(
+        "pluggable scheduler policy tests",
+        scheduler_algorithms::run,
     );
     run_case(
         "kernel Native syscall validation tests",

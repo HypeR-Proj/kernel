@@ -77,9 +77,6 @@ case "${1:-}" in
             -e 's/^CONFIG_ARM64_VA_BITS=.*/CONFIG_ARM64_VA_BITS=42/' \
             -e 's/^CONFIG_ARM64_PA_BITS=.*/CONFIG_ARM64_PA_BITS=40/' \
             configs/qemu_aarch64_defconfig >"$compact_config"
-        # Exercise the scheduler capacity bound as well as address geometry.
-        # Retirement storage must not scale boot-stack usage with this value.
-        printf '%s\n' 'CONFIG_SCHED_MAX_THREADS=16384' >>"$compact_config"
         make image ARCH=aarch64 CONFIG_FILE="$compact_config" \
             CARGO_FEATURES="--features kernel-test,kernel-self-test"
         make test-image ARCH=aarch64 CONFIG_FILE="$compact_config" \

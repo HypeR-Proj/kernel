@@ -4,8 +4,9 @@
 # Kernel timers and callouts
 
 The kernel time service multiplexes per-CPU deadlines onto the architecture's
-local timer comparator. The scheduler tick is one consumer of this service;
-ordinary deadlines do not wait for the next periodic tick.
+local timer comparator, which is disabled when no consumer has a deadline. There is no
+periodic scheduler tick. Scheduling decisions, ordinary timers, and exceptional
+guest timer recovery share the earliest required deadline.
 
 ## Execution contexts
 
@@ -15,6 +16,9 @@ CPU. Expiry transfers the preallocated delivery to that CPU's ready queue. A
 pinned `ktimer/CPU` kernel Thread invokes the callback with interrupts and
 preemption enabled, outside the timer and ready-queue locks. It does not inherit
 the process or address space of the caller which armed it.
+Timer workers use critical FIFO priority 32; current production callbacks only
+publish reaper work or bounded PMU stop control. General background processing
+must not be moved into these callbacks merely to obtain that priority.
 The CPU suffix identifies its permanent owner. Timer workers reject affinity
 changes and explicit migration, as well as automatic load balancing.
 
@@ -25,18 +29,30 @@ points between groups of callbacks; they cannot bound an individual callback's
 execution time. A deadline is the earliest eligible execution time, not a
 promise that the worker will obtain a CPU at exactly that instant.
 
-The Fair scheduler's load-balancing Callout uses this existing worker context
-for bounded periodic correction. It does not create another permanent Thread
-or perform balancing from the timer interrupt handler. See the
+Load balancing runs at scheduling events, without a periodic Callout or another
+permanent Thread. It does not run inside the timer interrupt handler. See the
 [scheduling boundary](../architecture/README.md#scheduling-boundary) for its placement
 and migration rules.
 
 `IrqCallout` notifications and `schedule_irq_*` callbacks execute outside the
 deadline queue lock but inside the timer interrupt handler. They must not
 sleep or allocate and must have
-bounded execution time. Scheduler ticks and scheduler wait resolution retain
-this execution model. IRQ and worker callback interfaces are deliberately
-distinct.
+bounded execution time. Scheduler wait resolution retains this execution
+model. IRQ and worker callback interfaces are deliberately distinct.
+
+The scheduler uses a permanent per-CPU deadline slot rather than allocating a
+timer node on each context switch. A single-writer atomic mailbox publishes
+the decision while holding that CPU's scheduler lock; IRQ-tail or the final
+resume boundary consumes it after releasing scheduler locks. The generation
+includes cancellation and prevents old expiry delivery or delayed publication
+from reviving a replaced decision. This avoids the reverse of the existing
+timer-source-lock to scheduler-lock order used by Callout wait registration.
+Expiry merely requests a safe scheduling point; it does not switch under the
+deadline or interrupt registry lock.
+Local publication also sends the coalesced timer prompt: an ordinary kernel
+Thread may continue executing without reaching a resume boundary promptly.
+An earlier explicit mailbox drain can make that one doorbell redundant, but
+unchanged scheduling decisions publish nothing and create no periodic traffic.
 
 ## Ownership and cancellation
 
@@ -85,7 +101,8 @@ coordinate using a current counter sample taken under the queue lock. Tree
 ordering therefore remains transitive even when an overdue timer and a distant
 future timer coexist. External deadlines retain the counter's half-range
 interpretation. Queue clock observations must advance within that unambiguous
-range; the periodic scheduler tick supplies regular observations. Periodic IRQ
+range; disabling an idle comparator does not extend that counter interpretation
+bound. Periodic IRQ
 timers retain their original phase and report skipped periods instead of
 replaying one callback for every missed tick.
 
@@ -94,6 +111,15 @@ worker dispatch time. Queue statistics count low-level expiry deliveries;
 cancelling a ready Callout can suppress its callback after that count increased.
 Ordinary Callouts are one-shot with explicit self-rearming; automatic periodic
 delivery and overrun reporting belong to the IRQ timer interface.
+
+The AArch64 guest timer has a separate fixed recovery slot. An observed timer
+EOI while its physical level remains asserted starts a one-shot retry. Retries
+begin after 50 microseconds and back off to at most one per millisecond until
+the level deasserts. Unrelated maintenance, inactive guests, and ordinary masked
+sources do not start polling. Hardware detach invalidates the owner's retry
+generation, preventing a late callback from changing another vCPU's timer.
+These exceptional retries and real guest/device interrupts remain possible on
+an otherwise tickless CPU; removing the scheduling tick does not remove IRQs.
 
 ## Cross-CPU delivery
 
@@ -118,6 +144,21 @@ interrupt paths. Controlled delivery windows additionally verify cancellation
 and replacement after expiry, context destruction before deferred wake
 retirement, and shutdown while a callback is running. The host timer queue
 benchmark is manual and has no timing threshold in CI.
+
+With both `kernel-test` and `kernel-self-test` enabled, each CPU also completes
+three independently rearmed one-shot comparator probes. The sequence ends
+permanently after its third expiry, so it cannot conceal a missing scheduler
+deadline by providing a continuous fallback interrupt. Ordinary builds contain
+neither these probes nor their fixed deadline slot. Host tests cover mailbox
+publication races, stale/cancelled generations, counter wrap, and guest retry
+owner changes and bounded backoff.
+
+On AArch64, real kernel workers additionally prove that a sole Budget worker
+has no scheduler expiry, remote contention reinstalls its deadline, and two
+Q=P workers rotate across replenishment without yielding. This test observes
+only the scheduler slot, so legitimate guest and callout interrupts do not
+invalidate the assertion. RISC-V and x86 retain cooperative host continuations
+and do not claim this host-interrupt preemption guarantee.
 
 Run the allocation-excluding queue benchmark from the repository root:
 

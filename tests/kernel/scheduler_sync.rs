@@ -146,7 +146,10 @@ pub(super) fn run() -> Result<(), Error> {
     exercise_cancelled_completion_join()?;
     exercise_wait_queue_wake_all()?;
     let stats = super::support::quiesce_workers()?;
-    if stats.real_time_class_threads + stats.fair_class_threads + stats.idle_class_threads
+    if stats.real_time_class_threads
+        + stats.fair_class_threads
+        + stats.budget_class_threads
+        + stats.idle_class_threads
         != stats.threads
         || stats.idle_class_threads != stats.idle
     {
@@ -288,7 +291,7 @@ fn exercise_fair_rotation() -> Result<(), Error> {
         return Err(Error::StateMismatch);
     }
     let switches = scheduler::statistics()?.context_switches;
-    scheduler::account_tick(u64::MAX)?;
+    scheduler::expire_current_turn_for_test()?;
     let _ = scheduler::preempt_enable_and_reschedule(guard)?;
     if scheduler::statistics()?.context_switches == switches {
         return Err(Error::StateMismatch);

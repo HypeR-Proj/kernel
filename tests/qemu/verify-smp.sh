@@ -150,7 +150,7 @@ runtime_contract_is_ready() {
         grep -q 'HypeR: kernel log ring: 65536 bytes' "$log" &&
         grep -q 'HypeR: CPU power interface version .*: on=true, off=true, suspend=true, reset=true' "$log" &&
         grep -q "HypeR: vGICv$gic_version active with [1-9][0-9]* LRs, $gic_capabilities, maintenance VIRQ [0-9][0-9]*" "$log" &&
-        grep -q 'HypeR: architectural timer: host INTID 26, guest INTID 27, [1-9][0-9]* Hz tick from a [1-9][0-9]* Hz counter' "$log" &&
+        grep -q 'HypeR: architectural timer: host INTID 26, guest INTID 27, one-shot from a [1-9][0-9]* Hz counter' "$log" &&
         grep -q 'HypeR: guest architectural timer mapped to host VIRQ [0-9][0-9]*' "$log" &&
         grep -q 'HypeR: monotonic clocksource active at [1-9][0-9]* Hz' "$log" &&
         grep -q 'HypeR: virtual architected timer injection validated' "$log" &&
@@ -163,7 +163,7 @@ runtime_contract_is_ready() {
         grep -q "HypeR: AArch64 host execution mode: $host_mode" "$log" &&
         grep -Eq 'HypeR: AArch64 execution protection: (XN|PXN/UXN), WXN=on' "$log" &&
         grep -q 'HypeR test: AArch64 guest-entry IRQ mask contract passed' "$log" &&
-        grep -q "HypeR: periodic timer IRQs active on $cpus CPUs" "$log" &&
+        grep -q "HypeR: one-shot timer IRQs validated on $cpus CPUs" "$log" &&
         grep -q 'HypeR test: kernel self-tests completed' "$log"
 }
 

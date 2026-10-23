@@ -54,10 +54,13 @@ pub fn validate_kernel_configuration(
             )));
         }
     }
-    // Bootstrap and every possible CPU's idle thread require distinct entries.
-    if integer("SCHED_MAX_THREADS")? <= integer("MAX_CPUS")? {
+    let period = integer("SCHED_PERIOD_MS")?;
+    if integer("SCHED_VCPU_BUDGET_MS")? > period
+        || integer("SCHED_VCPU_BURST_MS")? > period
+        || integer("SCHED_PRIORITY_ALLOWANCE_MS")? + integer("SCHED_PROTECTED_MIN_MS")? >= period
+    {
         return Err(Error::new(
-            "CONFIG_SCHED_MAX_THREADS must exceed CONFIG_MAX_CPUS to accommodate bootstrap and per-CPU idle threads",
+            "scheduler budgets must fit CONFIG_SCHED_PERIOD_MS and priority plus protected allowances must leave execution time for other work",
         ));
     }
     Ok(())

@@ -728,10 +728,10 @@ must quiesce and drain a departing CPU before withdrawing its slot.
 Runtime accounting remains owned by the subsystem that mutates the underlying
 state. The physical allocator produces a copied `MemoryInspector` observation
 while holding its existing state lock, then releases that lock before user
-memory is accessed. Scheduler ticks update CPU-local atomic counters and each
-current Thread's monotonic runtime counter. Readers aggregate those independent
-counters without taking scheduler locks; the result is a deliberately weakly
-consistent point-in-time observation, not a transaction across CPUs.
+memory is accessed. Closed execution intervals update CPU-local nanosecond counters and each
+current Thread's monotonic runtime counter. CPU observations first account live
+intervals under one CPU lock at a time, then aggregate independent counters.
+The result is deliberately weakly consistent across CPUs, not a transaction.
 
 These observations are exposed only through typed, read-only inspector
 handles. Applications cannot map or modify accounting storage, and delegating
@@ -740,10 +740,11 @@ observations contain identities that consumers can validate
 (`total = reserved + managed`, `managed = free + used`, and the ownership categories sum to
 `used`). CPU categories describe scheduler-entity residency—idle, kernel
 Thread, user Thread, and vCPU—not architectural privilege-level cycle counts.
-The configured scheduler tick frequency is part of every CPU observation.
+Runtime values are elapsed nanoseconds; there is no configured scheduler tick
+frequency. The former frequency word is reserved and reads as zero.
 
 Relaxed atomics are sufficient for CPU-time counters because they convey no
-ownership or synchronization state. Each tick changes exactly one monotonic
+ownership or synchronization state. Each interval changes exactly one monotonic
 category, so there is no multi-field publication that a reader could observe
 half committed. A future observation containing mutually dependent lock-free
 fields must add an explicit sequence counter or immutable snapshot publication
@@ -782,19 +783,23 @@ handler context remain pinned.
 ## Scheduling boundary
 
 The scheduler owns stable pinned `Thread` allocations, lifecycle transitions,
-per-CPU run queues, placement metadata, tick accounting, and reschedule
-decisions. Its closed class order is `RealTime > Fair > Idle`. Real-time work
-uses fixed-priority FIFO, where lower numeric priorities run first and equal-
-priority threads do not rotate on a timer tick. Ordinary kernel and vCPU
-threads default to Fair. Fair currently uses a replaceable round-robin backend;
-`CONFIG_SCHED_FAIR_QUANTUM_MS` selects its quantum, rounded up to at least one
-`CONFIG_TIMER_HZ` tick. The public Fair policy deliberately exposes no RR-
-specific parameters so a CFS- or EEVDF-like backend can replace it.
+per-CPU run queues, placement metadata, elapsed-time accounting, and reschedule
+decisions. Replaceable algorithm state lives separately from those mechanisms:
+fixed-priority FIFO, weighted-stride Fair (or a configured RR backend), Budget,
+and Idle. Native and vCPU execution type does not determine arbitration rank.
+Priority-service allowance and a protected Native floor share CPU-local ledgers;
+vCPU budgets travel with the Thread. See [scheduling](../design/scheduling.md)
+for policy selection, configuration, capability checks, and guarantees.
+
+There is no periodic scheduler tick. A single runnable entity has no scheduling
+deadline; a runnable competitor causes the scheduler to publish the next actual
+quantum, entitlement, or protection deadline through the one-shot timer service.
+Ordinary software timers and guest timers remain independent.
 
 Scheduling synchronization has three domains:
 
-- Each CPU lock owns its current/ready/blocked schedules, run queues, tick
-  accounting and in-flight context switch. Tick, ordinary yield, preemption,
+- Each CPU lock owns its current/ready/blocked schedules, run queues, elapsed
+  accounting and in-flight context switch. Deadline expiry, yield, preemption,
   current-execution lookup and ordinary switch tails use only that CPU lock.
 - Each `WaitQueue` lock owns its FIFO topology. Wait generation arbitration and
   ready publication also hold the waiter's CPU lock. Unrelated CPU/queue pairs
@@ -820,17 +825,21 @@ source residence under its CPU lock, releases that lock, and publishes target
 residence before ending exclusive coordination. Stack-watermark inspection
 checks that a blocked thread is absent from the in-flight context handoff.
 
-Each runnable class owns a distinct intrusive queue. Explicit FIFO and Fair
-policy-transition APIs move a ready thread between queues under exclusive
-coordination and its CPU lock. A Fair slice expiry moves the running thread to its class tail
-only when a Fair peer is ready. Voluntary yield replenishes the slice, while
-blocking and interruption by real-time work retain its remainder. Idle threads
-never enter an ordinary run queue.
+Ready membership uses intrusive lists and allocation-free AVL indexes. Algorithm
+and service-role buckets expose a bounded set of candidate heads; selection does
+not scan every runnable Thread. Policy changes remove a ready Thread before
+changing its key and reinsert it under the same CPU lock. Budget epochs refresh
+lazily when selection is needed. Fair accounting uses elapsed time divided by
+weight, preserves fractional charges and translates virtual debt on migration.
+Yield may end a turn but cannot erase execution charges or replenish a budget.
+Idle Threads never enter an ordinary run queue.
 
 Ordinary kernel threads carry movable placement policy and may retain an
 explicit `CpuMask`. Native and kernel Fair thread creation select a least-loaded
 admitted CPU within that mask, preserving creator locality when loads tie.
-CPUs without runnable FIFO work are preferred when the mask permits one.
+CPUs without runnable FIFO work are preferred when the mask permits one. A
+soft Budget-load penalty prefers space away from runnable vCPUs when comparable
+Native placement is available.
 Initial vCPU topology placement spreads a VM's members across admitted CPUs;
 FIFO creation retains its existing creator preference. Empty masks and masks
 with no registered CPU are rejected. Explicit migration and affinity updates move
@@ -852,36 +861,33 @@ timer workers remain pinned. Their names include the CPU (`bootstrap/0`,
 `idle/CPU`, `ktimer/CPU`); `kthread_create_per_cpu` fixes both naming and placement
 for additional CPU-owned workers. Such threads reject explicit affinity changes
 and migration too. Global workers retain ordinary movable placement and no CPU
-suffix. A multi-CPU affinity mask permits later automatic Fair balancing; use
+suffix. A multi-CPU affinity mask permits later automatic runnable balancing; use
 a singleton mask when a thread or vCPU must remain on one CPU.
 
-Automatic balancing runs from one owned Callout on the existing `ktimer/0` worker,
-rearmed 20 ms after each pass. It corrects runnable-load imbalance without a
-new permanent worker or global
-coordination in the ordinary tick, wake, or local scheduling path. Each pass
-examines at most 64 registry slots and migrates at most four threads, skips a
-busy coordinator, and releases scheduler locks before prompting destination
-CPUs. A wrapping cursor prevents ineligible slots from hiding later candidates.
-A callback deadline is an eligibility time, not a bound on dispatch or overall
-convergence time.
+Automatic balancing runs at scheduling and readiness events. There is no
+balancing Thread or periodic balancing timer. A pass examines at most 64 registry
+slots and migrates at most four ready Threads. A finite sweep captures the
+registry extent and uses coalesced continuation prompts to reach later candidates;
+new events do not restart an unfinished sweep. It never waits for the exclusive
+coordinator: a failed try-lock subscribes to the blocking lane's actual release.
+Entering Idle requests work, while remaining idle does not repeatedly rescan.
+Destination CPUs are prompted only after scheduler locks are released.
 
-Only Ready Fair threads with movable placement are candidates. Affinity,
+Ready Fair and Budget Threads with movable placement are candidates. Affinity,
 CPU-local wait constraints, pending explicit migrations and source-context
 handoffs remain authoritative. Running, blocked, dormant, pinned, FIFO and Idle
-threads are not moved by this policy. Native and vCPU Fair threads use the same
-rules; the existing migration path preserves execution ownership and the Fair
-slice remainder. Load counts runnable work, not blocked threads or allocated
-vCPUs. The balancing callback excludes its own timer-worker execution from its
-load observation so it does not create an artificial imbalance. A destination
-must have no runnable FIFO work and at least two fewer runnable threads before
-the move, avoiding a transfer that merely reverses the imbalance. Initial
-placement does not count dormant threads: a batch created before any member
-starts may need subsequent balancing once it becomes runnable.
+Threads are not moved automatically. Load includes the caller and counts actual
+runnable work, excluding a vCPU parked in WFI. A destination must have no runnable
+FIFO work and at least two fewer runnable Threads before the transfer. A soft
+Budget-load penalty breaks destination choices; at most one automatic migration
+is allowed before the moved Thread actually executes. Runtime debt and remaining
+budget follow the Thread without refilling.
 
-This policy does not provide real-time load balancing, NUMA or heterogeneous
-CPU-capacity placement, or per-VM CPU shares. An idle CPU can remain idle until
-the next balancing callback obtains CPU time; FIFO work may delay that callback
-under the existing scheduling-class rules.
+This policy provides neither admission-controlled real-time guarantees, NUMA or
+heterogeneous capacity placement, nor aggregate per-VM CPU quotas. It does not
+force a running vCPU to migrate, and a busy coordinator or strict FIFO work can
+delay convergence. Initial placement does not count dormant Threads: a batch
+created before any member starts can require later event-driven repair.
 
 The kernel always builds the SMP-capable scheduler and per-CPU infrastructure;
 the same image remains valid when firmware admits only the boot CPU. There is
@@ -982,14 +988,13 @@ context pointers across this boundary avoids retaining Rust references while
 the callback re-enters scheduler ownership.
 
 RISC-V Native U-mode execution supports asynchronous preemption through its
-owned interrupted-run return. RISC-V host/guest execution and x86-64 retain
-cooperative scheduling: their exception entry does not yet provide the complete
-vCPU deactivation contract required for asynchronous IRQ-tail switching. Both can
-send a targeted wake prompt—an SBI software interrupt on RISC-V and a fixed
-x2APIC IPI on x86-64—while retaining the pending request for a later
-cooperative point. Each architecture must qualify the IRQ-tail boundary
-independently rather than inheriting the AArch64 capability through a
-misleading common interface.
+owned interrupted-run return. Its guest IRQ return also qualifies the
+deactivation and IRQ-tail switching contract. RISC-V host continuations and
+x86-64 retain cooperative scheduling. Both can send a targeted wake prompt—an
+SBI software interrupt on RISC-V and a fixed x2APIC IPI on x86-64—while retaining
+host preemption requests for a later cooperative point. Each architecture and
+execution origin must qualify the IRQ-tail boundary independently rather than
+inheriting the AArch64 capability through a misleading common interface.
 
 ## Logging and diagnostic identity
 

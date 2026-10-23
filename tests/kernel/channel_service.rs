@@ -362,6 +362,36 @@ fn verify_cross_process_capability_transfer(
     let destination_record = scratch(0x3c0, CAPABILITY_RECORD_BYTES as u64)?;
     destination.copy_to_user(destination_record, &receive_slot(transferred_rights))?;
 
+    // Fail after both user outputs are pinned, before publishing the receiver.
+    // The same endpoint and buffers must remain usable for the transfer below;
+    // final Process retirement must not retain any output mapping pins.
+    let receiver_invocation = destination.resolve_invocation(receiver)?;
+    let handle_count = domain.usage().total(ResourceKind::Handles);
+    domain
+        .set_local_limits(ResourceLimits::UNLIMITED.with(ResourceKind::Handles, handle_count))
+        .map_err(|_| Error::Construction)?;
+    let rejected = capability_channel_receive(
+        &destination,
+        &receiver_invocation,
+        0,
+        Some(destination_bytes),
+        Some(destination_record),
+        || false,
+    );
+    domain
+        .set_local_limits(ResourceLimits::UNLIMITED)
+        .map_err(|_| Error::Construction)?;
+    if !matches!(
+        rejected,
+        Err(CapabilityChannelServiceError::Process(
+            ProcessError::Resource(_)
+        ))
+    ) || domain.usage().total(ResourceKind::Handles) != handle_count
+    {
+        return Err(Error::State(95));
+    }
+    drop(receiver_invocation);
+
     let context = Box::new(CapabilityReceiveContext {
         process: destination.clone(),
         endpoint: receiver,

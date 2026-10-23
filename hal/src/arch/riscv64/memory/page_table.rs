@@ -229,15 +229,10 @@ pub(super) unsafe fn build_final_address_space(
     }
     // SAFETY: The image layout is validated and Builder owns table mutation.
     unsafe { map_kernel(&mut builder, image, kernel_base)? };
-    // Native Sv39 roots share these upper-level entries. Reserve every root
-    // slot in the declared mutable stack arena now; later stack construction
-    // changes only shared descendants, never a copied root entry.
-    let arena_end = KERNEL_STACK_ARENA_BASE
-        .checked_add(hyper::config::KERNEL_STACK_SLOTS as u64 * STACK_SLOT_PAGES as u64 * PAGE_SIZE)
-        .ok_or(Error::AddressOverflow)?;
-    let mut address = KERNEL_STACK_ARENA_BASE;
-    while address < arena_end {
-        let slot = index(address, 0);
+    // Native Sv39 roots copy the upper-level entries. Share every root slot
+    // covering the stack VA arena up front; stack pages and leaf tables remain
+    // demand allocated. This is address geometry, not a thread-count limit.
+    for slot in index(KERNEL_STACK_ARENA_BASE, 0)..TABLE_ENTRIES {
         // SAFETY: Boot exclusively owns this directly accessible root.
         if unsafe { early_read(builder.root, slot)? } == 0 {
             // SAFETY: The boot allocator transfers one zeroed, retained table.
@@ -245,9 +240,6 @@ pub(super) unsafe fn build_final_address_space(
             // SAFETY: The root slot is in range and still unpublished.
             unsafe { early_write(builder.root, slot, table_pte(child.get()))? };
         }
-        address = (address | (LEVEL_SIZES[0] - 1))
-            .checked_add(1)
-            .ok_or(Error::AddressOverflow)?;
     }
     let stack_size = KERNEL_STACK_PAGES as u64 * PAGE_SIZE;
     // SAFETY: `stack` is the fresh allocation above and Builder owns mutation.
@@ -483,11 +475,20 @@ fn stack_range(slot: usize, pages: usize) -> Result<(usize, usize, usize), Error
     if pages == 0 || pages + 1 > STACK_SLOT_PAGES {
         return Err(Error::InvalidRange);
     }
-    let guard = KERNEL_STACK_ARENA_BASE
-        .checked_add(slot as u64 * STACK_SLOT_PAGES as u64 * PAGE_SIZE)
+    let stride = STACK_SLOT_PAGES as u64 * PAGE_SIZE;
+    let offset = (slot as u64)
+        .checked_mul(stride)
         .ok_or(Error::AddressOverflow)?;
-    let bottom = guard + PAGE_SIZE;
-    let top = bottom + pages as u64 * PAGE_SIZE;
+    let guard = KERNEL_STACK_ARENA_BASE
+        .checked_add(offset)
+        .ok_or(Error::AddressOverflow)?;
+    guard
+        .checked_add(stride - 1)
+        .ok_or(Error::AddressOverflow)?;
+    let bottom = guard.checked_add(PAGE_SIZE).ok_or(Error::AddressOverflow)?;
+    let top = bottom
+        .checked_add(pages as u64 * PAGE_SIZE)
+        .ok_or(Error::AddressOverflow)?;
     Ok((guard as usize, bottom as usize, top as usize))
 }
 

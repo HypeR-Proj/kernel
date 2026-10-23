@@ -129,10 +129,11 @@ pub fn send_event() {
     let _ = for_each_online_remote_hart(super::sbi::send_ipi);
 }
 
-/// Sends a wake-only reschedule prompt to one registered hart.
+/// Sends a reschedule and deferred-service prompt to one registered hart.
 ///
-/// RISC-V retains the request for a cooperative scheduling point until its
-/// trap backend gains the same qualified IRQ-tail continuation as `AArch64`.
+/// The software-interrupt entry consumes deferred timer programming promptly.
+/// Guest continuations support IRQ-tail preemption; interrupted host Threads
+/// retain scheduling requests until their next cooperative safe point.
 pub fn notify_reschedule(cpu: CpuIndex) -> bool {
     let Some(hart_id) = HART_IDS.get(cpu.get()).map(|id| id.load(Ordering::Acquire)) else {
         return false;

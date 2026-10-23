@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[path = "capability_harness.rs"]
 #[allow(dead_code, unused_imports)]
-mod kernel;
+pub(crate) mod kernel;
 
 #[path = "../../../../src/kernel/process/builder_policy.rs"]
 mod builder_policy;

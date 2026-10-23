@@ -21,6 +21,11 @@ mod wakeup;
 // The lock keeps the production mask guard; only its atomic lanes are modeled.
 use hyper::hal;
 use hyper::sync::InterruptMaskGuard;
+mod balance_continuation;
+#[path = "../../../src/kernel/task/scheduler/balance/retry.rs"]
+mod balance_retry;
+#[path = "../../../src/kernel/task/scheduler/balance/work.rs"]
+mod balance_work;
 mod scheduler_lock;
 #[path = "../../../src/sync/lock/sharded.rs"]
 mod sharded_lock;

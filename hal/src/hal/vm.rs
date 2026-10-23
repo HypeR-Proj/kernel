@@ -832,6 +832,23 @@ pub fn maintenance_interrupt_pending() -> bool {
     crate::arch::vm::maintenance_interrupt_pending()
 }
 
+/// Whether this maintenance event completes the active guest timer's delivery.
+/// Read before refreshing the LR bank, which consumes the EOI observation.
+pub fn virtual_timer_eoi_pending(
+    state: &VcpuHardwareState,
+    interrupts: &InterruptController,
+) -> bool {
+    #[cfg(CONFIG_ARCH_AARCH64)]
+    {
+        crate::arch::vm::virtual_timer_eoi_pending(&state.context, interrupts)
+    }
+    #[cfg(not(CONFIG_ARCH_AARCH64))]
+    {
+        let _ = (state, interrupts);
+        false
+    }
+}
+
 /// Disables local virtual-interrupt delivery after ownership is lost.
 pub fn quiesce_virtual_interrupt_delivery() {
     crate::arch::vm::quiesce_virtual_interrupt_delivery();

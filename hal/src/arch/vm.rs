@@ -11,6 +11,9 @@
 use hyper::sync::PublishedOnce;
 use hyper::vm::exit::{GuestMemoryFault, MemoryFaultAction};
 
+#[cfg(CONFIG_ARCH_AARCH64)]
+pub(crate) use super::imp::virtual_timer_eoi_pending;
+
 #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
 use hyper::vm::exit::{MmioAccess, MmioAction};
 #[cfg(CONFIG_ARCH_X86_64)]

@@ -114,6 +114,33 @@ fn kernel_schema() -> Schema {
     schema(include_str!("../../../Kconfig"))
 }
 
+#[test]
+fn scheduling_windows_preserve_native_floor_and_valid_budgets() {
+    let schema = kernel_schema();
+    for overrides in [
+        vec![("SCHED_VCPU_BUDGET_MS", "21")],
+        vec![("SCHED_VCPU_BURST_MS", "21")],
+        vec![("SCHED_PRIORITY_ALLOWANCE_MS", "18")],
+        vec![("SCHED_PROTECTED_MIN_MS", "16")],
+    ] {
+        let config = require_ok(resolve(&schema, values(&overrides)));
+        assert!(validate_kernel_configuration(&config, None).is_err());
+    }
+    for backend in ["SCHED_FAIR_STRIDE", "SCHED_FAIR_RR"] {
+        for preference in ["SCHED_PREFER_GUEST", "SCHED_PREFER_NATIVE"] {
+            let config = require_ok(resolve(
+                &schema,
+                values(&[
+                    (backend, "y"),
+                    (preference, "y"),
+                    ("SCHED_VCPU_BUDGET_MS", "20"),
+                ]),
+            ));
+            require_ok(validate_kernel_configuration(&config, None));
+        }
+    }
+}
+
 fn values(items: &[(&str, &str)]) -> BTreeMap<String, String> {
     items
         .iter()
@@ -124,10 +151,19 @@ fn values(items: &[(&str, &str)]) -> BTreeMap<String, String> {
 #[test]
 fn architecture_is_one_choice_not_three_independent_defaults() {
     let schema = kernel_schema();
-    assert_eq!(schema.choices.len(), 1);
+    let choices: Vec<_> = schema
+        .choices
+        .iter()
+        .filter(|choice| choice.name == "ARCH")
+        .collect();
+    assert_eq!(choices.len(), 1);
+    assert_eq!(
+        choices[0].members,
+        ["ARCH_AARCH64", "ARCH_RISCV64", "ARCH_X86_64"]
+    );
     for selected in ["ARCH_AARCH64", "ARCH_RISCV64", "ARCH_X86_64"] {
         let configuration = require_ok(resolve(&schema, values(&[(selected, "y")])));
-        for name in &schema.choices[0].members {
+        for name in &choices[0].members {
             assert_eq!(
                 configuration.value(name),
                 Some(if name == selected { "y" } else { "n" })
@@ -187,26 +223,29 @@ fn olddefconfig_removes_obsolete_and_inactive_keys_without_resetting_tuning() {
         ("RANDOMIZE_BASE", "n"),
         ("ARM64_MAX_GIC_REDISTRIBUTOR_REGIONS", "16"),
         ("MAX_KERNEL_STACKS", "1024"),
+        ("SCHED_MAX_THREADS", "1024"),
         ("MAX_CPUS", "16"),
         ("TIMER_HZ", "250"),
+        ("LOG_LINE_MAX", "1024"),
         ("KERNEL_STACK_SIZE_KB", "16"),
     ]);
     let (configuration, removed) = require_ok(resolve_existing(&schema, old));
-    assert_eq!(removed.len(), 4);
+    assert_eq!(removed.len(), 6);
     for name in [
         "ARM64_PA_BITS",
         "RANDOMIZE_BASE",
         "ARM64_MAX_GIC_REDISTRIBUTOR_REGIONS",
         "MAX_KERNEL_STACKS",
+        "SCHED_MAX_THREADS",
+        "TIMER_HZ",
     ] {
         assert!(removed.iter().any(|item| item == name));
         assert_eq!(configuration.value(name), None);
     }
     assert_eq!(configuration.value("ARCH_RISCV64"), Some("y"));
     assert_eq!(configuration.value("MAX_CPUS"), Some("16"));
-    assert_eq!(configuration.value("TIMER_HZ"), Some("250"));
+    assert_eq!(configuration.value("LOG_LINE_MAX"), Some("1024"));
     assert_eq!(configuration.value("KERNEL_STACK_SIZE_KB"), Some("16"));
-    assert_eq!(configuration.value("SCHED_MAX_THREADS"), Some("1024"));
     require_ok(validate_kernel_configuration(&configuration, None));
 }
 
@@ -264,11 +303,6 @@ fn kernel_validation_rejects_unsupported_stack_sizes_and_pa_widths() {
         let config = require_ok(resolve(&schema, values(&[("KERNEL_STACK_SIZE_KB", value)])));
         require_ok(validate_kernel_configuration(&config, None));
     }
-    let config = require_ok(resolve(
-        &schema,
-        values(&[("MAX_CPUS", "64"), ("SCHED_MAX_THREADS", "64")]),
-    ));
-    assert!(validate_kernel_configuration(&config, None).is_err());
 }
 
 #[test]

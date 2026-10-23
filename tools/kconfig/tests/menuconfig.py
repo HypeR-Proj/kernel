@@ -54,7 +54,7 @@ class MenuTests(unittest.TestCase):
     def test_invalid_values_and_injection_preserve_working_copy(self):
         before = self.config.read_bytes()
         for name, value in [('KERNEL_STACK_SIZE_KB', '24'), ('ARM64_PA_BITS', '41'),
-                            ('TIMER_HZ', '100\nCONFIG_MAX_CPUS=256'), ('ARCH', 'ARCH_OTHER')]:
+                            ('LOG_LINE_MAX', '512\nCONFIG_MAX_CPUS=256'), ('ARCH', 'ARCH_OTHER')]:
             self.backend(name, value, success=False)
             self.assertEqual(self.config.read_bytes(), before)
 
@@ -118,11 +118,11 @@ class MenuTests(unittest.TestCase):
         target.chmod(0o640)
         self.config.symlink_to(target)
         terminal = self.terminal()
-        terminal.send(b'/TIMER_HZ\n\n\x15250\nsqq')
+        terminal.send(b'/LOG_LINE_MAX\n\n\x151024\nsqq')
         terminal.finish()
         self.assertTrue(self.config.is_symlink())
         self.assertEqual(target.stat().st_mode & 0o777, 0o640)
-        self.assertIn('CONFIG_TIMER_HZ=250', target.read_text())
+        self.assertIn('CONFIG_LOG_LINE_MAX=1024', target.read_text())
 
     def test_make_menuconfig_does_not_reset_existing_architecture(self):
         self.backend('ARCH', 'ARCH_RISCV64')
