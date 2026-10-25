@@ -280,3 +280,34 @@ fn stale_contended_writer_cannot_mark_the_replacement_capture_incomplete() {
     assert!(!batch.incomplete);
     assert_eq!(core::mem::size_of::<Option<hyper::trace::Record>>(), 56);
 }
+
+#[test]
+fn runtime_capacity_wraps_and_can_grow_only_between_captures() {
+    let r = Recorder::<1, 8>::new();
+    assert_eq!(
+        r.start_with_capacity(Filter::ALL, 0),
+        Err(Error::InvalidFilter)
+    );
+    assert_eq!(
+        r.start_with_capacity(Filter::ALL, 9),
+        Err(Error::InvalidFilter)
+    );
+    let first = crate::require_ok(r.start_with_capacity(Filter::ALL, 2));
+    for value in 0..5 {
+        emit(&r, 0, value);
+    }
+    assert_eq!(r.start_with_capacity(Filter::ALL, 8), Err(Error::Busy));
+    let mut out = [None; 8];
+    let batch = crate::require_ok(r.read(first, 0, 0, &mut out));
+    assert_eq!((batch.count, batch.next, batch.overwritten), (2, 5, 3));
+    assert_eq!(crate::require_some(out[0]).sequence, 3);
+    crate::require_ok(r.stop(first));
+    let second = crate::require_ok(r.start_with_capacity(Filter::ALL, 8));
+    assert_eq!(crate::require_ok(r.read(second, 0, 0, &mut out)).count, 0);
+    for value in 0..7 {
+        emit(&r, 0, value);
+    }
+    let batch = crate::require_ok(r.read(second, 0, 0, &mut out));
+    assert_eq!((batch.count, batch.next, batch.overwritten), (7, 7, 0));
+    crate::require_ok(r.stop(second));
+}

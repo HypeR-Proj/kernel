@@ -10,10 +10,11 @@ runtime category flags and bounded CPU-local recording. It is off by default and
 independent of PMU sampling. It uses ordinary atomic flags, never instruction
 patching, periodic polling or a tracing worker in interrupt dispatch.
 
-This patch provides kernel-internal control and read interfaces. It does not add
-a userspace tracing capability, a `perf trace` command, Perfetto serialization or
-general scheduler/IPC/I/O instrumentation. Those consumers can use the recording
-mechanism without making the kernel depend on a viewer's file format.
+`perf trace` controls recording through a delegated CpuInspector capability and
+exports Perfetto-compatible Chrome Trace JSON or raw JSONL. Scheduler, Native
+syscall, IPC, IRQ, page-fault, block-request and vCPU events use this mechanism.
+The kernel exports fixed binary batches; names, correlation and viewer formats
+remain userspace responsibilities. See the [capture guide](../../../docs/usage/diagnostics/tracing.md).
 
 ## Add an event
 
@@ -39,8 +40,8 @@ payload closure without allocation. No portable module imports the kernel or HAL
 Each event carries zero to four named `u64` scalar values. Encode booleans/enums
 explicitly, and use domain accessors for identifiers. Do not record raw addresses,
 user memory, arbitrary strings or process-local handle encodings. Site references
-are internal kernel pointers and must be replaced with export-local IDs by any
-future serializer. No internal pointer belongs in an exported record.
+are internal kernel pointers. The wire encoder copies their bounded strings,
+never the pointer; the collector interns them into export-local identities.
 
 Arguments must be cheap, side-effect-free and nonblocking. Use values already
 available at the call site; do not query other objects or acquire subsystem locks
@@ -61,8 +62,28 @@ the feature-enabled compile/test gate is therefore required.
 ## Capture lifecycle
 
 The machine adapter is `kernel::trace`; portable storage lives in `hyper::trace`.
-Control/read operations belong in ordinary thread context. The control interface
-is internal, not authority granted to applications.
+Control/read operations belong in ordinary thread context. The internal recorder
+also supports kernel self-tests. Production userspace uses CpuInspector methods
+260 (start, SET_ATTRIBUTES), 261 (stop, SET_ATTRIBUTES), and 262 (read,
+INSPECT_DETAILS). Ordinary applications do not receive these rights; the formal
+shell delegates its profiling authority only to `/bin/perf`.
+
+Start accepts categories, a 256-bit online-CPU mask (zero means all), a 1–300000 ms
+deadline and 64–4096 retained records per CPU. One ordinary callout closes admission
+at expiry, then retries joining any short in-flight producer. No periodic tick or
+remote IPI is required. Killing the collector does not leave recording enabled.
+A privileged caller can stop/read another capture; generation tokens reject stale
+control, but are not ownership capabilities.
+
+The read selector chooses 160-byte capture info (CPU UINT64_MAX, zero generation
+and cursor), a 72-byte best-effort live Thread name (CPU UINT64_MAX-1, cursor is
+scheduler ThreadId), or a 2656-byte batch (eight records, ordinary CPU index).
+Info includes build identity, selected CPUs, deadline, capacity and running state.
+Each 328-byte record includes its site strings, source line and four scalar fields;
+there is no deferred pointer/dictionary lookup. Strings are UTF-8, NUL-padded and
+truncated to their fixed bounds. Retired threads may have no available name.
+All output copying happens after recorder/control locks are released. These
+observational IDs grant no scheduling or object authority.
 
 ```rust
 let capture = trace::start(Filter::only(Category::Scheduler).with(Category::Ipc))?;
@@ -89,11 +110,13 @@ writers are short software operations, with no remote hardware state to disarm.
 
 ## Storage, concurrency and loss
 
-Instrumented builds reserve 256 records per configured CPU, with 56 bytes per
-record on the supported 64-bit targets: 14 KiB per CPU plus a small aligned
+Instrumented builds reserve 4096 records per configured CPU, with 56 bytes per
+record on the supported 64-bit targets: 224 KiB per CPU plus a small aligned
 control header. The buffers are static, not on thread/IRQ stacks. They stay
 reserved while the instrumented image runs; builds without the feature have no
-recorder buffers. Each CPU header is cache-line aligned.
+recorder buffers. The capture capacity selects a smaller overwrite window; it
+does not release the compiled reservation. Capacity changes only at start, never
+while producers use a capture. Each CPU header is cache-line aligned.
 
 The machine adapter masks local interrupts through CPU selection, timestamping
 and append, restoring the caller's exact prior mask. Rings use the existing
@@ -118,9 +141,9 @@ Loss is explicit:
   the same flag.
 
 There is no guaranteed total order across CPUs beyond timestamps and per-CPU
-sequence. Use explicit correlation identities for causal relationships. A future
-exporter must preserve loss information rather than inventing durations across
-gaps, and snapshot object names/lifetimes separately from hot-path events.
+sequence. Use explicit correlation identities for causal relationships. The exporter
+preserves loss information rather than inventing durations across gaps. Live
+thread-name lookups are best effort and stay outside hot-path events.
 
 ## Validation
 
@@ -139,4 +162,6 @@ make -C kernel test-qemu ARCH=aarch64 KERNEL_FEATURES='default kernel-trace'
 The self-test target also selects both `kernel-test` and `kernel-self-test`.
 Production tracing does not enable tests. QEMU validates integration, not a
 hardware tracing-overhead bound; real-board workload comparisons remain needed
-when production event points and a collector are added.
+for any enabled instrumentation. `make test-trace ARCH=aarch64` additionally
+checks the installed SDK, authority, automatic expiry, CPU filtering, generation
+replacement, stopped-buffer stability, loss reporting and real exported events.

@@ -39,8 +39,8 @@ make -C kernel image ARCH=aarch64 KERNEL_FEATURES=
 Make defaults are `rtc runtime-symbols crash-console` on AArch64 and
 `rtc runtime-symbols` on RISC-V and x86-64. `heap-profiling`, `pmu-profiling` and `kernel-trace` are off everywhere. See
 [PMU recording and export](../../../docs/usage/diagnostics/profiling.md) for limits and authority.
-The [tracepoint foundation](../design/tracepoints.md) currently exposes kernel-internal
-control/read APIs; it has no userspace collector or Perfetto export yet.
+The [tracepoint mechanism](../design/tracepoints.md) exposes kernel-internal
+control/read APIs and privileged [Perfetto capture/export](../../../docs/usage/diagnostics/tracing.md) through `perf trace`.
 The defaults come from `features.default` in `Cargo.toml`, filtered by that
 manifest's architecture availability metadata; Make has no parallel feature list.
 Direct Cargo builds default to the AArch64 set; use `--no-default-features`

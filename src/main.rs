@@ -94,8 +94,6 @@ extern "C" fn start_kernel() -> ! {
         crate::kernel::reaper::enable_irq_prompts();
         crate::kernel::crash::initialize(&boot)?;
         crate::kernel::time::initialize(&mut boot)?;
-        #[cfg(feature = "kernel-trace")]
-        crate::kernel::trace::initialize()?;
         crate::kernel::log::initialize()?;
         crate::kernel::io_cache::worker::initialize()?;
         crate::kernel::vfs::read_ahead::initialize()?;
@@ -103,6 +101,8 @@ extern "C" fn start_kernel() -> ! {
         crate::kernel_tests::verify_early_startup();
         crate::kernel::cpu::initialize()?;
         crate::kernel::time::initialize_workers()?;
+        #[cfg(feature = "kernel-trace")]
+        crate::kernel::trace::initialize()?;
         crate::kernel::task::scheduler::initialize_load_balancing()?;
         crate::kernel::mm::activate_local_allocator_caches()?;
         crate::kernel::mm::seal_address_space()?;

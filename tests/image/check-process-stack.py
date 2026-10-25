@@ -46,6 +46,10 @@ def check(disassembly, *, self_test=False):
         # Generic handlers also have self-test-only service implementations.
         # Bound the actual syscall path, not those additional instantiations.
         '24sys_process_builder_seal.*15ProcessServices': 2048,
+        # Keep the charged start transaction off the syscall stack. By-value
+        # phase handoffs retained copies below handle-table allocation and
+        # IRQ-tail load balancing (4160 bytes before heap ownership).
+        '25sys_process_builder_start.*15ProcessServices': 3072,
         # Diagnostic output is bounded scratch, never a heap-allocated snapshot.
         '36sys_memory_inspector_read_statistics.*15ProcessServices': 2048,
         '6loader11load_native': 2048,

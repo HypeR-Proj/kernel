@@ -20,6 +20,7 @@ SYMBOLS = (
     '7Process17finish_retirement',
     '7Process34create_user_thread_with_scheduling',
     '24sys_process_builder_seal15ProcessServices',
+    '25sys_process_builder_start15ProcessServices',
     '36sys_memory_inspector_read_statistics15ProcessServices',
     '6loader11load_native',
     '6loader20create_address_space',
@@ -120,6 +121,13 @@ class ProcessStackTests(unittest.TestCase):
         symbol = '7Process34create_user_thread_with_scheduling'
         self.functions[symbol] = function(symbol, 'sub sp, sp, #3808\nret')
         with self.assertRaisesRegex(ValueError, 'entry frame 3808 exceeds'):
+            self.check()
+
+    def test_process_start_cannot_retain_duplicate_transaction_storage(self):
+        symbol = '25sys_process_builder_start15ProcessServices'
+        self.functions[symbol] = function(symbol, 'sub sp, sp, #1, lsl #12\n'
+                                          'sub sp, sp, #64\nbl 0x20000\nret')
+        with self.assertRaisesRegex(ValueError, 'entry frame 4160 exceeds'):
             self.check()
 
     def test_dispatch_bounds_apply_to_self_test_images(self):
