@@ -24,6 +24,7 @@ SYMBOLS = (
     '36sys_memory_inspector_read_statistics15ProcessServices',
     '6loader11load_native',
     '6loader20create_address_space',
+    '23TranslationEpochSegment7try_new',
     '6loader21prepare_address_space',
     '32sys_pending_virtual_machine_seal15ProcessServices',
     '9VmBuilder17prepare_boot_vcpu',
@@ -38,6 +39,10 @@ SYMBOLS = (
     'ready_index4Tree6remove24LocalReadyQueueAuthority',
     '18NativeAddressSpace21resolve_private_write',
     '18NativeAddressSpace19populate_file_range',
+    '17KernelPageBackend13DomainAccountE26prepare_copy_from_snapshot',
+    '17KernelPageBackend13DomainAccountE18prepare_user_write',
+    '18NativeAddressSpace28prepare_private_write_change',
+    'vfs6remote9transport15decode_response',
     '30sys_capability_channel_receive15ProcessServices',
     '25PreparedCapabilityReceive7try_new',
     '31sys_capability_channel_try_send15ProcessServices',
@@ -130,6 +135,16 @@ class ProcessStackTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'entry frame 4160 exceeds'):
             self.check()
 
+    def test_translation_storage_cannot_return_to_stack_construction(self):
+        for symbol, size in [('6loader20create_address_space', 5008),
+                             ('23TranslationEpochSegment7try_new', 4144)]:
+            with self.subTest(symbol=symbol):
+                original = self.functions[symbol]
+                self.functions[symbol] = function(symbol, f'sub sp, sp, #{size}\nret')
+                with self.assertRaisesRegex(ValueError, f'entry frame {size} exceeds'):
+                    self.check()
+                self.functions[symbol] = original
+
     def test_dispatch_bounds_apply_to_self_test_images(self):
         symbol = '12CpuScheduler12choose_ready'
         self.functions[symbol] = function(symbol, 'sub sp, sp, #0x410\nret')
@@ -165,6 +180,31 @@ class ProcessStackTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'entry frame 560 exceeds'):
                     self.check()
                 self.functions[symbol] = original
+
+    def test_mapping_cursors_cannot_restore_maximum_height_arrays(self):
+        for symbol, size in (
+                ('17KernelPageBackend13DomainAccountE26prepare_copy_from_snapshot', 2560),
+                ('18NativeAddressSpace28prepare_private_write_change', 2528)):
+            with self.subTest(symbol=symbol):
+                original = self.functions[symbol]
+                self.functions[symbol] = function(symbol, f'sub sp, sp, #{size}\nret')
+                with self.assertRaisesRegex(ValueError, f'entry frame {size} exceeds'):
+                    self.check()
+                self.functions[symbol] = original
+
+    def test_user_write_cannot_hide_combined_copy_admission_growth(self):
+        for method, size in [('26prepare_copy_from_snapshot', 1024),
+                             ('18prepare_user_write', 1536)]:
+            symbol = '17KernelPageBackend13DomainAccountE' + method
+            self.functions[symbol] = function(symbol, f'sub sp, sp, #{size}\nret')
+        with self.assertRaisesRegex(ValueError, 'user write admission: live frames 2560'):
+            self.check()
+
+    def test_filesystem_response_cannot_retain_owned_name_copies(self):
+        symbol = 'vfs6remote9transport15decode_response'
+        self.functions[symbol] = function(symbol, 'sub sp, sp, #2336\nret')
+        with self.assertRaisesRegex(ValueError, 'entry frame 2336 exceeds'):
+            self.check()
 
     def test_receive_registration_scratch_cannot_survive_into_output_admission(self):
         symbol = '30sys_capability_channel_receive15ProcessServices'

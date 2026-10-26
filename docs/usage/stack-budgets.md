@@ -68,6 +68,17 @@ device claims, storage startup, system-root handoff and guest startup on that
 image. IRQ and emergency stacks retain their default capacities. This catches
 overflow in long-lived services which do not contribute retired-thread samples.
 
+If `board-storage-media` fails, CI also performs a bounded diagnostic boot using
+QEMU GDB write watchpoints over the lowest 4 KiB of the first 256 stack slots.
+It records new low-reserve observations and stops below the 2048-byte threshold.
+The existing artifact includes `stack-watch/report.json`, symbolized
+`stack-watch/backtraces.log` and `stack-watch/serial.log`. This uses the matching
+kernel ELF, accounts for KASLR and follows frame pointers only within the stopped
+Thread's stack. It requires the AArch64 48-bit, 16 KiB CI configuration, uses a
+snapshot of the already prepared board disk, and leaves that disk unchanged.
+Watchpoints alter interrupt timing; a diagnostic boot that does not reproduce
+the failure cannot turn the original acceptance result into a pass.
+
 ## What the evidence does and does not prove
 
 Review complete hot/error/cleanup call chains; workload coverage does not

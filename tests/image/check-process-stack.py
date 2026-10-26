@@ -53,7 +53,11 @@ def check(disassembly, *, self_test=False):
         # Diagnostic output is bounded scratch, never a heap-allocated snapshot.
         '36sys_memory_inspector_read_statistics.*15ProcessServices': 2048,
         '6loader11load_native': 2048,
-        '6loader20create_address_space': 6144,
+        '6loader20create_address_space': 2048,
+        # ASID/VMID segment expansion initializes its final heap allocation.
+        # A by-value 4 KiB array otherwise survives below later allocation and
+        # an asynchronous IRQ-tail scheduler entry, even without expansion.
+        '23TranslationEpochSegment7try_new': 256,
         '6loader21prepare_address_space': 2048,
         # Guest SMP previously kept two full architectural contexts plus
         # execution temporaries in nested seal/preparation frames (>13 KiB).
@@ -84,6 +88,15 @@ def check(disassembly, *, self_test=False):
         # only their bounded descriptors, not traversal scratch, remain here.
         '18NativeAddressSpace21resolve_private_write': 768,
         '18NativeAddressSpace19populate_file_range': 768,
+        # Persistent AVL cursors must use a small ancestor cache, not an array
+        # sized for the theoretical maximum tree height. Two old cursors kept
+        # more than 2 KiB below usercopy and asynchronous scheduler entry.
+        '17KernelPageBackend.*13DomainAccountE26prepare_copy_from_snapshot': 1024,
+        '17KernelPageBackend.*13DomainAccountE18prepare_user_write': 1536,
+        '18NativeAddressSpace28prepare_private_write_change': 1024,
+        # Path lookup already retains traversal/RPC state. Decode metadata
+        # into the existing cache; never construct a full name-bearing reply.
+        'vfs6remote9transport15decode_response': 512,
         # Build the receive registration before output admission. Otherwise
         # its construction temporaries remain below COW/allocator/scheduler.
         '30sys_capability_channel_receive.*15ProcessServices': 4096,
@@ -130,6 +143,12 @@ def check(disassembly, *, self_test=False):
                   + measured['22PreparedCapabilitySend14copy_from_user'])
     if send_input > 1536:
         raise ValueError(f'capability send input admission: live frames {send_input} exceed 1536')
+
+    copy_admission = (
+        measured['17KernelPageBackend.*13DomainAccountE26prepare_copy_from_snapshot']
+        + measured['17KernelPageBackend.*13DomainAccountE18prepare_user_write'])
+    if copy_admission > 2304:
+        raise ValueError(f'user write admission: live frames {copy_admission} exceed 2304')
 
 
 if __name__ == '__main__':
