@@ -11,16 +11,29 @@ line-oriented input), `make defconfig` to reset to architecture defaults, and
 creates `.config` only when it is absent or selects a different architecture;
 timestamps on Kconfig sources never reset an existing selection. `CONFIG_FILE`
 selects an external saved configuration and must already exist when building.
+At the repository root, `make defconfig ARCH=...` resets both the product and
+kernel configurations; `make -C kernel defconfig` resets only the kernel.
 
 Kconfig selects architecture, address widths, stack sizes, CPU limits, timer
-parameters and logging limits. Cargo features select optional functionality.
-Each function has one boolean selector; there is no second Kconfig switch for
-the same function.
+parameters, logging limits and every optional kernel Cargo feature. The
+**Optional kernel functionality** menu owns production switches, while
+**Kernel test instrumentation** owns the independent test permission and selectors.
+The same menus are available through **Kernel** in root `make menuconfig`.
+Saving updates `kernel/.config` (or `CONFIG_FILE`), which normal Make builds
+resolve into an exact Cargo feature selection with `--no-default-features`.
+`CONFIG_FEATURE_KERNEL_TRACE=y`, for example, enables `kernel-trace` and its
+forwarded mechanism-crate feature. Implementation code continues to use only
+`cfg(feature = "kernel-trace")`; there is no parallel Kconfig implementation gate.
 
 ## Production functionality
 
-`KERNEL_FEATURES` is the complete set passed by the kernel Makefile using
-`--no-default-features`. Spaces and commas are both accepted:
+Normally select these switches in `make -C kernel menuconfig ARCH=aarch64`.
+Changes take effect in the next build without supplying extra Make variables.
+Missing feature assignments in older configurations receive Kconfig defaults;
+`make olddefconfig` writes the resolved selection without resetting other tuning.
+
+For isolated builds and CI fixtures, an explicit `KERNEL_FEATURES` replaces
+only the saved feature selection. Spaces and commas are both accepted:
 
 ```sh
 make -C kernel image ARCH=aarch64 KERNEL_FEATURES='rtc runtime-symbols'
@@ -41,10 +54,14 @@ Make defaults are `rtc runtime-symbols crash-console` on AArch64 and
 [PMU recording and export](../../../docs/usage/diagnostics/profiling.md) for limits and authority.
 The [tracepoint mechanism](../design/tracepoints.md) exposes kernel-internal
 control/read APIs and privileged [Perfetto capture/export](../../../docs/usage/diagnostics/tracing.md) through `perf trace`.
-The defaults come from `features.default` in `Cargo.toml`, filtered by that
-manifest's architecture availability metadata; Make has no parallel feature list.
-Direct Cargo builds default to the AArch64 set; use `--no-default-features`
-and an explicit `--features` list to select a different configuration.
+The Make selection comes from the shared Rust Kconfig resolver. Unsupported
+features are hidden and explicit assignments that violate dependencies fail
+validation. AArch64-only production features are `crash-console` and
+`pmu-profiling`; the virtual GIC and SMMUv3 test fixtures are also AArch64-only.
+Direct Cargo builds bypass the menu's feature selection and retain Cargo's
+AArch64 default set; use `--no-default-features` and an explicit `--features`
+list for those low-level builds. Cargo does not derive dependency features from
+build-script cfg output.
 The mechanism crates have no implicit defaults: the kernel forwards each chosen
 feature to the crate that implements it.
 
@@ -62,8 +79,9 @@ not optional product features.
 
 The retired `CONFIG_CRASH_CONSOLE` and `CONFIG_HEAP_PROFILING` symbols are no
 longer accepted. Run `make olddefconfig` to remove retired symbols with explicit
-warnings while preserving recognized settings, then select the corresponding
-Cargo features. Normal builds and `make defconfig` reject unknown symbols.
+warnings while preserving recognized settings, then use `FEATURE_CRASH_CONSOLE`
+or `FEATURE_HEAP_PROFILING` in the menu if desired. Normal builds and
+`make defconfig` reject unknown symbols.
 The unused `CONFIG_PLATFORM_QEMU` marker was also removed: hardware discovery
 and board deployment select devices; this symbol never selected a kernel driver.
 
@@ -81,6 +99,11 @@ selector, including hooks exported by `hyper-core` and `hyper-hal`:
 | `kernel-vgic-tc-test` | Force the wider virtual GIC compatibility trap |
 | `io-dma-revoke-test` | Production-domain DMA revocation fixture and private test mailbox |
 | `kernel-stack-audit` | Retired-thread and IRQ stack sampling for acceptance workloads |
+
+In the menu, enable `FEATURE_KERNEL_TEST` before selecting a test. All test
+switches default off. `FEATURE_KERNEL_SMMUV3_TEST` additionally requires
+`FEATURE_KERNEL_SELF_TEST`; both must be explicitly selected in Kconfig. Turning
+off the umbrella in menuconfig also disables its dependent selectors.
 
 No individual selector enables `kernel-test` through Cargo dependencies. A
 selector without the umbrella is a build error. All code gates nevertheless

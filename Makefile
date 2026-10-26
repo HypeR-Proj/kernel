@@ -17,8 +17,8 @@ CARGO_PROFILE := --profile $(KERNEL_PROFILE)
 CARGO ?= cargo
 export HYPER_BUILD_GIT_STATE := $(shell python3 -B tools/build-version.py --state)
 CONFIG_FILE ?= .config
-CONFIG_PATH := $(abspath $(CONFIG_FILE))
-KERNEL_CONFIG_ENV := HYPER_CONFIG=$(CONFIG_PATH)
+CONFIG_PATH := $(shell python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$(CONFIG_FILE)")
+KERNEL_CONFIG_ENV := HYPER_CONFIG="$(CONFIG_PATH)"
 KERNEL_BUILD_ROOT ?= $(or $(CARGO_TARGET_DIR),target)
 CARGO_KERNEL = CARGO_TARGET_DIR="$(abspath $(KERNEL_BUILD_ROOT))" $(KERNEL_CONFIG_ENV) $(CARGO) build --target $(TARGET) $(CARGO_PROFILE) $(KERNEL_CARGO_FEATURES)
 INITRAMFS ?=
@@ -32,10 +32,18 @@ OBJDUMP ?= $(LLVM_BIN)/llvm-objdump
 DTC ?= dtc
 
 CARGO_FEATURES ?=
-# Production functionality has one explicit selection. Test selectors are
-# additional flags and must explicitly include the independent kernel-test gate.
+# Kconfig owns the saved selection. Explicit feature arguments remain available
+# for isolated CI fixtures. Resolve lazily after prepare-config, once per Make,
+# without making clean/configuration targets compile the host configurator.
 ifeq ($(origin KERNEL_FEATURES),undefined)
-KERNEL_FEATURES := $(shell python3 -B tools/kernel-features.py --defaults $(ARCH) || printf '__INVALID_KERNEL_FEATURES__')
+KERNEL_CONFIG_MATCH = $(shell grep -l '^CONFIG_ARCH_$(shell echo $(ARCH) | tr a-z A-Z)=y$$' .config 2>/dev/null)
+KERNEL_FEATURE_CONFIG = $(if $(filter .config,$(CONFIG_FILE)),$(if $(KERNEL_CONFIG_MATCH),$(CONFIG_PATH),$(DEFCONFIG)),$(CONFIG_PATH))
+define resolve_config_features
+$(shell $(CARGO) run --quiet --offline --locked --manifest-path tools/kconfig/Cargo.toml \
+    --target $(HOST_TARGET) -- cargo-features "$(KERNEL_FEATURE_CONFIG)" $(ARCH) \
+    || printf '__INVALID_KERNEL_FEATURES__')
+endef
+KERNEL_FEATURES = $(eval KERNEL_FEATURES := $(resolve_config_features))$(KERNEL_FEATURES)
 endif
 KERNEL_CARGO_FEATURES = --no-default-features $(if $(strip $(KERNEL_FEATURES)),--features "$(KERNEL_FEATURES)") $(CARGO_FEATURES)
 # Evaluate in the recipe's target context: test targets add feature arguments

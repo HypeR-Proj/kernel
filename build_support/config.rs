@@ -90,6 +90,12 @@ fn export_kernel_configuration(
     export_log_compile_configuration(&configuration)?;
     let mut rust_source = String::from("// Generated kernel configuration. Do not edit.\n\n");
     for symbol in &schema.symbols {
+        // Feature menu entries select Cargo's dependency graph through Make.
+        // Keep `cfg(feature = ...)` as the only implementation gate, including
+        // builds with explicit fixture overrides or direct Cargo invocations.
+        if symbol.name.starts_with("FEATURE_") {
+            continue;
+        }
         let rust_name = format!("CONFIG_{}", symbol.name);
         if !kconfig::dependency_is_met(symbol, &configuration)
             || (symbol.choice.is_some() && configuration.value(&symbol.name) != Some("y"))

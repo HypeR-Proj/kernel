@@ -53,6 +53,7 @@ fn filtering_laziness_and_stale_tickets() {
     let first = crate::require_ok(r.start(Filter::only(Category::Scheduler)));
     assert!(r.enabled(Category::Ipc).is_none());
     let old = crate::require_some(r.enabled(Category::Scheduler));
+    assert_eq!(old.generation(), first.generation());
     r.record(
         old,
         0,

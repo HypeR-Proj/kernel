@@ -15,8 +15,8 @@ autolib = false
 [package.metadata.hyper]
 production-features = ["rtc", "runtime-symbols", "crash-console", "heap-profiling", "pmu-profiling", "kernel-trace"]
 
-# Defaults are defined by features.default below; Make filters capabilities
-# unavailable on its selected architecture without maintaining another list.
+# Direct Cargo defaults preserve the standalone build. Make resolves the saved
+# Kconfig feature menu and passes --no-default-features plus its exact selection.
 [package.metadata.hyper.feature-architectures]
 crash-console = ["aarch64"]
 pmu-profiling = ["aarch64"]

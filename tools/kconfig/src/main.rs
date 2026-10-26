@@ -33,6 +33,22 @@ fn run() -> Result<(), Box<dyn Error>> {
     };
     let schema = parse_schema(&kconfig)?;
 
+    if command == "cargo-features" {
+        let [_, _, input, architecture] = arguments.as_slice() else {
+            return Err("usage: hyper-kconfig cargo-features CONFIG ARCH".into());
+        };
+        let target = match architecture.as_str() {
+            "aarch64" => "aarch64-unknown-none-softfloat",
+            "riscv64" => "riscv64imac-unknown-none-elf",
+            "x86_64" => "x86_64-unknown-none",
+            _ => return Err(format!("unsupported kernel architecture: {architecture}").into()),
+        };
+        let configuration = resolve(&schema, load_fragment(&PathBuf::from(input))?)?;
+        validate_kernel_configuration(&configuration, Some(target))?;
+        println!("{}", configuration.kernel_cargo_features().join(" "));
+        return Ok(());
+    }
+
     let configuration = match command {
         "menuconfig" => {
             menu::run(&arguments, &output)?;

@@ -5,7 +5,7 @@
 """Check Make feature decisions against Cargo argument and alias semantics."""
 
 import importlib.util
-import copy
+import json
 from pathlib import Path
 import shlex
 import subprocess
@@ -35,6 +35,10 @@ class FeatureTests(unittest.TestCase):
             command = ['make', '--no-print-directory', '-s', '-f', 'Makefile', '-f', extra.name]
             if dry_run:
                 command += ['-n', '-o', 'prepare-config']
+            if not any(arg.startswith('CONFIG_FILE=') for arg in arguments):
+                architecture = next((arg.removeprefix('ARCH=') for arg in arguments
+                                     if arg.startswith('ARCH=')), 'aarch64')
+                command += ['CONFIG_FILE=' + str(KERNEL / f'configs/qemu_{architecture}_defconfig')]
             return subprocess.run([*command, target, *arguments], cwd=KERNEL,
                                   capture_output=True, text=True)
 
@@ -59,21 +63,87 @@ class FeatureTests(unittest.TestCase):
         smmu = FEATURES.resolve(['--no-default-features', '-Fkernel-smmuv3-test'], GRAPH)
         self.assertEqual(smmu, ['kernel-self-test', 'kernel-smmuv3-test'])
 
-    def test_make_defaults_follow_cargo_and_architecture_availability(self):
+    @classmethod
+    def setUpClass(cls):
+        host = subprocess.check_output(['rustc', '-vV'], text=True)
+        host = next(line.removeprefix('host: ') for line in host.splitlines()
+                    if line.startswith('host: '))
+        cls.configurator = ['cargo', 'run', '--quiet', '--locked', '--offline',
+                            '--manifest-path', 'tools/kconfig/Cargo.toml', '--target', host, '--']
+
+    def configuration(self, *arguments):
+        return subprocess.run([*self.configurator, *map(str, arguments)], cwd=KERNEL,
+                              text=True, capture_output=True)
+
+    def test_menu_covers_every_root_feature_and_architecture_restriction(self):
+        result = self.configuration('--schema', KERNEL / 'Kconfig', 'describe')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        entries = json.loads(result.stdout)['entries']
+        menu = {entry['name'].removeprefix('CONFIG_FEATURE_').lower().replace('_', '-'): entry
+                for entry in entries if entry['name'].startswith('CONFIG_FEATURE_')}
+        self.assertEqual(set(menu), set(GRAPH) - {'default'})
+        policy = MANIFEST['package']['metadata']['hyper']
+        for name, entry in menu.items():
+            self.assertEqual(entry['kind'], 'bool')
+            self.assertTrue(entry['prompt'])
+            dependencies = {item['name'] for item in entry['dependencies']}
+            if name not in policy['production-features']:
+                # Children of the disabled umbrella have no resolved value.
+                self.assertIn(entry['default'], ('n', ''))
+                if name != 'kernel-test':
+                    self.assertIn('CONFIG_FEATURE_KERNEL_TEST', dependencies)
+            if name in policy['feature-architectures']:
+                self.assertIn('CONFIG_ARCH_AARCH64', dependencies)
+            for edge in GRAPH[name]:
+                if '/' not in edge and not edge.startswith('dep:'):
+                    self.assertIn('CONFIG_FEATURE_' + edge.upper().replace('-', '_'), dependencies)
+
+    def test_make_defaults_follow_kconfig_and_architecture_availability(self):
         fragment = '__defaults:\n\t@printf "%s\\n" "$(KERNEL_FEATURES)"\n'
         for architecture in ('aarch64', 'riscv64', 'x86_64'):
             result = self.make('__defaults', 'ARCH=' + architecture, fragment=fragment)
             self.assertEqual(result.returncode, 0, result.stderr)
-            expected = FEATURES.defaults(MANIFEST, architecture)
+            expected = sorted(set(FEATURES.resolve([], GRAPH)) - {'default'})
+            if architecture != 'aarch64':
+                expected.remove('crash-console')
             self.assertEqual(result.stdout.split(), expected)
-            self.assertEqual('crash-console' in expected, architecture == 'aarch64')
-        modified = copy.deepcopy(MANIFEST)
-        modified['features']['default'].append('heap-profiling')
-        for architecture in ('aarch64', 'riscv64', 'x86_64'):
-            self.assertIn('heap-profiling', FEATURES.defaults(modified, architecture))
-        modified['features']['default'].append('kernel-test')
-        with self.assertRaisesRegex(ValueError, 'non-production'):
-            FEATURES.defaults(modified, 'aarch64')
+
+    def test_saved_configuration_controls_cargo_and_symbol_embedding(self):
+        with tempfile.TemporaryDirectory(prefix='kernel feature config ') as directory:
+            path = Path(directory) / 'saved.config'
+            path.write_text('CONFIG_ARCH_AARCH64=y\n# CONFIG_FEATURE_RTC is not set\n'
+                            '# CONFIG_FEATURE_RUNTIME_SYMBOLS is not set\n'
+                            '# CONFIG_FEATURE_CRASH_CONSOLE is not set\n'
+                            'CONFIG_FEATURE_KERNEL_TRACE=y\nCONFIG_FEATURE_PMU_PROFILING=y\n')
+            original = path.read_bytes()
+            result = self.make('build', 'CONFIG_FILE=' + str(path), dry_run=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('--features "kernel-trace pmu-profiling"', result.stdout)
+            self.assertIn('if [ "0" = 1 ]; then', result.stdout)
+            path.write_text(path.read_text() + 'CONFIG_FEATURE_KERNEL_TEST=y\n'
+                            'CONFIG_FEATURE_KERNEL_SELF_TEST=y\nCONFIG_FEATURE_KERNEL_SMMUV3_TEST=y\n')
+            result = self.make('test-image', 'CONFIG_FILE=' + str(path), dry_run=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('KERNEL_SELF_TEST_IMAGE=1', result.stdout)
+            # An explicit fixture override still replaces saved feature flags.
+            result = self.make('build', 'CONFIG_FILE=' + str(path), 'KERNEL_FEATURES=', dry_run=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn('--features ', result.stdout)
+            path.write_bytes(original)
+            result = self.make('build', 'CONFIG_FILE=' + str(path), dry_run=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_invalid_or_missing_feature_configuration_is_not_ignored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'saved.config'
+            for value in (None, 'CONFIG_ARCH_AARCH64=y\nCONFIG_FEATURE_IO_DMA_REVOKE_TEST=y\n',
+                          'CONFIG_ARCH_RISCV64=y\nCONFIG_FEATURE_PMU_PROFILING=y\n'):
+                if value is not None:
+                    path.write_text(value)
+                result = self.make('build', 'CONFIG_FILE=' + str(path), dry_run=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn('invalid kernel feature selection', result.stderr)
 
     def test_unknown_or_ambiguous_inputs_fail_explicitly(self):
         for flags in (['-Fmissing'], ['-Fhyper/runtime-symbols'], ['--release'], ['--help'], ['--features'],

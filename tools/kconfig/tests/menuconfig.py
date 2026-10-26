@@ -51,6 +51,41 @@ class MenuTests(unittest.TestCase):
         state = self.backend('ARCH', 'ARCH_AARCH64')
         self.assertTrue(any(entry['name'] == 'RANDOMIZE_BASE' for entry in state['entries']))
 
+    def test_feature_permission_and_architecture_changes(self):
+        state = self.backend()
+        names = {entry['name'] for entry in state['entries']}
+        self.assertIn('FEATURE_KERNEL_TRACE', names)
+        self.assertNotIn('FEATURE_KERNEL_SELF_TEST', names)
+        self.backend('FEATURE_KERNEL_SELF_TEST', 'y', success=False)
+        state = self.backend('FEATURE_KERNEL_TEST', 'y')
+        self.assertIn('FEATURE_KERNEL_SELF_TEST', {entry['name'] for entry in state['entries']})
+        for entry in state['entries']:
+            if entry['section'] == 'Kernel test instrumentation' and entry['name'] != 'FEATURE_KERNEL_TEST':
+                self.assertEqual(entry['value'], 'n')
+        state = self.backend('FEATURE_KERNEL_SELF_TEST', 'y')
+        self.assertEqual(next(entry['value'] for entry in state['entries']
+                              if entry['name'] == 'FEATURE_KERNEL_SMMUV3_TEST'), 'n')
+        self.backend('FEATURE_KERNEL_SMMUV3_TEST', 'y')
+        self.backend('FEATURE_KERNEL_TEST', 'n')
+        self.assertNotIn('CONFIG_FEATURE_KERNEL_SMMUV3_TEST=y', self.config.read_text())
+        self.backend('FEATURE_PMU_PROFILING', 'y')
+        state = self.backend('ARCH', 'ARCH_RISCV64')
+        names = {entry['name'] for entry in state['entries']}
+        self.assertFalse({'FEATURE_PMU_PROFILING', 'FEATURE_CRASH_CONSOLE'} & names)
+        self.backend('FEATURE_PMU_PROFILING', 'y', success=False)
+
+    def test_feature_toggle_saves_the_build_selection(self):
+        terminal = self.terminal()
+        terminal.send(b'/FEATURE_KERNEL_TRACE\ny')
+        terminal.expect(b'not yet saved')
+        terminal.send(b'sqq')
+        terminal.finish()
+        result = subprocess.run([BINARY, 'cargo-features', str(self.config), 'aarch64'],
+                                cwd=KERNEL, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('kernel-trace', result.stdout.split())
+        self.assertNotIn('kernel-test', result.stdout.split())
+
     def test_invalid_values_and_injection_preserve_working_copy(self):
         before = self.config.read_bytes()
         for name, value in [('KERNEL_STACK_SIZE_KB', '24'), ('ARM64_PA_BITS', '41'),
@@ -79,7 +114,7 @@ class MenuTests(unittest.TestCase):
 
     def test_bad_stack_size_reports_error_and_can_be_corrected(self):
         terminal = self.terminal()
-        terminal.send(b'jj\n\n\x1524\n')
+        terminal.send(b'/KERNEL_STACK_SIZE_KB\n\n\x1524\n')
         terminal.expect(b'Invalid value; setting unchanged')
         terminal.send(b'\n\n\x1516\nsqq')
         terminal.finish()

@@ -5,6 +5,20 @@
 
 use super::{Configuration, Error};
 
+impl Configuration {
+    /// Translate the resolved feature menu into root Cargo feature names.
+    /// `default` is a Cargo alias, not an independently selectable capability.
+    pub fn kernel_cargo_features(&self) -> Vec<String> {
+        self.values()
+            .filter_map(|(name, value)| {
+                name.strip_prefix("FEATURE_")
+                    .filter(|_| value == "y")
+                    .map(|name| name.to_ascii_lowercase().replace('_', "-"))
+            })
+            .collect()
+    }
+}
+
 /// Reject values that are syntactically valid but unsupported by kernel mechanisms.
 /// Host tests may select a target architecture independently of the host triple.
 pub fn validate_kernel_configuration(

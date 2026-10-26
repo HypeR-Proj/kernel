@@ -45,11 +45,12 @@ Generated artifacts and configuration remain under this component's `target/`
 and `.config` paths whether commands begin here or at the repository root.
 
 Both Make entry points share target triples and QEMU defaults from
-`mk/platform.mk`. Production feature defaults are resolved from this workspace's
-Cargo manifest rather than duplicated in Make.
+`mk/platform.mk`. Kernel feature defaults and saved selections are resolved
+from Kconfig, including architecture-specific availability.
 
-Kernel functionality is selected with `KERNEL_FEATURES`; architecture and numeric
-limits remain in Kconfig. Test instrumentation requires the independent,
+Kernel functionality, architecture and numeric limits are selected in
+`make menuconfig`. `KERNEL_FEATURES` is an explicit override for isolated builds.
+Test instrumentation requires the independent,
 default-off `kernel-test` feature together with a specific test selector. See
 the [configuration contract](docs/usage/configuration.md) for exact defaults, disabled
 behavior, and test-image safeguards.

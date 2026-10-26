@@ -5,6 +5,7 @@
 """Terminal presentation for hyper-kconfig; the Rust tool owns all policy."""
 
 import curses
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -46,8 +47,11 @@ class Configuration:
         self.saved = content
 
 
-def save_bytes(output, content):
-    """Atomically publish a validated configuration, preserving its file mode."""
+@contextmanager
+def staged_bytes(output, content):
+    """Prepare a complete sibling file without changing the saved configuration."""
+    if output.exists() and not output.is_file():
+        raise ValueError(f'configuration output is not a regular file: {output}')
     descriptor, name = tempfile.mkstemp(prefix='.hyper-config-', dir=output.parent)
     temporary = Path(name)
     try:
@@ -57,9 +61,15 @@ def save_bytes(output, content):
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, output)
+        yield temporary
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def save_bytes(output, content):
+    """Atomically publish a validated configuration, preserving its file mode."""
+    with staged_bytes(output, content) as temporary:
+        os.replace(temporary, output)
 
 
 ENTER = ('\n', '\r', curses.KEY_ENTER, curses.KEY_RIGHT)

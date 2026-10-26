@@ -52,6 +52,102 @@ config RANDOMIZE_BASE
 
 endmenu
 
+menu "Optional kernel functionality"
+
+config FEATURE_RTC
+    bool "Hardware realtime clocks (rtc)"
+    default y
+    help
+        Discover firmware-initialized realtime clocks. Disabling this leaves
+        monotonic time available and realtime uncalibrated.
+
+config FEATURE_RUNTIME_SYMBOLS
+    bool "Runtime symbol tables (runtime-symbols)"
+    default y
+    help
+        Embed symbols for crash reports and diagnostic call chains. Disabling
+        this omits the table and its build passes, without stripping ELF debug
+        information.
+
+config FEATURE_CRASH_CONSOLE
+    bool "Interactive fatal monitor (crash-console)"
+    default y
+    depends on ARCH_AARCH64
+    help
+        Enable the allocation-free interactive monitor after a fatal error.
+        Fatal reporting and crash coordination remain when disabled.
+
+config FEATURE_HEAP_PROFILING
+    bool "Detailed heap accounting (heap-profiling)"
+    default n
+    help
+        Track occupancy and allocation traffic by size class. Basic memory
+        ownership accounting remains available without these extra counters.
+
+config FEATURE_PMU_PROFILING
+    bool "PMUv3 sampling (pmu-profiling)"
+    default n
+    depends on ARCH_AARCH64
+    help
+        Compile the PMUv3 sampler and privileged perf recording interface.
+        Compiling support does not start a recording.
+
+config FEATURE_KERNEL_TRACE
+    bool "Static tracepoints (kernel-trace)"
+    default n
+    help
+        Compile tracepoint metadata and bounded per-CPU recording buffers.
+        Recording is controlled separately at runtime; disabling support also
+        removes trace call sites and field evaluation.
+
+endmenu
+
+menu "Kernel test instrumentation"
+
+config FEATURE_KERNEL_TEST
+    bool "Permit kernel test instrumentation (kernel-test)"
+    default n
+    help
+        Explicit permission to compile test instrumentation. This alone does
+        not run tests. Each test also needs its individual selector below.
+        Leave disabled for production images.
+
+config FEATURE_KERNEL_SELF_TEST
+    bool "Boot kernel self-tests instead of Native init (kernel-self-test)"
+    default n
+    depends on FEATURE_KERNEL_TEST
+
+config FEATURE_KERNEL_SMMUV3_TEST
+    bool "SMMUv3 fault fixture (kernel-smmuv3-test)"
+    default n
+    depends on FEATURE_KERNEL_TEST && FEATURE_KERNEL_SELF_TEST && ARCH_AARCH64
+    help
+        Requires the boot-time self-test suite and a suitable QEMU SMMUv3
+        fixture. This is not the production Native startup path.
+
+config FEATURE_KERNEL_VGIC_TC_TEST
+    bool "Force virtual GIC compatibility trapping (kernel-vgic-tc-test)"
+    default n
+    depends on FEATURE_KERNEL_TEST && ARCH_AARCH64
+
+config FEATURE_IO_DMA_REVOKE_TEST
+    bool "Production-domain DMA revocation fixture (io-dma-revoke-test)"
+    default n
+    depends on FEATURE_KERNEL_TEST && ARCH_AARCH64
+    help
+        Compile deliberate DMA mapping revocation and its private test mailbox.
+        Enable only for the dedicated isolation acceptance workload.
+
+config FEATURE_KERNEL_STACK_AUDIT
+    bool "Retired-thread stack sampling (kernel-stack-audit)"
+    default n
+    depends on FEATURE_KERNEL_TEST
+    help
+        Retain stack high-water samples for acceptance workloads. This adds
+        instrumentation to thread retirement and stack diagnostics.
+
+endmenu
+
 menu "CPU topology and scheduling"
 
 config MAX_CPUS

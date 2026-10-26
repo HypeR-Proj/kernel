@@ -66,6 +66,98 @@ pub(super) fn run() -> Result<(), &'static str> {
             }
         }
     }
+    verify_ipc()
+}
+
+#[cfg(feature = "kernel-trace")]
+fn verify_ipc() -> Result<(), &'static str> {
+    use crate::kernel::{
+        accounting::{ResourceDomain, ResourceLimits},
+        ipc::{ByteChannel, PreparedByteMessage},
+        trace,
+    };
+    use hyper::{
+        abi::native::*,
+        trace::{Category, Filter},
+    };
+    let domain =
+        ResourceDomain::try_new_root(ResourceLimits::UNLIMITED).map_err(|_| "trace IPC domain")?;
+    let (client, server) = ByteChannel::try_pair(&domain).map_err(|_| "trace IPC pair")?;
+    let session = trace::start(Filter::only(Category::Ipc)).map_err(|_| "trace IPC start")?;
+    let probe = client.trace_rpc(&[0; 6]).map_err(|_| "trace RPC probe")?;
+    if probe[0] != session.generation()
+        || probe[1] == 0
+        || server.trace_rpc(&[0; 6]).map_err(|_| "trace peer probe")? != probe
+        || client.trace_rpc(&[5, 0, 0, 0, 0, 0]) != Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)
+        || client.trace_rpc(&[1, 1, 0, 1, 0, 0]) != Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)
+    {
+        return Err("trace RPC identity/validation");
+    }
+    let context = client
+        .trace_rpc(&[HYPER_NATIVE_RPC_TRACE_CLIENT_BEGIN, 1, 3, 0, 0, 0])
+        .map_err(|_| "trace RPC begin")?;
+    let aborted = PreparedByteMessage::try_copy_from(&domain, b"aborted")
+        .map_err(|_| "trace IPC aborted message")?;
+    drop(aborted);
+    let message = PreparedByteMessage::try_copy_from(&domain, b"committed")
+        .map_err(|_| "trace IPC message")?;
+    client
+        .prepare_write(&message)
+        .map_err(|_| "trace IPC reservation")?
+        .publish(message);
+    let info = server.peek().map_err(|_| "trace IPC peek")?;
+    server
+        .claim(info)
+        .map_err(|_| "trace IPC abort receive")?
+        .abort();
+    server
+        .claim(info)
+        .map_err(|_| "trace IPC re-claim")?
+        .commit()
+        .release();
+    client
+        .trace_rpc(&[HYPER_NATIVE_RPC_TRACE_CLIENT_END, 1, 0, context[0], 0, 0])
+        .map_err(|_| "trace RPC end")?;
+    trace::stop(session).map_err(|_| "trace IPC stop")?;
+    let cpu = crate::kernel::cpu::current_index()
+        .ok_or("trace IPC CPU")?
+        .get();
+    let mut records = [None; 8];
+    let batch = trace::read(session, cpu, 0, &mut records).map_err(|_| "trace IPC read")?;
+    let count = |name| {
+        records
+            .iter()
+            .take(batch.count)
+            .flatten()
+            .filter(|record| record.site.name == name)
+            .count()
+    };
+    if batch.incomplete
+        || batch.overwritten != 0
+        || count("ipc_enqueue") != 1
+        || count("ipc_dequeue") != 1
+        || count("rpc_client_begin") != 1
+        || count("rpc_client_end") != 1
+    {
+        return Err("trace IPC abort fabricated delivery");
+    }
+    let replacement =
+        trace::start(Filter::only(Category::Ipc)).map_err(|_| "trace IPC replacement")?;
+    if client
+        .trace_rpc(&[HYPER_NATIVE_RPC_TRACE_CLIENT_END, 1, 0, context[0], 0, 0])
+        .map_err(|_| "trace RPC stale end")?[0]
+        != 0
+    {
+        return Err("stale RPC context admitted");
+    }
+    trace::stop(replacement).map_err(|_| "trace IPC replacement stop")?;
+    if trace::read(replacement, cpu, 0, &mut records)
+        .map_err(|_| "trace RPC stale read")?
+        .count
+        != 0
+    {
+        return Err("stale RPC context recorded");
+    }
     Ok(())
 }
 

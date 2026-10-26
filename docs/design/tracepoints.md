@@ -145,6 +145,50 @@ sequence. Use explicit correlation identities for causal relationships. The expo
 preserves loss information rather than inventing durations across gaps. Live
 thread-name lookups are best effort and stay outside hot-path events.
 
+## IPC commit and wait correlation
+
+ByteChannel pairs reserve one boot-local even observation identity and its
+adjacent odd queue ID before publication. The existing, nonwrapping pair message
+sequence identifies a publication without adding per-message metadata or a global
+counter to the send path. CapabilityChannel uses its existing receive registration
+ID. Enqueue is recorded under the pair lock after successful publication;
+dequeue is recorded only at receive commit (capability rendezvous: delivery
+completion followed by receiver consumption). Reservation, peek, claim abort and
+rejection are not successful deliveries. Closing with unconsumed messages leaves
+unmatched enqueues. ID exhaustion disables correlation, never resource reuse.
+Object KOIDs/handles retain their existing contracts.
+
+SignalState carries a trace-only identity; channel signals share the destination
+queue identity. Direct and multi-object waits record their source and the exact
+scheduler wait generation. Only the winning notification records `signal_wake`,
+before publishing its ready transition. Scheduler records distinguish notification,
+timeout and cancellation, including waits completed before parking. Persistent
+WaitSet forwarding does not currently preserve the original source in tracing;
+its scheduler wait generation is still observed.
+
+A trace-only CPU-local actor scalar is published in the actual incoming context
+switch tail with IRQs masked. Producers read this scalar inside the recording
+payload, never query the scheduler while holding a channel, signal, or CPU lock.
+A zero actor is unknown. An IRQ's actor is its interrupted execution context,
+not a claim about which application initiated the interrupt. The actor mirror
+adds one relaxed store per context switch in feature-enabled kernels, even with
+runtime capture off. Trace-only pairs, signals and waiter nodes each add one u64
+identity field; message storage and the trace wire record do not grow. Feature-off
+builds erase these additions.
+
+ByteChannel `trace_rpc` is a separate optional observation operation requiring
+READ|WRITE, not global capture authority. Protocol code supplies IDs and explicit
+parent context; kernel payload parsing and implicit per-thread parentage are
+forbidden. One admission ticket binds all records of an annotation to its capture,
+and end annotations require the original generation. The formal SDK probes absent
+support once per connection. The kernel remote VFS client and formal filesystem
+worker annotate ordered filesystem RPC; no formal library is imported into
+bootstrap. User annotations do not establish trusted transport delivery: only
+core commit records do. The exporter uses complete observed boundaries and
+suppresses causal flows when any CPU stream is absent, lossy or truncated.
+Zero-duration complete slices with flow IDs bind arrows without inventing an
+enclosing syscall or nonzero execution time.
+
 ## Validation
 
 Host tests exercise the production recorder for overwrite/cursors, independent
@@ -165,3 +209,7 @@ hardware tracing-overhead bound; real-board workload comparisons remain needed
 for any enabled instrumentation. `make test-trace ARCH=aarch64` additionally
 checks the installed SDK, authority, automatic expiry, CPU filtering, generation
 replacement, stopped-buffer stability, loss reporting and real exported events.
+The QEMU harness transfers trace bodies through a fenced FAT data volume and
+extracts them only after QEMU exits; the UART carries command receipts, not bulk
+JSON. The same disk-backed run verifies kernel VFS and formal worker RPC
+correlation. See the [trace usage guide](../../../docs/usage/diagnostics/tracing.md).
