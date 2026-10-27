@@ -3,10 +3,19 @@
 
 //! Kernel log ring-buffer record and wraparound behavior.
 
-use hyper::log::{
-    ByteRing, DeferredDrain, DrainBarrierError, DrainBarrierRegistration, DrainBarrierSet,
-    DrainBarrierStatus, DrainDisposition, EmergencyQuiescence, EmergencyWriteGate, Level,
-    OutputBuffer, ReadResult, RecordFlags, RingBuffer, RuntimeByteAccess, Timestamp,
+use {
+    crate::diagnostics::log::storage::ByteRing, crate::diagnostics::log::storage::DeferredDrain,
+    crate::diagnostics::log::storage::DrainBarrierError,
+    crate::diagnostics::log::storage::DrainBarrierRegistration,
+    crate::diagnostics::log::storage::DrainBarrierSet,
+    crate::diagnostics::log::storage::DrainBarrierStatus,
+    crate::diagnostics::log::storage::DrainDisposition,
+    crate::diagnostics::log::storage::EmergencyQuiescence,
+    crate::diagnostics::log::storage::EmergencyWriteGate, crate::diagnostics::log::storage::Level,
+    crate::diagnostics::log::storage::OutputBuffer, crate::diagnostics::log::storage::ReadResult,
+    crate::diagnostics::log::storage::RecordFlags, crate::diagnostics::log::storage::RingBuffer,
+    crate::diagnostics::log::storage::RuntimeByteAccess,
+    crate::diagnostics::log::storage::Timestamp,
 };
 
 #[test]
@@ -97,7 +106,7 @@ fn rejects_a_ring_smaller_than_its_record_header() {
     let mut ring = RingBuffer::<8>::new();
     assert_eq!(
         ring.append(Level::Info, 0, b"message", RecordFlags::NONE),
-        Err(hyper::log::AppendError::BufferTooSmall)
+        Err(crate::diagnostics::log::storage::AppendError::BufferTooSmall)
     );
 }
 

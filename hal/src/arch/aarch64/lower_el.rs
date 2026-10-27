@@ -62,7 +62,7 @@ pub(super) enum World {
 /// short-lived exclusive reference after matching the exact generation and
 /// pointer, while guest entry retains no Rust reference to the context.
 pub(super) fn publish_guest(context: &mut VcpuContext) -> Result<(), Error> {
-    if super::user_entry::active_generation().is_some() {
+    if crate::arch::aarch64::user::entry::active_generation().is_some() {
         return Err(Error::NativeActive);
     }
     let cpu = current_cpu()?;
@@ -102,7 +102,7 @@ pub(super) fn retire_guest(context: &mut VcpuContext) -> Result<(), Error> {
 
 /// Identifies the only world allowed to interpret a lower-AArch64 frame.
 pub(super) fn current_world() -> World {
-    if let Some(generation) = super::user_entry::active_generation() {
+    if let Some(generation) = crate::arch::aarch64::user::entry::active_generation() {
         return World::Native { generation };
     }
     match guest_generation() {

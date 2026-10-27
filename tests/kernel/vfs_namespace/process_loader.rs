@@ -6,11 +6,13 @@
 use alloc::vec::Vec;
 
 use super::{DirectoryObject, Error, FileObject, ScratchBudget, TestError, check};
-use crate::kernel::accounting::{ResourceDomain, ResourceDomainObject};
-use crate::kernel::process::{
-    LoaderError, ProcessBuilder, ProcessBuilderError, TaskFactory, TaskGroup, TaskGroupObject,
+use crate::fs::primitives::NodeKind;
+use {crate::accounting::ResourceDomain, crate::accounting::ResourceDomainObject};
+use {
+    crate::process::LoaderError, crate::process::ProcessBuilder,
+    crate::process::ProcessBuilderError, crate::process::TaskFactory, crate::process::TaskGroup,
+    crate::process::TaskGroupObject,
 };
-use hyper::fs::NodeKind;
 
 pub(super) fn run(
     root: &DirectoryObject,
@@ -101,10 +103,10 @@ pub(super) fn run(
 fn prepare_file(
     root: &DirectoryObject,
     domain: &ResourceDomain,
-) -> Result<crate::kernel::capability::PreparedHandle, TestError> {
-    use crate::kernel::authority::Rights;
-    use crate::kernel::capability::{HandleFlags, PreparedHandle};
-    use crate::kernel::object::ObjectPublication;
+) -> Result<crate::capability::PreparedHandle, TestError> {
+    use crate::authority::Rights;
+    use crate::object::ObjectPublication;
+    use {crate::capability::HandleFlags, crate::capability::PreparedHandle};
     let file = root.open_file("loader-test-main", domain)?;
     let publication = ObjectPublication::try_new(file)
         .map_err(|_| TestError::Contract("loader test file publication"))?;

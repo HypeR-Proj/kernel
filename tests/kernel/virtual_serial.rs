@@ -3,15 +3,18 @@
 
 //! Registration, hostile cursor, runtime-loss, and pinned-page retirement proof.
 
-use crate::kernel::accounting::{ResourceDomain, ResourceKind, ResourceLimits};
-use crate::kernel::mm::user_space::VmoObject;
-use crate::kernel::object::{KernelObject, ObjectRetirement};
-use crate::kernel::vm::virtual_serial::VirtualSerial;
+use crate::mm::user_space::VmoObject;
+use crate::vm::serial::VirtualSerial;
 use core::sync::atomic::{AtomicU64, Ordering};
 use hyper::abi::native::{
     HYPER_NATIVE_VIRTUAL_SERIAL_OUTPUT_BYTES as BYTES,
     HYPER_NATIVE_VIRTUAL_SERIAL_OUTPUT_CAPACITY as CAPACITY,
 };
+use {
+    crate::accounting::ResourceDomain, crate::accounting::ResourceKind,
+    crate::accounting::ResourceLimits,
+};
+use {crate::object::KernelObject, crate::object::ObjectRetirement};
 
 pub(super) fn run() -> Result<(), &'static str> {
     let domain = ResourceDomain::try_new_root(ResourceLimits::UNLIMITED).map_err(|_| "domain")?;
@@ -32,7 +35,7 @@ pub(super) fn run() -> Result<(), &'static str> {
         return Err("multiple producers admitted");
     }
     let storage = buffer.writable().ok_or("writable storage")?;
-    let producer_address = crate::kernel::mm::memory::linear_address(
+    let producer_address = crate::mm::memory::linear_address(
         storage
             .resident_physical_page(0)
             .map_err(|_| "producer page")?

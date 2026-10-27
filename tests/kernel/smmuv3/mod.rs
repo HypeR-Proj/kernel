@@ -6,11 +6,13 @@
 mod edu;
 pub(crate) mod runtime;
 
-use crate::kernel::device::dma::{BackendMemoryLease, Lease};
-use crate::kernel::device::iommu::{Controller, KernelEnvironment as E};
-use hyper::drivers::{
-    iommu::smmuv3::{Environment, Error, Permissions, firmware::pci_stream_id},
-    platform::{DriverServices, PlatformDevice},
+use {crate::device::dma::BackendMemoryLease, crate::device::dma::Lease};
+use {crate::device::iommu::Controller, crate::device::iommu::KernelEnvironment as E};
+use {
+    hyper_drivers::iommu::smmuv3::Environment, hyper_drivers::iommu::smmuv3::Error,
+    hyper_drivers::iommu::smmuv3::Permissions,
+    hyper_drivers::iommu::smmuv3::firmware::pci_stream_id, hyper_drivers::platform::DriverServices,
+    hyper_drivers::platform::PlatformDevice,
 };
 
 const IOVA: u64 = 0x2000_0000;
@@ -211,10 +213,8 @@ pub(crate) fn run(
     let buffer_base = 0x1fff_f000;
     let buffer = buffer(PATTERN_A, 3)?;
     let addresses: [usize; 3] = core::array::from_fn(|index| {
-        crate::kernel::mm::memory::linear_address(
-            buffer.object().physical_page(index as u64 * 4096),
-        )
-        .unwrap_or_else(|| hyper::debug::invariant_failure("DMA test page outside RAM"))
+        crate::mm::memory::linear_address(buffer.object().physical_page(index as u64 * 4096))
+            .unwrap_or_else(|| hyper::debug::invariant_failure("DMA test page outside RAM"))
     });
     controller.map_buffer(
         buffer_domain,
@@ -259,16 +259,16 @@ impl LeaseAddress for Lease {
         self.object().physical_page(0)
     }
     fn virtual_address(&self) -> usize {
-        crate::kernel::mm::memory::linear_address(self.physical())
+        crate::mm::memory::linear_address(self.physical())
             .unwrap_or_else(|| hyper::debug::invariant_failure("test lease outside linear RAM"))
     }
 }
-impl LeaseAddress for crate::kernel::device::dma::Buffer {
+impl LeaseAddress for crate::device::dma::Buffer {
     fn physical(&self) -> u64 {
-        hyper::drivers::iommu::smmuv3::DmaBuffer::physical_page(self, 0)
+        hyper_drivers::iommu::smmuv3::DmaBuffer::physical_page(self, 0)
     }
     fn virtual_address(&self) -> usize {
-        crate::kernel::mm::memory::linear_address(self.physical())
+        crate::mm::memory::linear_address(self.physical())
             .unwrap_or_else(|| hyper::debug::invariant_failure("test buffer outside linear RAM"))
     }
 }
@@ -278,9 +278,9 @@ fn page(pattern: u64) -> Result<Lease, Error> {
 }
 
 fn buffer(pattern: u64, pages: u64) -> Result<Lease, Error> {
-    use crate::kernel::{
-        accounting::{ResourceDomain, ResourceLimits},
-        mm::user_space::{GuestMemoryBacking, VmoObject},
+    use {
+        crate::accounting::ResourceDomain, crate::accounting::ResourceLimits,
+        crate::mm::user_space::GuestMemoryBacking, crate::mm::user_space::VmoObject,
     };
     let domain =
         ResourceDomain::try_new_root(ResourceLimits::UNLIMITED).map_err(|_| Error::Allocation)?;
@@ -288,9 +288,8 @@ fn buffer(pattern: u64, pages: u64) -> Result<Lease, Error> {
     let backing = GuestMemoryBacking::try_from_vmo(&vmo).map_err(|_| Error::Allocation)?;
     let memory = BackendMemoryLease::prepare(backing, &domain).map_err(|_| Error::Allocation)?;
     for page in 0..pages {
-        let address =
-            crate::kernel::mm::memory::linear_address(memory.object().physical_page(page * 4096))
-                .ok_or(Error::Address)?;
+        let address = crate::mm::memory::linear_address(memory.object().physical_page(page * 4096))
+            .ok_or(Error::Address)?;
         fill(address, pattern + page);
     }
     // Both source owners leave scope here. Real DMA must keep working using

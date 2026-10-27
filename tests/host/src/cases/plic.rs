@@ -6,13 +6,15 @@
 use core::ptr::write_volatile;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
-use hyper::drivers::interrupt::plic::Plic;
 use hyper::hal::barrier::{Barrier, BarrierAccess, BarrierDomain};
 use hyper::hal::interrupt::{
     InterruptController, InterruptId, InterruptPriority, InterruptTrigger,
     KernelInterruptController,
 };
-use hyper::platform::{MAX_PLIC_CONTEXTS, PhysicalRange, PlicInfo};
+use hyper_drivers::interrupt::plic::Plic;
+use {
+    hyper::mm::ranges::PhysicalRange, hyper_platform::MAX_PLIC_CONTEXTS, hyper_platform::PlicInfo,
+};
 
 const REGISTER_SIZE: usize = 0x20_1000;
 const CLAIM_OFFSET: usize = 0x20_0004;

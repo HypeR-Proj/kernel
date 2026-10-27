@@ -31,9 +31,12 @@ the static site identity and source location still distinguish them. Metadata
 for sites that have emitted events is available through their records; there is
 no enumeration of every compiled site in this version.
 
-The macro belongs to `hyper-core` and is re-exported by the kernel binary.
-Reusable mechanisms (including allocator code) use the same one-line call as
-kernel policy. During startup, the kernel installs one immutable machine adapter
+The macro belongs to the independent `hyper-trace` crate (`kernel/trace/`) and
+is re-exported by the kernel binary. The binary's `kernel-trace` feature forwards
+to this crate; core has no trace feature or dependency. Core's synchronization
+and allocation primitives remain uninstrumented to preserve the dependency
+direction and avoid recorder recursion. During startup, the kernel installs
+one immutable machine adapter
 for CPU pinning and clock access. Only enabled events call it, passing a borrowed
 payload closure without allocation. No portable module imports the kernel or HAL.
 
@@ -61,7 +64,7 @@ the feature-enabled compile/test gate is therefore required.
 
 ## Capture lifecycle
 
-The machine adapter is `kernel::trace`; portable storage lives in `hyper::trace`.
+The machine adapter is `crate::diagnostics::trace`; portable storage lives in `hyper_trace`.
 Control/read operations belong in ordinary thread context. The internal recorder
 also supports kernel self-tests. Production userspace uses CpuInspector methods
 260 (start, SET_ATTRIBUTES), 261 (stop, SET_ATTRIBUTES), and 262 (read,

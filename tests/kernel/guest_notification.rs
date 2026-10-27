@@ -6,9 +6,13 @@
 //! running guest, so a lost publication cannot hide behind an unrelated exit.
 
 use super::{InstalledMachine, Notification, ResourceDomain, SignalMask, VmBinding};
-use crate::kernel::vm::registry::{self, PreparedVm};
 use hyper::mm::FallibleArc;
-use hyper::vm::exit::{AccessWidth, GuestPhysicalAddress, MmioAccess, MmioAction, MmioOperation};
+use {crate::vm::registry, crate::vm::registry::PreparedVm};
+use {
+    hyper_vm_models::exit::AccessWidth, hyper_vm_models::exit::GuestPhysicalAddress,
+    hyper_vm_models::exit::MmioAccess, hyper_vm_models::exit::MmioAction,
+    hyper_vm_models::exit::MmioOperation,
+};
 
 type Result<T = ()> = core::result::Result<T, &'static str>;
 const BASE: u64 = 0x0a00_0000;
@@ -26,7 +30,7 @@ pub(super) fn run(front: PreparedVm, back: PreparedVm, domain: &ResourceDomain) 
     let result = match &back {
         Ok(back) => (|| {
             exercise(&front, back, domain)?;
-            let source = crate::kernel::vm::io::Interrupt::prepare(front.clone(), 122, domain)
+            let source = crate::vm::io::Interrupt::prepare(front.clone(), 122, domain)
                 .map_err(|_| "retirement source")?;
             source.install().map_err(|_| "retirement source install")?;
             source
@@ -43,17 +47,14 @@ pub(super) fn run(front: PreparedVm, back: PreparedVm, domain: &ResourceDomain) 
         InstalledMachine::request_stop(back);
     }
     let stopped = hyper::abi::native::HYPER_NATIVE_VIRTUAL_MACHINE_PHASE_STOPPED as u32;
-    if !crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || {
-            Ok::<_, crate::kernel::task::SleepError>(
-                front.snapshot().phase == stopped
-                    && back
-                        .as_ref()
-                        .map_or(true, |back| back.snapshot().phase == stopped),
-            )
-        },
-    )
+    if !crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+        Ok::<_, crate::task::SleepError>(
+            front.snapshot().phase == stopped
+                && back
+                    .as_ref()
+                    .map_or(true, |back| back.snapshot().phase == stopped),
+        )
+    })
     .map_err(|_| "notification VM retirement wait")?
     {
         return Err("notification VM retirement timeout");
@@ -417,8 +418,8 @@ fn verify_guest_interrupt(
     machine: &FallibleArc<InstalledMachine>,
     domain: &ResourceDomain,
 ) -> Result {
-    use crate::kernel::object::{KernelObject, ObjectRetirement};
-    use crate::kernel::vm::io::Interrupt;
+    use crate::vm::io::Interrupt;
+    use {crate::object::KernelObject, crate::object::ObjectRetirement};
     if Interrupt::prepare(machine.clone(), 33, domain).is_ok() {
         return Err("userspace reserved built-in serial IRQ");
     }

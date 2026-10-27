@@ -8,10 +8,10 @@
 use alloc::vec::Vec;
 use core::cell::Cell;
 use hyper::mm::{PAGE_SIZE, PhysicalAddress};
-use hyper::vm::translation::Stage2PagePermissions;
+use hyper_vm_models::translation::Stage2PagePermissions;
 
 use crate::hal::vm::{Stage2AddressSpace, Stage2Error};
-use crate::kernel::mm::page_block::PageBlock;
+use crate::mm::page_block::PageBlock;
 
 const BASE: u64 = 0x4000_0000;
 const BLOCK: u64 = 2 * 1024 * 1024;
@@ -46,7 +46,7 @@ fn allocate_table(
     }
     let owner = PageBlock::allocate(0).ok()?;
     let physical = owner.physical();
-    let address = crate::kernel::mm::memory::linear_address(physical.get())?;
+    let address = crate::mm::memory::linear_address(physical.get())?;
     // SAFETY: The newly allocated page is exclusive and permanently mapped.
     // Retaining its owner below keeps it alive through every descriptor read.
     unsafe { core::ptr::write_bytes(address as *mut u8, 0, PAGE_SIZE as usize) };
@@ -69,12 +69,11 @@ fn expect_leaf(
 
 pub(super) fn run() -> Result<(), Error> {
     let bits = crate::hal::vm::guest_translation_identifier_bits().map_err(|_| Error::Identity)?;
-    let identifier = crate::kernel::mm::translation_id::reserve::<
-        crate::kernel::mm::translation_id::Stage2Vmid,
-    >(bits)
-    .map_err(|_| Error::Identity)?
-    .activate()
-    .map_err(|_| Error::Identity)?;
+    let identifier =
+        crate::mm::translation_id::reserve::<crate::mm::translation_id::Stage2Vmid>(bits)
+            .map_err(|_| Error::Identity)?
+            .activate()
+            .map_err(|_| Error::Identity)?;
     let lease = identifier.acquire().map_err(|_| Error::Identity)?;
     let backing = PageBlock::allocate(9).map_err(|_| Error::Allocation)?;
     let physical = backing.physical().get();

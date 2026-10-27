@@ -6,9 +6,15 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
-use hyper::drivers::power::psci::{CallWidth, Conduit, Error, Psci};
 use hyper::hal::cpu_power::{CpuHardwareId, CpuPower, ResumeAddress};
-use hyper::platform::{PsciCompatibleVersion, PsciInterface, PsciLegacyFunctionIds};
+use {
+    hyper_drivers::power::psci::CallWidth, hyper_drivers::power::psci::Conduit,
+    hyper_drivers::power::psci::Error, hyper_drivers::power::psci::Psci,
+};
+use {
+    hyper_platform::PsciCompatibleVersion, hyper_platform::PsciInterface,
+    hyper_platform::PsciLegacyFunctionIds,
+};
 
 const PSCI_VERSION: u32 = 0x8400_0000;
 const PSCI_FEATURES: u32 = 0x8400_000a;

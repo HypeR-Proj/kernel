@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
+pub(crate) mod kaslr;
+pub(crate) mod translation_id_policy;
+
 mod address_space;
 mod layout;
 mod page_table;

@@ -3,7 +3,7 @@
 
 use core::ptr::{read_unaligned, read_volatile};
 
-use hyper::platform::{PhysicalRange, chosen::CommandLine};
+use {hyper::mm::ranges::PhysicalRange, hyper_platform::chosen::CommandLine};
 
 const RAMDISK_IMAGE_OFFSET: usize = 0x218;
 const RAMDISK_SIZE_OFFSET: usize = 0x21c;

@@ -9,26 +9,16 @@ license = "Apache-2.0"
 publish = false
 
 [lib]
-path = "../src/lib.rs"
 test = false
 bench = false
 doctest = false
 
 [features]
 default = []
-kernel-trace = []
-rtc = []
-runtime-symbols = ["dep:rustc-demangle"]
 crash-console = []
-heap-profiling = []
-kernel-test = []
-kernel-self-test = []
-kernel-stack-audit = []
-io-dma-revoke-test = []
 
 [dependencies]
 hyper-abi = { path = "../../sdk/abi" }
-rustc-demangle = { version = "0.1.28", default-features = false, optional = true }
 
 [lints.clippy]
 doc_markdown = "deny"

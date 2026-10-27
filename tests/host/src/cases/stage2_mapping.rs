@@ -6,12 +6,19 @@
 use core::cell::Cell;
 
 use hyper::cpu::CpuIndex;
-use hyper::vm::exit::MemoryAccess;
-use hyper::vm::translation::{
-    ActiveMappingError, ConcurrentExecution, ExclusiveExecution, ExecutionError,
-    ExecutionReleaseFailure, GuestInstructionContext, GuestInstructionContextTransition,
-    Stage2FaultResolution, Stage2PagePermissions, publish_active_mapping, residency_is_current,
-    resolve_stage2_fault,
+use hyper_vm_models::exit::MemoryAccess;
+use {
+    hyper_vm_models::translation::ActiveMappingError,
+    hyper_vm_models::translation::ConcurrentExecution,
+    hyper_vm_models::translation::ExclusiveExecution, hyper_vm_models::translation::ExecutionError,
+    hyper_vm_models::translation::ExecutionReleaseFailure,
+    hyper_vm_models::translation::GuestInstructionContext,
+    hyper_vm_models::translation::GuestInstructionContextTransition,
+    hyper_vm_models::translation::Stage2FaultResolution,
+    hyper_vm_models::translation::Stage2PagePermissions,
+    hyper_vm_models::translation::publish_active_mapping,
+    hyper_vm_models::translation::residency_is_current,
+    hyper_vm_models::translation::resolve_stage2_fault,
 };
 
 fn release_error(result: Result<(), ExecutionReleaseFailure>) -> Option<ExecutionError> {
@@ -260,7 +267,7 @@ fn concurrent_execution_allows_distinct_cpus_and_preserves_failed_claims() {
 #[test]
 #[should_panic(expected = "internal invariant failure: armed VM execution claim dropped")]
 fn abandoning_execution_claim_reports_instead_of_spinning() {
-    let execution = hyper::vm::translation::ExclusiveExecution::new(17);
+    let execution = hyper_vm_models::translation::ExclusiveExecution::new(17);
     let claim = crate::require_ok(execution.claim(hyper::cpu::CpuIndex::BOOT));
     drop(claim);
 }

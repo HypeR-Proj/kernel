@@ -3,8 +3,11 @@
 
 //! Timer tree balance, ownership and extended-deadline regression tests.
 
-use hyper::time::{OwnedDeadlineQueue, PendingTimer, TimerEvent, TimerHandle, TimerMode};
 use std::collections::BTreeMap;
+use {
+    crate::time::queue::OwnedDeadlineQueue, crate::time::queue::PendingTimer,
+    crate::time::queue::TimerEvent, crate::time::queue::TimerHandle, crate::time::queue::TimerMode,
+};
 
 fn callback(_: TimerEvent, _: usize) {}
 

@@ -116,12 +116,12 @@ The intended production layout is:
 ```text
 sdk/abi/                    compiler-checked schema and public interfaces
 
-src/kernel/entry/user.rs    one upward user-entry adapter
-src/kernel/abi/             ABI values and Native dispatch
-src/kernel/process/         process image, handle table, user threads
-src/kernel/capability/      object header, rights, handles, transactions
-src/kernel/ipc/             channels, events, wait sets, backend sessions
-src/kernel/mm/user_space/   VMO, VMAR, mappings, safe user-copy ownership
+src/entry/user/mod.rs    one upward user-entry adapter
+src/abi/             ABI values and Native dispatch
+src/process/         process image, handle table, user threads
+src/capability/      object header, rights, handles, transactions
+src/ipc/             channels, events, wait sets, backend sessions
+src/mm/user_space/   VMO, VMAR, mappings, safe user-copy ownership
 
 hal/src/hal/user.rs         selected user-world machine capability
 hal/src/arch/*/user.rs       private frames, roots, registers, entry and return

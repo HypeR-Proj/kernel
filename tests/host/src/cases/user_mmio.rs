@@ -1,8 +1,12 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-use hyper::vm::device::mmio::{Error, PendingMmio};
-use hyper::vm::exit::{AccessWidth, GuestPhysicalAddress, MmioAccess, MmioAction, MmioOperation};
+use {hyper_vm_models::device::mmio::Error, hyper_vm_models::device::mmio::PendingMmio};
+use {
+    hyper_vm_models::exit::AccessWidth, hyper_vm_models::exit::GuestPhysicalAddress,
+    hyper_vm_models::exit::MmioAccess, hyper_vm_models::exit::MmioAction,
+    hyper_vm_models::exit::MmioOperation,
+};
 
 fn read() -> MmioAccess {
     MmioAccess::new(

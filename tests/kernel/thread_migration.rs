@@ -6,9 +6,12 @@
 use hyper::cpu::CpuIndex;
 use hyper::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use crate::kernel::sync::Semaphore;
-use crate::kernel::task::scheduler::{self, CpuMask, MigrationStatus, ThreadPriority};
-use crate::kernel::task::{SleepError, sleep_ms};
+use crate::sync::Semaphore;
+use {crate::task::SleepError, crate::task::sleep_ms};
+use {
+    crate::task::scheduler, crate::task::scheduler::CpuMask,
+    crate::task::scheduler::MigrationStatus, crate::task::scheduler::ThreadPriority,
+};
 
 const PROGRESS_TIMEOUT_NS: u64 = 2_000_000_000;
 const SLEEP_MIGRATION_MS: u64 = 500;
@@ -41,7 +44,7 @@ pub(super) enum Error {
     Quiescence(super::support::QuiescenceError),
     Scheduler(scheduler::Error),
     Sleep(SleepError),
-    Synchronization(crate::kernel::sync::Error),
+    Synchronization(crate::sync::Error),
     Timeout(&'static str),
     StateMismatch(usize),
 }
@@ -64,8 +67,8 @@ impl From<SleepError> for Error {
     }
 }
 
-impl From<crate::kernel::sync::Error> for Error {
-    fn from(error: crate::kernel::sync::Error) -> Self {
+impl From<crate::sync::Error> for Error {
+    fn from(error: crate::sync::Error) -> Self {
         Self::Synchronization(error)
     }
 }
@@ -74,7 +77,7 @@ pub(super) fn run() -> Result<(), Error> {
     exercise_transactional_rejection()?;
     exercise_terminated_rejection()?;
 
-    if crate::kernel::cpu::online_cpu_count() <= 1 {
+    if crate::cpu::online_cpu_count() <= 1 {
         crate::pr_notice!("HypeR test: cross-CPU thread migration skipped (one CPU online)");
         return Ok(());
     }
@@ -83,7 +86,7 @@ pub(super) fn run() -> Result<(), Error> {
     exercise_ready_migration(target)?;
     exercise_running_migration(target)?;
     if let Some(second_target) = CpuIndex::new(2)
-        && crate::kernel::cpu::online_cpu_count() > 2
+        && crate::cpu::online_cpu_count() > 2
     {
         exercise_remote_running_migration(target, second_target)?;
     }
@@ -117,7 +120,7 @@ fn exercise_transactional_rejection() -> Result<(), Error> {
         return Err(Error::StateMismatch(2));
     }
 
-    let online = crate::kernel::cpu::online_cpu_count();
+    let online = crate::cpu::online_cpu_count();
     if let Some(offline) = CpuIndex::new(online)
         && (scheduler::migrate_thread(dormant, offline) != Err(scheduler::Error::CpuNotRegistered)
             || scheduler::thread_placement(dormant)? != initial)
@@ -242,7 +245,7 @@ fn exercise_running_migration(target: CpuIndex) -> Result<(), Error> {
     scheduler::set_thread_fifo_policy(scheduler::current_thread_id()?, ThreadPriority::NORMAL)?;
 
     #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_X86_64))]
-    let delivery_before = crate::kernel::irq::reschedule_delivery_count_for_test(target);
+    let delivery_before = crate::irq::reschedule_delivery_count_for_test(target);
     let affinity = CpuMask::EMPTY.with_cpu(CpuIndex::BOOT).with_cpu(target);
     let worker = scheduler::kthread_create_fifo_with_affinity(
         "migration/running",
@@ -269,7 +272,7 @@ fn exercise_running_migration(target: CpuIndex) -> Result<(), Error> {
     }
     RUNNING_RELEASE.store(true, Ordering::Release);
     #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_X86_64))]
-    if crate::kernel::irq::reschedule_delivery_count_for_test(target) <= delivery_before {
+    if crate::irq::reschedule_delivery_count_for_test(target) <= delivery_before {
         return Err(Error::StateMismatch(12));
     }
     scheduler::set_thread_fair_policy(scheduler::current_thread_id()?)?;
@@ -330,9 +333,9 @@ fn exercise_remote_running_migration(source: CpuIndex, target: CpuIndex) -> Resu
     // only after it is running so the following deltas prove migration's own
     // source and target notifications.
     #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_X86_64))]
-    let source_delivery = crate::kernel::irq::reschedule_delivery_count_for_test(source);
+    let source_delivery = crate::irq::reschedule_delivery_count_for_test(source);
     #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_X86_64))]
-    let target_delivery = crate::kernel::irq::reschedule_delivery_count_for_test(target);
+    let target_delivery = crate::irq::reschedule_delivery_count_for_test(target);
     if scheduler::migrate_thread(worker, target)? != MigrationStatus::Pending {
         return Err(Error::StateMismatch(19));
     }
@@ -351,8 +354,8 @@ fn exercise_remote_running_migration(source: CpuIndex, target: CpuIndex) -> Resu
     wait_until(
         "running migration source or target IPI was not delivered",
         || {
-            crate::kernel::irq::reschedule_delivery_count_for_test(source) > source_delivery
-                && crate::kernel::irq::reschedule_delivery_count_for_test(target) > target_delivery
+            crate::irq::reschedule_delivery_count_for_test(source) > source_delivery
+                && crate::irq::reschedule_delivery_count_for_test(target) > target_delivery
         },
     )?;
     REMOTE_RELEASE.store(true, Ordering::Release);
@@ -396,7 +399,7 @@ fn quiesce_threads() -> Result<(), Error> {
 }
 
 fn wait_until(description: &'static str, condition: impl FnMut() -> bool) -> Result<(), Error> {
-    let reached = crate::kernel::time::spin_wait_until(PROGRESS_TIMEOUT_NS, condition)
+    let reached = crate::time::spin_wait_until(PROGRESS_TIMEOUT_NS, condition)
         .map_err(|_| Error::Timeout("migration progress clock failed"))?;
     if reached {
         Ok(())
@@ -419,7 +422,7 @@ extern "C" fn target_blocker(_argument: usize) {
 }
 
 extern "C" fn ready_worker(target: usize) {
-    if crate::kernel::cpu::current_index() != Some(CpuIndex::BOOT) {
+    if crate::cpu::current_index() != Some(CpuIndex::BOOT) {
         record_failure(&READY_FAILURE, 1);
     }
     READY_STAGE.store(1, Ordering::Release);
@@ -427,7 +430,7 @@ extern "C" fn ready_worker(target: usize) {
         record_failure(&READY_FAILURE, 2);
         return;
     }
-    if crate::kernel::cpu::current_index().map(CpuIndex::get) != Some(target) {
+    if crate::cpu::current_index().map(CpuIndex::get) != Some(target) {
         record_failure(&READY_FAILURE, 3);
     }
     READY_STAGE.store(2, Ordering::Release);
@@ -462,7 +465,7 @@ extern "C" fn running_worker(target: usize) {
         return;
     }
     RUNNING_STAGE.store(1, Ordering::Release);
-    while crate::kernel::cpu::current_index() != Some(target_cpu) {
+    while crate::cpu::current_index() != Some(target_cpu) {
         if scheduler::cond_resched().is_err() {
             record_failure(&RUNNING_FAILURE, 5);
             return;
@@ -476,7 +479,7 @@ extern "C" fn running_worker(target: usize) {
         record_failure(&RUNNING_FAILURE, 6);
         return;
     }
-    if crate::kernel::cpu::current_index() != Some(target_cpu) {
+    if crate::cpu::current_index() != Some(target_cpu) {
         record_failure(&RUNNING_FAILURE, 7);
     }
     RUNNING_OWNER.store(0, Ordering::Release);
@@ -492,14 +495,14 @@ extern "C" fn blocked_worker(target: usize) {
         record_failure(&BLOCK_FAILURE, 1);
         return;
     }
-    if crate::kernel::cpu::current_index().map(CpuIndex::get) != Some(target) {
+    if crate::cpu::current_index().map(CpuIndex::get) != Some(target) {
         record_failure(&BLOCK_FAILURE, 2);
     }
     BLOCK_STAGE.store(2, Ordering::Release);
 }
 
 extern "C" fn remote_running_worker(target: usize) {
-    if crate::kernel::cpu::current_index() != CpuIndex::new(1)
+    if crate::cpu::current_index() != CpuIndex::new(1)
         || REMOTE_OWNER
             .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
@@ -512,7 +515,7 @@ extern "C" fn remote_running_worker(target: usize) {
         record_failure(&REMOTE_FAILURE, 2);
         return;
     };
-    while crate::kernel::cpu::current_index() != Some(target_cpu) {
+    while crate::cpu::current_index() != Some(target_cpu) {
         #[cfg(CONFIG_ARCH_AARCH64)]
         core::hint::spin_loop();
         #[cfg(not(CONFIG_ARCH_AARCH64))]
@@ -526,7 +529,7 @@ extern "C" fn remote_running_worker(target: usize) {
     if REMOTE_OWNER
         .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
-        || crate::kernel::cpu::current_index() != Some(target_cpu)
+        || crate::cpu::current_index() != Some(target_cpu)
     {
         record_failure(&REMOTE_FAILURE, 3);
     }
@@ -543,7 +546,7 @@ extern "C" fn sleep_worker(target: usize) {
         record_failure(&SLEEP_FAILURE, 1);
         return;
     }
-    if crate::kernel::cpu::current_index().map(CpuIndex::get) != Some(target) {
+    if crate::cpu::current_index().map(CpuIndex::get) != Some(target) {
         record_failure(&SLEEP_FAILURE, 2);
     }
     SLEEP_STAGE.store(2, Ordering::Release);

@@ -20,7 +20,7 @@ The [repository CI policy](../../tests/ci/README.md) lists the runtime suites.
 
 | Property | Enforcement |
 | --- | --- |
-| Kernel -> HAL/core, HAL -> core dependency direction | `ci/hal-boundary.py` traverses Cargo's resolved graph, including indirect edges. |
+| Seven-crate dependency graph and no reverse dependencies | `ci/hal-boundary.py` traverses Cargo's resolved graph, including external helper packages, and checks the documented core/platform/drivers/vm-models/trace/HAL/kernel boundaries. |
 | Private selected architecture implementation | A public HAL import must compile; importing `hyper_hal::arch` must fail at that import with E0603. |
 | IRQ registration ownership, failure returns | `kernel/type_contracts.rs` rejects Clone/Copy and checks consuming activate/unregister/discard signatures and owned failure payloads. |
 | CPU-affine IRQ, address-space, preemption and wait tokens | The same file rejects Send/Sync and Clone/Copy on the actual types. It observes manual trait implementations and nested fields. |

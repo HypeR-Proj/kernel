@@ -3,7 +3,10 @@
 
 use crate::bootstrap_map::{IDENTITY_LIMIT, populate};
 use crate::registers::{BOOT_DEVICE_BLOCK_FLAGS, BOOT_NORMAL_BLOCK_FLAGS};
-use hyper::platform::{CpuList, PhysicalRange, PlatformInfo, RegionList};
+use {
+    hyper::mm::ranges::PhysicalRange, hyper::mm::ranges::RegionList, hyper_platform::CpuList,
+    hyper_platform::PlatformInfo,
+};
 
 fn platform(ram: u64, size: u64, mmio: u64) -> PlatformInfo {
     let mut result = PlatformInfo {

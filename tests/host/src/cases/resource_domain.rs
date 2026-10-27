@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Barrier};
 
-#[path = "../../../../src/kernel/accounting/mod.rs"]
+#[path = "../../../../src/accounting/mod.rs"]
 #[allow(dead_code, unused_imports)]
 mod accounting;
 

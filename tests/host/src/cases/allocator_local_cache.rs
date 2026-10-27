@@ -3,6 +3,10 @@
 
 //! Deterministic tests for the allocation-free magazine ownership container.
 
+#[allow(
+    clippy::duplicate_mod,
+    reason = "exercise private allocator algorithms independently of the integrated heap"
+)]
 #[path = "../../../../src/mm/allocator/heap/local_cache.rs"]
 mod model;
 
@@ -48,6 +52,10 @@ fn take_moves_each_value_exactly_once() {
     assert!(source.is_empty());
 }
 
+#[allow(
+    clippy::duplicate_mod,
+    reason = "exercise private allocator algorithms independently of the integrated heap"
+)]
 #[path = "../../../../src/mm/allocator/heap/cache_snapshot.rs"]
 mod census;
 

@@ -6,9 +6,9 @@
 use hyper::cpu::CpuIndex;
 use hyper::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use crate::kernel::sync::Semaphore;
-use crate::kernel::task::scheduler::{self, CpuMask};
-use crate::kernel::task::thread::ThreadId;
+use crate::sync::Semaphore;
+use crate::task::thread::ThreadId;
+use {crate::task::scheduler, crate::task::scheduler::CpuMask};
 
 #[cfg(target_arch = "aarch64")]
 #[path = "scheduler_balance_continuation.rs"]
@@ -26,8 +26,8 @@ static PROGRESS: [AtomicUsize; WORKERS] = [const { AtomicUsize::new(0) }; WORKER
 
 pub(super) enum Error {
     Scheduler(scheduler::Error),
-    Sleep(crate::kernel::task::SleepError),
-    Synchronization(crate::kernel::sync::Error),
+    Sleep(crate::task::SleepError),
+    Synchronization(crate::sync::Error),
     Quiescence(super::support::QuiescenceError),
     Contract(&'static str),
     Worker(usize),
@@ -51,13 +51,13 @@ impl From<scheduler::Error> for Error {
         Self::Scheduler(value)
     }
 }
-impl From<crate::kernel::task::SleepError> for Error {
-    fn from(value: crate::kernel::task::SleepError) -> Self {
+impl From<crate::task::SleepError> for Error {
+    fn from(value: crate::task::SleepError) -> Self {
         Self::Sleep(value)
     }
 }
-impl From<crate::kernel::sync::Error> for Error {
-    fn from(value: crate::kernel::sync::Error) -> Self {
+impl From<crate::sync::Error> for Error {
+    fn from(value: crate::sync::Error) -> Self {
         Self::Synchronization(value)
     }
 }
@@ -104,7 +104,7 @@ fn exercise(widen: bool) -> Result<(), Error> {
         wait("workers did not park", || {
             Ok(GATE.waiter_count()? == WORKERS)
         })?;
-        let remote = (crate::kernel::cpu::online_cpu_count() > 1)
+        let remote = (crate::cpu::online_cpu_count() > 1)
             .then(|| CpuIndex::new(1))
             .flatten();
         let affinity = if widen {
@@ -148,7 +148,7 @@ fn exercise(widen: bool) -> Result<(), Error> {
         })?;
         // Keep both cases runnable over repeated scheduling events, including
         // single-CPU boots, rather than observing only the first dispatch.
-        crate::kernel::task::sleep_ms(80)?;
+        crate::task::sleep_ms(80)?;
         check_failure()?;
         if OBSERVED_CPUS.load(Ordering::Acquire) != required {
             return Err(Error::Contract("execution escaped the allowed CPUs"));
@@ -171,10 +171,7 @@ fn wait(
     failure: &'static str,
     condition: impl FnMut() -> Result<bool, Error>,
 ) -> Result<(), Error> {
-    if crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        condition,
-    )? {
+    if crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, condition)? {
         Ok(())
     } else {
         Err(Error::Contract(failure))
@@ -213,7 +210,7 @@ extern "C" fn worker(index: usize) {
             fail(4);
             return;
         }
-        let Some(cpu) = crate::kernel::cpu::current_index() else {
+        let Some(cpu) = crate::cpu::current_index() else {
             fail(5);
             return;
         };

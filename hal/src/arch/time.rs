@@ -24,7 +24,7 @@ pub enum DescriptionError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Description {
-    pub hardware: hyper::platform::PlatformInterrupt,
+    pub hardware: hyper_platform::PlatformInterrupt,
     pub guest_virtual_interrupt: hyper::hal::interrupt::InterruptId,
     pub map_guest_virtual_interrupt: bool,
 }

@@ -9,15 +9,18 @@
 use hyper::cpu::CpuIndex;
 use hyper::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use crate::kernel::task::policy::{
-    BudgetParameters, SchedulingParameters, SchedulingRole, ThreadPriority,
+use crate::task::thread::ThreadId;
+use {crate::task, crate::time};
+use {
+    crate::task::policy::BudgetParameters, crate::task::policy::SchedulingParameters,
+    crate::task::policy::SchedulingRole, crate::task::policy::ThreadPriority,
 };
-use crate::kernel::task::scheduler::{self, CpuMask};
-use crate::kernel::task::scheduling_authority::{
-    SCHEDULING_RIGHTS, SchedulingAuthority, SchedulingLimits,
+use {crate::task::scheduler, crate::task::scheduler::CpuMask};
+use {
+    crate::task::scheduling_authority::SCHEDULING_RIGHTS,
+    crate::task::scheduling_authority::SchedulingAuthority,
+    crate::task::scheduling_authority::SchedulingLimits,
 };
-use crate::kernel::task::thread::ThreadId;
-use crate::kernel::{task, time};
 
 const PERIOD_NS: u64 = hyper::config::SCHED_PERIOD_MS as u64 * 1_000_000;
 const NO_WORKER: usize = usize::MAX;
@@ -64,7 +67,7 @@ impl From<super::support::QuiescenceError> for Error {
 
 pub(super) fn run() -> Result<(), Error> {
     super::support::quiesce_workers()?;
-    let online = crate::kernel::cpu::online_cpu_count();
+    let online = crate::cpu::online_cpu_count();
     let isolated = online > 1;
     let target = CpuIndex::new(online - 1).ok_or(Error::Contract("invalid target CPU"))?;
     TARGET_CPU.store(target.get(), Ordering::Release);
@@ -196,9 +199,7 @@ extern "C" fn worker(index: usize) {
         FAILURE.store(true, Ordering::Release);
         return;
     };
-    if crate::kernel::cpu::current_index().map(CpuIndex::get)
-        != Some(TARGET_CPU.load(Ordering::Acquire))
-    {
+    if crate::cpu::current_index().map(CpuIndex::get) != Some(TARGET_CPU.load(Ordering::Acquire)) {
         FAILURE.store(true, Ordering::Release);
         return;
     }

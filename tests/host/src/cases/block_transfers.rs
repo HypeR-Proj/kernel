@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::block_transfer::decode_write_batch;
-use hyper::fs::block::Error;
+use crate::fs::primitives::block::Error;
 
 fn frame() -> Vec<u8> {
     let mut bytes = Vec::new();

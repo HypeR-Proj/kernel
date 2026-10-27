@@ -4,11 +4,14 @@
 //! Protection follows canonical content and active process ownership.
 
 use super::{DirectoryObject, Error, FileObject, FileOpenOptions, ScratchBudget, TestError, check};
-use crate::kernel::accounting::{ResourceDomain, ResourceKind, ResourceLimits};
-use crate::kernel::authority::Rights;
-use crate::kernel::object::{KernelObject, ObjectPublication, TransferClass};
-use crate::kernel::vfs::FileProtectionObject;
-use hyper::fs::NodeKind;
+use crate::authority::Rights;
+use crate::fs::primitives::NodeKind;
+use crate::fs::vfs::FileProtectionObject;
+use {
+    crate::accounting::ResourceDomain, crate::accounting::ResourceKind,
+    crate::accounting::ResourceLimits,
+};
+use {crate::object::KernelObject, crate::object::ObjectPublication, crate::object::TransferClass};
 
 pub(super) fn run(
     root: &DirectoryObject,

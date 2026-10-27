@@ -5,13 +5,18 @@
 
 use hyper::mm::PAGE_SIZE;
 
-use crate::kernel::accounting::{ResourceDomain, ResourceLimits};
-use crate::kernel::mm::user_space::{NativeAddressSpace, UserAddress, UserSlice};
-use crate::kernel::process::{
-    MachineAbi, PreparedProcess, Process, ProcessImage, ProcessNameSnapshot, ProcessObject,
-    ProcessPhase, TaskGroup, TerminalReason,
+use crate::reaper::retry_test;
+use {crate::accounting::ResourceDomain, crate::accounting::ResourceLimits};
+use {
+    crate::mm::user_space::NativeAddressSpace, crate::mm::user_space::UserAddress,
+    crate::mm::user_space::UserSlice,
 };
-use crate::kernel::reaper::retry_test;
+use {
+    crate::process::MachineAbi, crate::process::PreparedProcess, crate::process::Process,
+    crate::process::ProcessImage, crate::process::ProcessNameSnapshot,
+    crate::process::ProcessObject, crate::process::ProcessPhase, crate::process::TaskGroup,
+    crate::process::TerminalReason,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Error {
@@ -59,7 +64,7 @@ fn exercise(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Error> {
             } else {
                 // An unrelated request opens another pass while its first
                 // delayed retry is pending. Stop publishing once it enters.
-                crate::kernel::reaper::request();
+                crate::reaper::request();
                 false
             }
         })?;
@@ -67,14 +72,14 @@ fn exercise(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Error> {
             return Err(Error::Interleaving);
         }
         if !matches!(
-            crate::kernel::object::wait_one(
+            crate::object::wait_one(
                 group.signal_source(),
                 domain,
                 TaskGroup::TERMINATED.bits(),
                 0,
                 || false,
             ),
-            Ok(crate::kernel::object::SignalWaitOutcome::TimedOut)
+            Ok(crate::object::SignalWaitOutcome::TimedOut)
         ) {
             return Err(Error::Group);
         }
@@ -84,14 +89,14 @@ fn exercise(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Error> {
         // after its callback publishes in the controlled late window.
         progress(|| process.snapshot().phase == ProcessPhase::Retired)?;
         if !matches!(
-            crate::kernel::object::wait_one(
+            crate::object::wait_one(
                 group.signal_source(),
                 domain,
                 TaskGroup::TERMINATED.bits(),
                 u64::MAX,
                 || false,
             ),
-            Ok(crate::kernel::object::SignalWaitOutcome::Observed(_))
+            Ok(crate::object::SignalWaitOutcome::Observed(_))
         ) {
             return Err(Error::Group);
         }
@@ -145,10 +150,9 @@ fn prepare_process(domain: &ResourceDomain, group: &TaskGroup) -> Result<Process
 }
 
 fn progress(mut condition: impl FnMut() -> bool) -> Result<(), Error> {
-    let done = crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || Ok::<_, crate::kernel::task::SleepError>(condition()),
-    )
+    let done = crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+        Ok::<_, crate::task::SleepError>(condition())
+    })
     .map_err(|_| Error::Progress)?;
     if done { Ok(()) } else { Err(Error::Progress) }
 }

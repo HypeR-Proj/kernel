@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-use hyper::vm::exit::{AccessWidth, MemoryAccess};
-use hyper::vm::riscv64::instruction::*;
-use hyper::vm::riscv64::time::{TimerWake, timer_wake};
+use hyper_vm_models::riscv64::instruction::*;
+use {hyper_vm_models::exit::AccessWidth, hyper_vm_models::exit::MemoryAccess};
+use {hyper_vm_models::riscv64::time::TimerWake, hyper_vm_models::riscv64::time::timer_wake};
 
 #[test]
 fn integer_loads_preserve_signedness_and_x0_destination() {

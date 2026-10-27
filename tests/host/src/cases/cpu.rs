@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use hyper::cpu::{CpuIndex, MAX_CPUS, PerCpu};
-use hyper::platform::{CpuInfo, CpuList, CpuListError};
+use {hyper_platform::CpuInfo, hyper_platform::CpuList, hyper_platform::CpuListError};
 
 #[test]
 fn logical_cpu_index_rejects_out_of_capacity_values() {

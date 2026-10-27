@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-use hyper::vm::device::uart16550::Ns16550;
-use hyper::vm::riscv64::plic::VirtualPlic;
+use hyper_vm_models::device::uart16550::Ns16550;
+use hyper_vm_models::riscv64::plic::VirtualPlic;
 
 #[test]
 fn uart_fifo_trigger_and_sparse_character_timeout() {
@@ -70,7 +70,7 @@ fn uart_loopback_does_not_transmit_to_host() {
 }
 
 #[test]
-fn plic_claim_threshold_and_level_replay() -> Result<(), hyper::vm::riscv64::plic::Error> {
+fn plic_claim_threshold_and_level_replay() -> Result<(), hyper_vm_models::riscv64::plic::Error> {
     let mut plic = VirtualPlic::new();
     plic.write(10 * 4, 3)?;
     plic.write(11 * 4, 3)?;
@@ -122,7 +122,7 @@ fn uart_timeout_restart_and_counter_wrap() {
 
 #[test]
 fn plic_masking_reserved_sources_and_in_service_gateway()
--> Result<(), hyper::vm::riscv64::plic::Error> {
+-> Result<(), hyper_vm_models::riscv64::plic::Error> {
     let mut plic = VirtualPlic::new();
     plic.write(0, u32::MAX)?;
     assert_eq!(plic.read(0)?, 0);

@@ -6,7 +6,9 @@
 use hyper::cpu::CpuIndex;
 use hyper::sync::atomic::{AtomicBool, Ordering};
 
-use crate::kernel::task::scheduler::{self, CpuMask, ThreadPriority};
+use {
+    crate::task::scheduler, crate::task::scheduler::CpuMask, crate::task::scheduler::ThreadPriority,
+};
 
 const DELIVERY_TIMEOUT_NS: u64 = 1_000_000_000;
 
@@ -18,7 +20,7 @@ pub(super) enum Error {
     NotificationUnavailable,
     Quiescence(super::support::QuiescenceError),
     Scheduler(scheduler::Error),
-    Time(crate::kernel::time::Error),
+    Time(crate::time::Error),
     Timeout(&'static str),
 }
 
@@ -34,20 +36,20 @@ impl From<super::support::QuiescenceError> for Error {
     }
 }
 
-impl From<crate::kernel::time::Error> for Error {
-    fn from(error: crate::kernel::time::Error) -> Self {
+impl From<crate::time::Error> for Error {
+    fn from(error: crate::time::Error) -> Self {
         Self::Time(error)
     }
 }
 
 pub(super) fn run() -> Result<(), Error> {
-    if crate::kernel::cpu::online_cpu_count() <= 1 {
+    if crate::cpu::online_cpu_count() <= 1 {
         crate::pr_notice!("HypeR test: targeted reschedule IPI skipped (one CPU online)");
         return Ok(());
     }
 
     let target = CpuIndex::new(1).ok_or(Error::InvalidTarget)?;
-    let baseline = crate::kernel::irq::reschedule_delivery_count_for_test(target);
+    let baseline = crate::irq::reschedule_delivery_count_for_test(target);
     REMOTE_WORKER_RAN.store(false, Ordering::Release);
 
     let worker = scheduler::kthread_create_fifo_with_affinity(
@@ -59,9 +61,9 @@ pub(super) fn run() -> Result<(), Error> {
     )?;
     scheduler::thread_ready(worker)?;
     wait_until("reschedule SGI was not dispatched", || {
-        crate::kernel::irq::reschedule_delivery_count_for_test(target) > baseline
+        crate::irq::reschedule_delivery_count_for_test(target) > baseline
     })?;
-    let first_delivery = crate::kernel::irq::reschedule_delivery_count_for_test(target);
+    let first_delivery = crate::irq::reschedule_delivery_count_for_test(target);
 
     // Ready state is durable and may be consumed at another scheduling point
     // before the SGI itself is acknowledged. Prove worker progress and SGI
@@ -77,7 +79,7 @@ pub(super) fn run() -> Result<(), Error> {
         return Err(Error::NotificationUnavailable);
     }
     wait_until("completed SGI was not delivered again", || {
-        crate::kernel::irq::reschedule_delivery_count_for_test(target) > first_delivery
+        crate::irq::reschedule_delivery_count_for_test(target) > first_delivery
     })?;
     super::support::quiesce_workers()?;
 
@@ -86,7 +88,7 @@ pub(super) fn run() -> Result<(), Error> {
 }
 
 fn wait_until(description: &'static str, condition: impl FnMut() -> bool) -> Result<(), Error> {
-    if crate::kernel::time::spin_wait_until(DELIVERY_TIMEOUT_NS, condition)? {
+    if crate::time::spin_wait_until(DELIVERY_TIMEOUT_NS, condition)? {
         Ok(())
     } else {
         Err(Error::Timeout(description))

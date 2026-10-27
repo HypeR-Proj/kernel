@@ -9,9 +9,11 @@
 use hyper::cpu::CpuIndex;
 use hyper::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::kernel::sync::{Completion, Mutex, Semaphore};
-use crate::kernel::task::WaitQueue;
-use crate::kernel::task::scheduler::{self, CpuMask, ThreadPriority};
+use crate::task::WaitQueue;
+use {crate::sync::Completion, crate::sync::Mutex, crate::sync::Semaphore};
+use {
+    crate::task::scheduler, crate::task::scheduler::CpuMask, crate::task::scheduler::ThreadPriority,
+};
 
 static FIFO_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 static FIFO_FAILURE: AtomicUsize = AtomicUsize::new(0);
@@ -32,8 +34,8 @@ pub(super) enum Error {
     Affinity(usize),
     Quiescence(super::support::QuiescenceError),
     Scheduler(scheduler::Error),
-    Sleep(crate::kernel::task::SleepError),
-    Synchronization(crate::kernel::sync::Error),
+    Sleep(crate::task::SleepError),
+    Synchronization(crate::sync::Error),
     Worker(usize),
     StateMismatch,
 }
@@ -44,8 +46,8 @@ impl From<scheduler::Error> for Error {
     }
 }
 
-impl From<crate::kernel::task::SleepError> for Error {
-    fn from(error: crate::kernel::task::SleepError) -> Self {
+impl From<crate::task::SleepError> for Error {
+    fn from(error: crate::task::SleepError) -> Self {
         Self::Sleep(error)
     }
 }
@@ -56,8 +58,8 @@ impl From<super::support::QuiescenceError> for Error {
     }
 }
 
-impl From<crate::kernel::sync::Error> for Error {
-    fn from(error: crate::kernel::sync::Error) -> Self {
+impl From<crate::sync::Error> for Error {
+    fn from(error: crate::sync::Error) -> Self {
         Self::Synchronization(error)
     }
 }
@@ -159,15 +161,13 @@ pub(super) fn run() -> Result<(), Error> {
 }
 
 fn wait_for_completions(semaphore: &Semaphore, mut remaining: usize) -> Result<(), Error> {
-    let completed = crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || {
+    let completed =
+        crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
             while remaining != 0 && semaphore.try_acquire() {
                 remaining -= 1;
             }
             Ok::<_, Error>(remaining == 0)
-        },
-    )?;
+        })?;
     if completed {
         Ok(())
     } else {
@@ -315,11 +315,11 @@ extern "C" fn policy_peer(expected: usize) {
 }
 
 fn exercise_affinity_creation() -> Result<(), Error> {
-    let current = crate::kernel::cpu::current_index().ok_or(Error::Affinity(1))?;
+    let current = crate::cpu::current_index().ok_or(Error::Affinity(1))?;
     if current != CpuIndex::BOOT {
         return Err(Error::Affinity(2));
     }
-    let online_cpus = crate::kernel::cpu::online_cpu_count();
+    let online_cpus = crate::cpu::online_cpu_count();
     let remote = if online_cpus > 1 {
         CpuIndex::new(1)
     } else {
@@ -379,7 +379,7 @@ fn exercise_affinity_creation() -> Result<(), Error> {
     let registry_before = scheduler::registry_slot_count()?;
     let before = scheduler::kthread_create("reservation-before", fifo_peer, 0)?;
     scheduler::discard_dormant_kernel_thread(before)?;
-    let overlong_name = [b'x'; crate::kernel::task::thread::MAX_THREAD_NAME_BYTES + 1];
+    let overlong_name = [b'x'; crate::task::thread::MAX_THREAD_NAME_BYTES + 1];
     let overlong_name = match core::str::from_utf8(&overlong_name) {
         Ok(name) => name,
         Err(_) => return Err(Error::Affinity(9)),
@@ -580,10 +580,7 @@ fn exercise_nonblocking_paths() -> Result<(), Error> {
     if *guard != 7 || mutex.waiter_count()? != 0 {
         return Err(Error::StateMismatch);
     }
-    if !matches!(
-        mutex.try_lock(),
-        Err(crate::kernel::sync::Error::WouldDeadlock)
-    ) {
+    if !matches!(mutex.try_lock(), Err(crate::sync::Error::WouldDeadlock)) {
         return Err(Error::StateMismatch);
     }
     drop(guard);
@@ -661,10 +658,9 @@ fn exercise_cancelled_completion_join() -> Result<(), Error> {
     )?;
     scheduler::thread_ready(worker)?;
     for _ in 0..8 {
-        if !crate::kernel::task::wait_for_test_progress(
-            crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-            || Ok::<_, Error>(state.event.waiter_count()? == 1),
-        )? || state.observed.load(Ordering::Acquire) != 0
+        if !crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+            Ok::<_, Error>(state.event.waiter_count()? == 1)
+        })? || state.observed.load(Ordering::Acquire) != 0
             || state.worker_error.load(Ordering::Acquire) != 0
             || !state.event.cancel_waiter_for_test(worker)?
         {
@@ -747,7 +743,7 @@ extern "C" fn producer(_argument: usize) {
     *value = 1;
     if !matches!(
         state.value.try_lock(),
-        Err(crate::kernel::sync::Error::WouldDeadlock)
+        Err(crate::sync::Error::WouldDeadlock)
     ) {
         state.fail(2);
     }

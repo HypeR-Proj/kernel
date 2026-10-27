@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-#[path = "../../../../src/kernel/vm/run_admission.rs"]
+#[path = "../../../../src/vm/run_admission.rs"]
 mod admission_model;
 
 use std::sync::atomic::{AtomicUsize, Ordering};

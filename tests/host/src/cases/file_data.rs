@@ -1,9 +1,12 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-use hyper::fs::file_data::{Error, FileData, StorageBudget};
 use std::cell::Cell;
 use std::rc::Rc;
+use {
+    crate::fs::primitives::file_data::Error, crate::fs::primitives::file_data::FileData,
+    crate::fs::primitives::file_data::StorageBudget,
+};
 
 struct Budget {
     used: Rc<Cell<usize>>,

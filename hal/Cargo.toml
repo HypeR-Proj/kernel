@@ -16,14 +16,17 @@ doctest = false
 [features]
 pmu-profiling = []
 default = []
-crash-console = ["hyper/crash-console"]
-kernel-test = ["hyper/kernel-test"]
+crash-console = ["hyper/crash-console", "hyper-drivers/crash-console"]
+kernel-test = []
 kernel-vgic-tc-test = []
-kernel-self-test = ["hyper/kernel-self-test"]
-kernel-stack-audit = ["hyper/kernel-stack-audit"]
+kernel-self-test = []
+kernel-stack-audit = []
 
 [dependencies]
 hyper = { package = "hyper-core", path = "../core", default-features = false }
+hyper-platform = { path = "../platform", default-features = false }
+hyper-drivers = { path = "../drivers", default-features = false }
+hyper-vm-models = { path = "../vm-models", default-features = false }
 
 [lints.clippy]
 doc_markdown = "deny"

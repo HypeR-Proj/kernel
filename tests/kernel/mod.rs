@@ -74,7 +74,7 @@ pub(crate) fn run() {
     run_case("reschedule IPI runtime proof", reschedule_ipi::run);
     run_case(
         "wait-queue topology validation",
-        crate::kernel::task::scheduler::test_wait_queue_topology,
+        crate::task::scheduler::test_wait_queue_topology,
     );
     run_case("kernel scheduler/sync tests", scheduler_sync::run);
     run_case(
@@ -126,7 +126,7 @@ pub(crate) fn run() {
     run_case("kernel advisory file-lock tests", file_locks::run);
     run_case(
         "VFS namespace and file transactions",
-        crate::kernel::vfs::namespace_test::run,
+        crate::fs::vfs::namespace_test::run,
     );
     run_case("kernel object-directory tests", object_directory::run);
     run_case(
@@ -212,6 +212,6 @@ pub(crate) fn run() {
 
 fn run_case<E: core::fmt::Debug>(operation: &'static str, test: impl FnOnce() -> Result<(), E>) {
     if let Err(error) = test() {
-        crate::kernel::boot::fail(operation, error);
+        crate::boot::fail(operation, error);
     }
 }

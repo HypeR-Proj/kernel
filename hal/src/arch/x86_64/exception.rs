@@ -448,7 +448,7 @@ extern "C" fn x86_64_vector_dispatch(frame: &mut ExceptionFrame) {
     let vector = frame.vector as u32;
     if vector >= 32 {
         if vector == super::platform::KERNEL_RPC_VECTOR {
-            super::interrupt_controller::end_local_interrupt();
+            crate::arch::x86_64::irq::controller::end_local_interrupt();
             let action = crate::arch::irq::service_kernel_rpc_interrupt(
                 hyper::hal::interrupt::InterruptOrigin::Host,
             );
@@ -460,7 +460,7 @@ extern "C" fn x86_64_vector_dispatch(frame: &mut ExceptionFrame) {
             }
             return;
         }
-        super::virtualization::observe_host_interrupt(vector);
+        crate::arch::x86_64::vm::observe_host_interrupt(vector);
         match crate::arch::irq::dispatch_entry(
             InterruptId::new(vector),
             hyper::hal::interrupt::InterruptOrigin::Host,

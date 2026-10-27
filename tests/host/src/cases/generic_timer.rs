@@ -3,11 +3,14 @@
 
 //! Architecture-neutral counter conversion and guest timer semantics.
 
-use hyper::drivers::timer::arm_generic::{VirtualTimerState, VirtualTimerWake};
+use crate::time::queue::counter_elapsed_microseconds;
 use hyper::hal::timer::{
     ConversionError, deadline_reached, nanoseconds_to_ticks, ticks_to_nanoseconds,
 };
-use hyper::time::counter_elapsed_microseconds;
+use {
+    hyper_drivers::timer::arm_generic::VirtualTimerState,
+    hyper_drivers::timer::arm_generic::VirtualTimerWake,
+};
 
 #[test]
 fn boot_counter_conversion_handles_uninitialized_and_wrapping_sources() {

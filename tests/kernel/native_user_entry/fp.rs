@@ -4,11 +4,14 @@
 //! Real lower-world register isolation, scheduling, and migration probes.
 
 use super::{Error, IMAGE_BASE, prepare_process, retire_process};
-use crate::kernel::accounting::ResourceDomain;
-use crate::kernel::mm::user_space::{UserAddress, UserSlice};
-use crate::kernel::process::{MachineAbi, Process, TaskGroup, TerminalReason, UserThread};
-use crate::kernel::task::{self, scheduler};
+use crate::accounting::ResourceDomain;
 use hyper::{cpu::CpuIndex, mm::PAGE_SIZE};
+use {crate::mm::user_space::UserAddress, crate::mm::user_space::UserSlice};
+use {
+    crate::process::MachineAbi, crate::process::Process, crate::process::TaskGroup,
+    crate::process::TerminalReason, crate::process::UserThread,
+};
+use {crate::task, crate::task::scheduler};
 
 unsafe extern "C" {
     #[cfg_attr(CONFIG_ARCH_AARCH64, link_name = "aarch64_native_fp_probe_start")]
@@ -227,7 +230,7 @@ pub(super) fn run(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Erro
                 for round in 0..8 {
                     // Two Native owners share each selected CPU with the busy
                     // guest on CPU 0, including preemption and live migration.
-                    let index = if crate::kernel::cpu::online_cpu_count() > 1 {
+                    let index = if crate::cpu::online_cpu_count() > 1 {
                         round % 2
                     } else {
                         0
@@ -270,8 +273,8 @@ pub(super) fn run(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Erro
 
 #[cfg(CONFIG_ARCH_AARCH64)]
 fn blocking_probe(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Error> {
-    use crate::kernel::capability::Rights;
-    use crate::kernel::object::Event;
+    use crate::capability::Rights;
+    use crate::object::Event;
 
     with_probe(domain, group, 0x3456, ProbeMode::Blocking, |probe| {
         for round in 0..8 {
@@ -284,7 +287,7 @@ fn blocking_probe(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Erro
                             .is_ok_and(|event| event.object().waiter_count() == 1)
                     }))
             })?;
-            let index = if crate::kernel::cpu::online_cpu_count() > 1 {
+            let index = if crate::cpu::online_cpu_count() > 1 {
                 (round as usize + 1) % 2
             } else {
                 0
@@ -312,7 +315,7 @@ fn irq_tail_probe(
     group: &TaskGroup,
     guest: &core::sync::atomic::AtomicU64,
 ) -> Result<(), Error> {
-    use crate::kernel::entry::user::self_test::Gate;
+    use crate::entry::user::self_test::Gate;
 
     with_probe(domain, group, 0x4567, ProbeMode::Yielding, |probe| {
         let thread = probe.thread.scheduler_id().ok_or(Error::Scheduler)?;
@@ -331,7 +334,7 @@ fn irq_tail_probe(
         }
         let progress = probe.progress()?;
         let competing_progress = guest_progress(guest)?;
-        let destination = if crate::kernel::cpu::online_cpu_count() > 1 {
+        let destination = if crate::cpu::online_cpu_count() > 1 {
             CpuIndex::new(1).ok_or(Error::Scheduler)?
         } else {
             source
@@ -363,9 +366,9 @@ fn irq_tail_probe(
 
 #[cfg(CONFIG_ARCH_AARCH64)]
 fn busy_detach_probe(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Error> {
-    use crate::kernel::entry::user::self_test::Gate;
+    use crate::entry::user::self_test::Gate;
 
-    if crate::kernel::cpu::online_cpu_count() < 2 {
+    if crate::cpu::online_cpu_count() < 2 {
         return Ok(());
     }
     with_probe(domain, group, 0x5678, ProbeMode::Yielding, |probe| {
@@ -384,7 +387,7 @@ fn busy_detach_probe(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), E
         // The source's setup pin now excludes every other Thread from CPU1,
         // including this updater, until its root's residency cut is closed.
         // The MM hook also validates the actual pinned updater CPU at the cut.
-        if crate::kernel::cpu::current_index() == Some(source) {
+        if crate::cpu::current_index() == Some(source) {
             return Err(Error::Scheduler);
         }
         let progress = probe.progress()?;

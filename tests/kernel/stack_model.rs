@@ -8,9 +8,9 @@ use core::ptr::write_volatile;
 
 use hyper::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::kernel::mm::stack;
-use crate::kernel::sync::Semaphore;
-use crate::kernel::task::scheduler;
+use crate::mm::stack;
+use crate::sync::Semaphore;
+use crate::task::scheduler;
 
 static IRQ_CALLBACK_SP: AtomicUsize = AtomicUsize::new(0);
 
@@ -33,10 +33,10 @@ pub(super) enum Error {
     #[cfg(CONFIG_ARCH_X86_64)]
     ShootdownMissing,
     Scheduler(scheduler::Error),
-    Sleep(crate::kernel::task::SleepError),
+    Sleep(crate::task::SleepError),
     Stack(stack::Error),
     StackUsageMissing,
-    Synchronization(crate::kernel::sync::Error),
+    Synchronization(crate::sync::Error),
 }
 
 impl From<scheduler::Error> for Error {
@@ -45,8 +45,8 @@ impl From<scheduler::Error> for Error {
     }
 }
 
-impl From<crate::kernel::task::SleepError> for Error {
-    fn from(error: crate::kernel::task::SleepError) -> Self {
+impl From<crate::task::SleepError> for Error {
+    fn from(error: crate::task::SleepError) -> Self {
         Self::Sleep(error)
     }
 }
@@ -63,8 +63,8 @@ impl From<stack::Error> for Error {
     }
 }
 
-impl From<crate::kernel::sync::Error> for Error {
-    fn from(error: crate::kernel::sync::Error) -> Self {
+impl From<crate::sync::Error> for Error {
+    fn from(error: crate::sync::Error) -> Self {
         Self::Synchronization(error)
     }
 }
@@ -93,7 +93,7 @@ pub(super) fn run() -> Result<(), Error> {
 }
 
 fn validate_cpu_exception_stacks() -> Result<(), Error> {
-    let cpu = crate::kernel::cpu::current_index().ok_or(Error::StackUsageMissing)?;
+    let cpu = crate::cpu::current_index().ok_or(Error::StackUsageMissing)?;
     let (irq, emergency) =
         stack::cpu_stack_statistics(cpu.get()).ok_or(Error::StackUsageMissing)?;
     for statistics in [irq, emergency] {
@@ -113,7 +113,7 @@ fn validate_thread_stack() -> Result<(), Error> {
     let warmup = scheduler::kthread_create("stack-accounting-warmup", empty_worker, 0)?;
     scheduler::discard_dormant_kernel_thread(warmup)?;
     super::support::quiesce_workers()?;
-    let baseline_pages = crate::kernel::mm::statistics()
+    let baseline_pages = crate::mm::statistics()
         .ok_or(Error::PageAccountingUnavailable)?
         .runtime
         .kernel_pages
@@ -128,7 +128,7 @@ fn validate_thread_stack() -> Result<(), Error> {
     THREAD_PROBE.ready.acquire()?;
     wait_until_worker_parked()?;
     let statistics = scheduler::thread_stack_statistics(id)?.ok_or(Error::StackUsageMissing)?;
-    let allocated_pages = crate::kernel::mm::statistics()
+    let allocated_pages = crate::mm::statistics()
         .ok_or(Error::PageAccountingUnavailable)?
         .runtime
         .kernel_pages
@@ -149,7 +149,7 @@ fn validate_thread_stack() -> Result<(), Error> {
     }
     THREAD_PROBE.release.release()?;
     super::support::quiesce_workers()?;
-    let final_pages = crate::kernel::mm::statistics()
+    let final_pages = crate::mm::statistics()
         .ok_or(Error::PageAccountingUnavailable)?
         .runtime
         .kernel_pages
@@ -171,10 +171,9 @@ fn wait_until_worker_parked() -> Result<(), Error> {
     // The ready notification is published before the worker enters its
     // blocking acquire. Wait until the queue owns the worker before inspecting
     // its stopped stack.
-    if crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || Ok::<_, Error>(THREAD_PROBE.release.waiter_count()? == 1),
-    )? {
+    if crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+        Ok::<_, Error>(THREAD_PROBE.release.waiter_count()? == 1)
+    })? {
         Ok(())
     } else {
         Err(Error::WorkerNotParked)
@@ -200,17 +199,17 @@ extern "C" fn empty_worker(_argument: usize) {}
 
 fn validate_irq_stack_switch() -> Result<(), Error> {
     IRQ_CALLBACK_SP.store(0, Ordering::Release);
-    crate::kernel::time::schedule_irq_after(1, record_irq_stack, 0)
+    crate::time::schedule_irq_after(1, record_irq_stack, 0)
         .map_err(|_| Error::IrqCallbackMissing)?;
-    let delivered = crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || Ok::<_, Error>(IRQ_CALLBACK_SP.load(Ordering::Acquire) != 0),
-    )?;
+    let delivered =
+        crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+            Ok::<_, Error>(IRQ_CALLBACK_SP.load(Ordering::Acquire) != 0)
+        })?;
     let pointer = IRQ_CALLBACK_SP.load(Ordering::Acquire);
     if !delivered || pointer == 0 {
         return Err(Error::IrqCallbackMissing);
     }
-    let cpu = crate::kernel::cpu::current_index().ok_or(Error::StackUsageMissing)?;
+    let cpu = crate::cpu::current_index().ok_or(Error::StackUsageMissing)?;
     let (irq, _) = stack::cpu_stack_statistics(cpu.get()).ok_or(Error::StackUsageMissing)?;
     if pointer < irq.bottom || pointer > irq.top || irq.used == 0 || !irq.canary_intact {
         return Err(Error::IrqStackMismatch);
@@ -218,7 +217,7 @@ fn validate_irq_stack_switch() -> Result<(), Error> {
     Ok(())
 }
 
-fn record_irq_stack(_event: crate::kernel::time::TimerEvent, _context: usize) {
+fn record_irq_stack(_event: crate::time::TimerEvent, _context: usize) {
     let marker = 0usize;
     IRQ_CALLBACK_SP.store((&marker as *const usize) as usize, Ordering::Release);
 }

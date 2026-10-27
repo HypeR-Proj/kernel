@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-#[path = "../../../../src/kernel/process/builder_input.rs"]
+#[path = "../../../../src/process/builder_input.rs"]
 mod builder_input;
 
 #[test]

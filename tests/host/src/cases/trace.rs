@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Exercise the production recorder, including blocked writers and session reuse.
-use hyper::trace::{Category, Error, Filter, Recorder, Site};
 use std::sync::{Arc, Barrier};
+use {
+    hyper_trace::Category, hyper_trace::Error, hyper_trace::Filter, hyper_trace::Recorder,
+    hyper_trace::Site,
+};
 
 static SITE: Site = Site::new(Category::Scheduler, "ready", &["thread"], file!(), line!());
 static IPC: Site = Site::new(Category::Ipc, "send", &[], file!(), line!());
@@ -279,7 +282,7 @@ fn stale_contended_writer_cannot_mark_the_replacement_capture_incomplete() {
     let batch = crate::require_ok(r.read(second, 0, 0, &mut out));
     assert_eq!(batch.count, 1);
     assert!(!batch.incomplete);
-    assert_eq!(core::mem::size_of::<Option<hyper::trace::Record>>(), 56);
+    assert_eq!(core::mem::size_of::<Option<hyper_trace::Record>>(), 56);
 }
 
 #[test]

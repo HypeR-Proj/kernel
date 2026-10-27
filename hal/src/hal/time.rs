@@ -36,7 +36,7 @@ pub enum DescriptionError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Description {
-    pub hardware: hyper::platform::PlatformInterrupt,
+    pub hardware: hyper_platform::PlatformInterrupt,
     pub guest_virtual_interrupt: hyper::hal::interrupt::InterruptId,
     pub map_guest_virtual_interrupt: bool,
 }
@@ -45,7 +45,7 @@ pub fn prepare(platform: &super::platform::EssentialInfo) -> Result<(), Error> {
     crate::arch::time::prepare(platform.as_backend()).map_err(Error::from_backend)
 }
 
-pub fn describe(info: hyper::platform::TimerInfo) -> Result<Description, DescriptionError> {
+pub fn describe(info: hyper_platform::TimerInfo) -> Result<Description, DescriptionError> {
     let description = crate::arch::time::describe(info).map_err(|error| match error {
         #[cfg(CONFIG_ARCH_AARCH64)]
         crate::arch::time::DescriptionError::InvalidInterruptTrigger => {

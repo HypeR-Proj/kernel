@@ -11,7 +11,7 @@
 
 use hyper::cpu::CpuIndex;
 use hyper::hal::interrupt::{InterruptId, KernelRpcReasons};
-use hyper::platform::PlatformInterrupt;
+use hyper_platform::PlatformInterrupt;
 
 pub type Controller = crate::arch::irq::Controller;
 pub type ControllerError = crate::arch::irq::ControllerError;

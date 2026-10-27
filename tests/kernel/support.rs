@@ -3,7 +3,7 @@
 
 //! Shared lifecycle support for bare-metal kernel self-tests.
 
-use crate::kernel::task::scheduler;
+use crate::task::scheduler;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct QuiescenceSnapshot {
@@ -21,7 +21,7 @@ pub(super) struct QuiescenceSnapshot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum QuiescenceError {
     Scheduler(scheduler::Error),
-    Sleep(crate::kernel::task::SleepError),
+    Sleep(crate::task::SleepError),
     Timeout(QuiescenceSnapshot),
 }
 
@@ -31,8 +31,8 @@ impl From<scheduler::Error> for QuiescenceError {
     }
 }
 
-impl From<crate::kernel::task::SleepError> for QuiescenceError {
-    fn from(error: crate::kernel::task::SleepError) -> Self {
+impl From<crate::task::SleepError> for QuiescenceError {
+    fn from(error: crate::task::SleepError) -> Self {
         Self::Sleep(error)
     }
 }
@@ -45,12 +45,12 @@ impl From<crate::kernel::task::SleepError> for QuiescenceError {
 /// bootstrap Thread, permanent kernel-service workers, and one idle Thread per
 /// online CPU remain.
 pub(super) fn quiesce_workers() -> Result<scheduler::Statistics, QuiescenceError> {
-    let service_workers = crate::kernel::log::permanent_worker_count_for_test()
+    let service_workers = crate::diagnostics::log::permanent_worker_count_for_test()
         + scheduler::permanent_worker_count_for_test()
-        + crate::kernel::time::permanent_worker_count_for_test()
-        + crate::kernel::io_cache::worker::permanent_worker_count_for_test()
-        + crate::kernel::vfs::read_ahead::permanent_worker_count_for_test()
-        + crate::kernel::device::iommu::runtime::permanent_worker_count_for_test();
+        + crate::time::permanent_worker_count_for_test()
+        + crate::fs::cache::worker::permanent_worker_count_for_test()
+        + crate::fs::vfs::read_ahead::permanent_worker_count_for_test()
+        + crate::device::iommu::runtime::permanent_worker_count_for_test();
     let mut last = QuiescenceSnapshot {
         threads: 0,
         ready: 0,
@@ -60,15 +60,14 @@ pub(super) fn quiesce_workers() -> Result<scheduler::Statistics, QuiescenceError
         retirements_in_progress: 0,
         idle: 0,
         idle_class_threads: 0,
-        online_cpus: crate::kernel::cpu::online_cpu_count(),
+        online_cpus: crate::cpu::online_cpu_count(),
     };
     let mut stable_statistics = None;
 
-    let quiescent = crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || {
+    let quiescent =
+        crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
             let statistics = scheduler::statistics()?;
-            let online_cpus = crate::kernel::cpu::online_cpu_count();
+            let online_cpus = crate::cpu::online_cpu_count();
             last = QuiescenceSnapshot {
                 threads: statistics.threads,
                 ready: statistics.ready,
@@ -95,8 +94,7 @@ pub(super) fn quiesce_workers() -> Result<scheduler::Statistics, QuiescenceError
                 stable_statistics = Some(statistics);
             }
             Ok::<_, QuiescenceError>(stable)
-        },
-    )?;
+        })?;
     if quiescent {
         stable_statistics.ok_or(QuiescenceError::Timeout(last))
     } else {

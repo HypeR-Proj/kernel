@@ -3,8 +3,11 @@
 
 use core::arch::asm;
 
-use hyper::drivers::power::psci::{CallWidth, Conduit, Error, Psci};
-use hyper::platform::{PsciConduit, PsciInfo};
+use {
+    hyper_drivers::power::psci::CallWidth, hyper_drivers::power::psci::Conduit,
+    hyper_drivers::power::psci::Error, hyper_drivers::power::psci::Psci,
+};
+use {hyper_platform::PsciConduit, hyper_platform::PsciInfo};
 
 #[derive(Clone, Copy)]
 pub enum Aarch64PsciConduit {

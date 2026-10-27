@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-#[path = "../../../../src/kernel/vfs/lock_state.rs"]
+#[path = "../../../../src/fs/vfs/lock_state.rs"]
 mod model;
 
 use model::{Admission, Grants, LockMode, OwnerState};

@@ -3,6 +3,9 @@
 
 #![deny(clippy::missing_safety_doc, clippy::undocumented_unsafe_blocks)]
 
+pub(crate) mod irq;
+pub(crate) mod vm;
+
 mod barrier;
 mod boot_protocol;
 mod cache;
@@ -10,29 +13,22 @@ mod context;
 mod cpu_power;
 mod exception;
 mod features;
-mod guest;
-mod interrupt_controller;
-mod interrupts;
-mod kaslr;
 mod memory;
 mod platform;
 #[allow(dead_code)]
 pub mod registers;
 mod smp;
-mod stage2;
-mod svm;
-mod svm_registers;
 mod timer;
-mod tlb;
-mod virtualization;
-mod vm_interrupt;
-mod vm_vcpu;
-mod vmx;
 
 use core::arch::asm;
 
 pub type InterruptVirtualizationError = core::convert::Infallible;
 
+pub use crate::arch::x86_64::irq::LocalInterruptMask;
+pub use crate::arch::x86_64::memory::kaslr::Error as KaslrError;
+pub(crate) use crate::arch::x86_64::memory::kaslr::select as select_kaslr_layout;
+pub use crate::arch::x86_64::vm::admission::ValidationError as GuestValidationError;
+pub use crate::arch::x86_64::vm::vcpu::Error as VcpuInterruptError;
 pub use barrier::X86_64Barrier as ArchitectureBarrier;
 pub use cache::X86_64Cache as ArchitectureCache;
 pub use context::{ThreadContext, VcpuContext, VirtualInterruptError};
@@ -45,17 +41,6 @@ pub(crate) use exception::{
     install_local_runtime_vectors, install_runtime_vectors, run_on_emergency_stack,
     validate_local_runtime_vectors, validate_runtime_vectors,
 };
-pub use guest::ValidationError as GuestValidationError;
-pub use interrupt_controller::{
-    Error as InterruptControllerError, X2ApicController as ArchitectureInterruptController,
-};
-pub use interrupts::LocalInterruptMask;
-pub(crate) use interrupts::{
-    disable_all as disable_all_interrupts, enable_irq as enable_local_irq,
-    irq_enabled as local_irq_enabled, mask_irq as mask_local_irq,
-};
-pub use kaslr::Error as KaslrError;
-pub(crate) use kaslr::select as select_kaslr_layout;
 #[cfg(feature = "crash-console")]
 pub use memory::inspect_mapping as inspect_stage1_mapping;
 pub use memory::{
@@ -70,18 +55,34 @@ pub use smp::SecondaryBootParameters;
 pub(crate) use smp::{
     current_cpu_index, current_hardware_id, notify_reschedule, secondary_entry_physical, send_event,
 };
-pub use stage2::{Error as Stage2Error, Stage2AddressSpace};
 pub use timer::{
     Error as TimerError, TscCounter as ArchitectureCounter, TscDeadlineTimer as ArchitectureTimer,
 };
-pub use vm_interrupt::{Error as VmInterruptError, VmInterruptController};
-pub use vm_vcpu::Error as VcpuInterruptError;
-pub(crate) use vm_vcpu::{
-    activate as activate_vcpu_hardware, deactivate as deactivate_vcpu_hardware,
-    handle_maintenance_interrupt as handle_virtualization_maintenance_interrupt,
-    handle_virtual_timer_interrupt as handle_guest_virtual_timer_interrupt,
-    maintenance_interrupt_pending as virtualization_maintenance_pending,
-    quiesce_virtual_interrupt_delivery,
+pub use {
+    crate::arch::x86_64::irq::controller::Error as InterruptControllerError,
+    crate::arch::x86_64::irq::controller::X2ApicController as ArchitectureInterruptController,
+};
+pub(crate) use {
+    crate::arch::x86_64::irq::disable_all as disable_all_interrupts,
+    crate::arch::x86_64::irq::enable_irq as enable_local_irq,
+    crate::arch::x86_64::irq::irq_enabled as local_irq_enabled,
+    crate::arch::x86_64::irq::mask_irq as mask_local_irq,
+};
+pub use {
+    crate::arch::x86_64::vm::interrupt::Error as VmInterruptError,
+    crate::arch::x86_64::vm::interrupt::VmInterruptController,
+};
+pub use {
+    crate::arch::x86_64::vm::stage2::Error as Stage2Error,
+    crate::arch::x86_64::vm::stage2::Stage2AddressSpace,
+};
+pub(crate) use {
+    crate::arch::x86_64::vm::vcpu::activate as activate_vcpu_hardware,
+    crate::arch::x86_64::vm::vcpu::deactivate as deactivate_vcpu_hardware,
+    crate::arch::x86_64::vm::vcpu::handle_maintenance_interrupt as handle_virtualization_maintenance_interrupt,
+    crate::arch::x86_64::vm::vcpu::handle_virtual_timer_interrupt as handle_guest_virtual_timer_interrupt,
+    crate::arch::x86_64::vm::vcpu::maintenance_interrupt_pending as virtualization_maintenance_pending,
+    crate::arch::x86_64::vm::vcpu::quiesce_virtual_interrupt_delivery,
 };
 
 pub const fn interrupt_virtualization_description() -> Option<(u8, u8, u8, u8)> {
@@ -104,7 +105,7 @@ pub const fn atomic_capabilities() -> AtomicCapabilities {
 }
 
 pub fn service_stage1_tlb_shootdown() -> bool {
-    tlb::service_pending();
+    crate::arch::x86_64::memory::tlb::service_pending();
     true
 }
 
@@ -118,11 +119,11 @@ pub const fn local_memory_protection_enabled() -> bool {
 
 #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub(crate) fn stage1_shootdown_count_for_test() -> u64 {
-    tlb::completed_count_for_test()
+    crate::arch::x86_64::memory::tlb::completed_count_for_test()
 }
 
 pub fn initialize_cpu_power(
-    info: hyper::platform::CpuPowerInfo,
+    info: hyper_platform::CpuPowerInfo,
 ) -> Result<ArchitectureCpuPower, CpuPowerError> {
     cpu_power::bind(info)
 }
@@ -154,10 +155,10 @@ pub fn prepare_cache(
 }
 
 pub fn decode_kernel_timer(
-    info: hyper::platform::TimerInfo,
+    info: hyper_platform::TimerInfo,
 ) -> Result<crate::arch::time::Description, crate::arch::time::DescriptionError> {
-    if info.kind != hyper::platform::TimerKind::X86TscDeadline
-        || info.hypervisor_physical.trigger != hyper::platform::PlatformInterruptTrigger::Edge
+    if info.kind != hyper_platform::TimerKind::X86TscDeadline
+        || info.hypervisor_physical.trigger != hyper_platform::PlatformInterruptTrigger::Edge
     {
         return Err(crate::arch::time::DescriptionError::UnsupportedTimer);
     }
@@ -186,7 +187,7 @@ pub const fn prepare_interrupts_for_guest_entry() {}
 /// Allocator results must be directly writable, uniquely owned physical RAM.
 pub unsafe fn prepare_address_space(
     allocator: &mut hyper::mm::BootAllocator,
-    platform: &hyper::platform::PlatformInfo,
+    platform: &hyper_platform::PlatformInfo,
     image: hyper::hal::memory::KernelImageLayout,
     kernel_base: u64,
 ) -> Result<PreparedAddressSpace, MemoryError> {
@@ -282,13 +283,13 @@ pub const fn broadcast_crash_stop() -> bool {
     false
 }
 
-pub fn validate_vsysreg() -> Result<(), guest::ValidationError> {
-    guest::validate()
+pub fn validate_vsysreg() -> Result<(), crate::arch::x86_64::vm::admission::ValidationError> {
+    crate::arch::x86_64::vm::admission::validate()
 }
 
 #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub fn guest_execution_available() -> bool {
-    virtualization::validate().is_ok()
+    crate::arch::x86_64::vm::validate().is_ok()
 }
 
 /// # Safety

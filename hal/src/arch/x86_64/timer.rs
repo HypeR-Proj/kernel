@@ -39,13 +39,13 @@ fn initialize_backend(tsc_frequency: u64) -> Result<(), Error> {
         USE_TSC_DEADLINE.store(true, Ordering::Release);
         return Ok(());
     }
-    super::interrupt_controller::begin_timer_calibration();
+    crate::arch::x86_64::irq::controller::begin_timer_calibration();
     let start = TscCounter::read();
     let interval = (tsc_frequency / 1_000).max(1);
     while TscCounter::read().wrapping_sub(start) < interval {
         core::hint::spin_loop();
     }
-    let elapsed = u64::from(super::interrupt_controller::end_timer_calibration());
+    let elapsed = u64::from(crate::arch::x86_64::irq::controller::end_timer_calibration());
     let apic_frequency = elapsed.checked_mul(1_000).ok_or(Error::InvalidFrequency)?;
     if apic_frequency == 0 {
         return Err(Error::InvalidFrequency);
@@ -109,7 +109,7 @@ impl DeadlineTimer for TscDeadlineTimer {
     }
 
     fn mask() {
-        super::interrupt_controller::mask_timer();
+        crate::arch::x86_64::irq::controller::mask_timer();
     }
 
     fn disable() {
@@ -117,7 +117,7 @@ impl DeadlineTimer for TscDeadlineTimer {
             slot.store(0, Ordering::Release);
         }
         write_msr(IA32_TSC_DEADLINE, 0);
-        super::interrupt_controller::program_oneshot_timer(0);
+        crate::arch::x86_64::irq::controller::program_oneshot_timer(0);
         Self::mask();
     }
 }
@@ -130,13 +130,13 @@ fn hardware_timer_armed() -> bool {
     if USE_TSC_DEADLINE.load(Ordering::Acquire) {
         read_msr(IA32_TSC_DEADLINE) != 0
     } else {
-        super::interrupt_controller::timer_current_count() != 0
+        crate::arch::x86_64::irq::controller::timer_current_count() != 0
     }
 }
 
 fn arm_deadline(deadline: u64, now: u64) {
     if USE_TSC_DEADLINE.load(Ordering::Acquire) {
-        super::interrupt_controller::unmask_timer();
+        crate::arch::x86_64::irq::controller::unmask_timer();
         write_msr(IA32_TSC_DEADLINE, deadline);
         return;
     }
@@ -145,7 +145,7 @@ fn arm_deadline(deadline: u64, now: u64) {
     let delta = deadline.wrapping_sub(now).max(1);
     let count = (u128::from(delta) * u128::from(apic_frequency) / u128::from(tsc_frequency))
         .clamp(1, u128::from(u32::MAX)) as u32;
-    super::interrupt_controller::program_oneshot_timer(count);
+    crate::arch::x86_64::irq::controller::program_oneshot_timer(count);
 }
 
 fn write_msr(msr: u32, value: u64) {

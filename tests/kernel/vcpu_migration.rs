@@ -3,7 +3,7 @@
 
 //! Real guest execution across affinity-driven CPU migration and administrative stop.
 
-use crate::kernel::task::scheduler;
+use crate::task::scheduler;
 use core::sync::atomic::{AtomicBool, Ordering};
 use hyper::cpu::CpuIndex;
 
@@ -40,15 +40,15 @@ const TIMER: [u32; 12] = [
 
 pub(super) enum Error {
     Fixture(super::vm_registry::Error),
-    Registry(crate::kernel::vm::registry::Error),
+    Registry(crate::vm::registry::Error),
     Installed(&'static str),
     Quiescence(super::support::QuiescenceError),
     Scheduler(scheduler::Error),
-    Sleep(crate::kernel::task::SleepError),
+    Sleep(crate::task::SleepError),
     InvalidCpu,
     AffinityContract,
     Timeout,
-    Identifier(crate::kernel::mm::translation_id::Error),
+    Identifier(crate::mm::translation_id::Error),
 }
 
 impl core::fmt::Debug for Error {
@@ -73,14 +73,14 @@ impl From<scheduler::Error> for Error {
         Self::Scheduler(error)
     }
 }
-impl From<crate::kernel::task::SleepError> for Error {
-    fn from(error: crate::kernel::task::SleepError) -> Self {
+impl From<crate::task::SleepError> for Error {
+    fn from(error: crate::task::SleepError) -> Self {
         Self::Sleep(error)
     }
 }
 
 pub(super) fn run() -> Result<(), Error> {
-    if !crate::hal::vm::guest_execution_available() || crate::kernel::cpu::online_cpu_count() < 2 {
+    if !crate::hal::vm::guest_execution_available() || crate::cpu::online_cpu_count() < 2 {
         crate::pr_notice!(
             "HypeR test: vCPU migration skipped (requires guest execution and two CPUs)"
         );
@@ -161,9 +161,7 @@ fn exercise_balancing() -> Result<(), Error> {
 
 extern "C" fn balance_peer(_: usize) {
     while !BALANCE_STOP.load(Ordering::Acquire) {
-        if crate::kernel::cpu::current_index() != Some(CpuIndex::BOOT)
-            || scheduler::yield_now().is_err()
-        {
+        if crate::cpu::current_index() != Some(CpuIndex::BOOT) || scheduler::yield_now().is_err() {
             BALANCE_FAILED.store(true, Ordering::Release);
             break;
         }
@@ -196,10 +194,8 @@ fn exercise_bytes(code: &[u8]) -> Result<(), Error> {
         verify_affinity_contract(thread)?;
         let width = crate::hal::vm::guest_translation_identifier_bits()
             .map_err(|_| Error::AffinityContract)?;
-        crate::kernel::mm::translation_id::test_rollover::<
-            crate::kernel::mm::translation_id::Stage2Vmid,
-        >(width)
-        .map_err(Error::Identifier)?;
+        crate::mm::translation_id::test_rollover::<crate::mm::translation_id::Stage2Vmid>(width)
+            .map_err(Error::Identifier)?;
         for _ in 0..8 {
             let (source, _) = scheduler::thread_migration_state(thread)?;
             let target =
@@ -230,7 +226,7 @@ fn exercise_bytes(code: &[u8]) -> Result<(), Error> {
     result
 }
 
-fn verify_affinity_contract(thread: crate::kernel::task::thread::ThreadId) -> Result<(), Error> {
+fn verify_affinity_contract(thread: crate::task::thread::ThreadId) -> Result<(), Error> {
     use scheduler::{CpuMask, MigrationStatus};
 
     let (current, pending) = scheduler::thread_migration_state(thread)?;
@@ -258,7 +254,7 @@ fn verify_affinity_contract(thread: crate::kernel::task::thread::ThreadId) -> Re
     }
     // Logical CPU indices are assigned densely during bootstrap admission.
     // Skip only when every representable CPU is online, leaving no invalid set.
-    if let Some(offline) = CpuIndex::new(crate::kernel::cpu::online_cpu_count())
+    if let Some(offline) = CpuIndex::new(crate::cpu::online_cpu_count())
         && (scheduler::set_thread_affinity(thread, CpuMask::single(offline))
             != Err(scheduler::Error::NoRegisteredCpuInAffinity)
             || scheduler::thread_placement(thread)? != initial
@@ -270,10 +266,7 @@ fn verify_affinity_contract(thread: crate::kernel::task::thread::ThreadId) -> Re
 }
 
 fn wait(mut ready: impl FnMut() -> Result<bool, Error>) -> Result<(), Error> {
-    if crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        &mut ready,
-    )? {
+    if crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, &mut ready)? {
         Ok(())
     } else {
         Err(Error::Timeout)

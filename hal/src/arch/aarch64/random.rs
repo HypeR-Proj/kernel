@@ -5,14 +5,14 @@
 //! quality; architectural RNDR is a fallback, not a mandatory CPU feature.
 
 use core::arch::asm;
-use hyper::platform::{CpuPowerInfo, PsciConduit, PsciInterface};
+use {hyper_platform::CpuPowerInfo, hyper_platform::PsciConduit, hyper_platform::PsciInterface};
 
 pub(crate) fn seed(power: Option<CpuPowerInfo>) -> Option<u64> {
     // HypeR runs at EL2. HVC is not a valid conduit to EL3 from here; do not
     // guess SMC availability on platforms that only advertise HVC/legacy PSCI.
     if matches!(power, Some(CpuPowerInfo::Psci(info))
         if info.conduit == PsciConduit::Smc && matches!(info.interface, PsciInterface::Standard(_)))
-        && let Some(seed) = hyper::drivers::trng::seed(smc)
+        && let Some(seed) = hyper_drivers::random::trng::seed(smc)
     {
         return Some(seed);
     }

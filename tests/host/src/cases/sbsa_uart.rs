@@ -4,7 +4,11 @@
 //! SBSA FIFO ordering, backpressure, interrupt latches, and register boundaries.
 
 use crate::require_ok;
-use hyper::vm::aarch64::device::sbsa_uart::{AccessError, SbsaUart, reg};
+use {
+    hyper_vm_models::aarch64::device::sbsa_uart::AccessError,
+    hyper_vm_models::aarch64::device::sbsa_uart::SbsaUart,
+    hyper_vm_models::aarch64::device::sbsa_uart::reg,
+};
 
 const TIMEOUT_NS: u64 = 277_778;
 

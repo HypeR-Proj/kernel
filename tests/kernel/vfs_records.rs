@@ -6,9 +6,12 @@
 use alloc::string::String;
 
 use super::{Error, FileRecord, Node, Record, Records, node, record_charge};
-use crate::kernel::accounting::{ResourceDomain, ResourceError, ResourceKind, ResourceLimits};
-use crate::kernel::vfs::namespace_test::TestError;
+use crate::fs::vfs::namespace_test::TestError;
 use hyper::mm::FallibleArc;
+use {
+    crate::accounting::ResourceDomain, crate::accounting::ResourceError,
+    crate::accounting::ResourceKind, crate::accounting::ResourceLimits,
+};
 
 pub(crate) fn run(domain: &ResourceDomain) -> Result<(), TestError> {
     let baseline = domain.usage().committed(ResourceKind::KernelMemoryBytes);

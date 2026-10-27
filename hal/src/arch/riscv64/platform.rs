@@ -1,10 +1,13 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-use hyper::platform::{
-    CpuPowerInfo, InterruptControllerInfo, MAX_PLIC_CONTEXTS, PhysicalRange, PlatformInterrupt,
-    PlatformInterruptTrigger, PlicInfo, SbiInfo, TimerInfo, TimerKind,
-    fdt::{NodeId, NodeResources, NodeVisitor, Property},
+use {
+    hyper::mm::ranges::PhysicalRange, hyper_platform::CpuPowerInfo,
+    hyper_platform::InterruptControllerInfo, hyper_platform::MAX_PLIC_CONTEXTS,
+    hyper_platform::PlatformInterrupt, hyper_platform::PlatformInterruptTrigger,
+    hyper_platform::PlicInfo, hyper_platform::SbiInfo, hyper_platform::TimerInfo,
+    hyper_platform::TimerKind, hyper_platform::fdt::NodeId, hyper_platform::fdt::NodeResources,
+    hyper_platform::fdt::NodeVisitor, hyper_platform::fdt::Property,
 };
 
 use super::isa::{Claims, Missing};

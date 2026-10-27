@@ -3,8 +3,11 @@
 
 use core::arch::asm;
 
-use hyper::drivers::timer::arm_generic::{CONTROL_STATUS, VirtualTimerState};
 use hyper::hal::timer::{DeadlineTimer, MonotonicCounter};
+use {
+    hyper_drivers::timer::arm_generic::CONTROL_STATUS,
+    hyper_drivers::timer::arm_generic::VirtualTimerState,
+};
 
 use super::registers;
 

@@ -3,7 +3,7 @@
 
 //! UTC representation and arithmetic independently checked in wider integers.
 
-use hyper::time::Timestamp;
+use crate::time::queue::Timestamp;
 
 #[test]
 fn negative_utc_uses_floor_seconds_and_nonnegative_nanoseconds() {

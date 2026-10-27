@@ -4,7 +4,10 @@
 //! Early page-allocation range, reservation, and accounting contracts.
 
 use hyper::mm::{BootAllocator, BootAllocatorError, PAGE_SIZE};
-use hyper::platform::{MAX_MEMORY_REGIONS, MAX_RESERVED_REGIONS, PhysicalRange, RegionList};
+use {
+    hyper::mm::boot::MAX_MEMORY_REGIONS, hyper::mm::boot::MAX_RESERVED_REGIONS,
+    hyper::mm::ranges::PhysicalRange, hyper::mm::ranges::RegionList,
+};
 
 #[test]
 fn skips_reservations_and_records_allocations() {

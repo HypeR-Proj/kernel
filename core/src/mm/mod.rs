@@ -1,0 +1,30 @@
+// SPDX-FileCopyrightText: 2026 roolrz
+// SPDX-License-Identifier: Apache-2.0
+
+//! Architecture-independent memory-management mechanisms.
+
+mod access;
+mod address;
+mod address_space_state;
+mod allocation;
+pub mod boot;
+pub mod kaslr;
+pub mod ranges;
+pub mod table_edit;
+mod translation_epoch;
+
+pub use access::{ForeignCopyError, ForeignMemory, copy_from_foreign, copy_to_foreign};
+pub use address::{PAGE_SIZE, PhysicalAddress, VirtualAddress};
+pub use address_space_state::{
+    AddressSpaceResidency, CutFailure, ResidencyError, RetirementCut, UpdateCut,
+};
+pub use allocation::{
+    AllocationError, DeferredArcDrop, FallibleArc, UniqueFallibleArc, WeakFallibleArc, try_box,
+    try_box_uninit,
+};
+pub use boot::{BootAllocator, BootAllocatorError, BootMemoryStats};
+
+pub use translation_epoch::{
+    TranslationBinding, TranslationEpochError, TranslationEpochPool, TranslationEpochSegment,
+    TranslationLease, TranslationOwner, TranslationTag, TranslationTagWidth,
+};

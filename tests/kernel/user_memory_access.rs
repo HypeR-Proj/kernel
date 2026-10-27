@@ -5,10 +5,12 @@
 
 use hyper::mm::PAGE_SIZE;
 
-use crate::kernel::accounting::{ResourceDomain, ResourceLimits};
-use crate::kernel::mm::user_space::{
-    DomainAccount, KernelPageBackend, Permissions, UserAddress, UserAddressSpace, UserSlice,
-    WritableVmo, address_window,
+use {crate::accounting::ResourceDomain, crate::accounting::ResourceLimits};
+use {
+    crate::mm::user_space::DomainAccount, crate::mm::user_space::KernelPageBackend,
+    crate::mm::user_space::Permissions, crate::mm::user_space::UserAddress,
+    crate::mm::user_space::UserAddressSpace, crate::mm::user_space::UserSlice,
+    crate::mm::user_space::WritableVmo, crate::mm::user_space::address_window,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,6 +61,6 @@ pub(super) fn run() -> Result<(), Error> {
     if copied != payload {
         return Err(Error::Payload);
     }
-    crate::kernel::mm::user_space::run_dormant_self_test().map_err(|_| Error::Contract)?;
+    crate::mm::user_space::run_dormant_self_test().map_err(|_| Error::Contract)?;
     Ok(())
 }

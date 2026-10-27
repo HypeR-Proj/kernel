@@ -6,8 +6,8 @@
 use hyper::cpu::CpuIndex;
 use hyper::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use crate::kernel::sync::Semaphore;
-use crate::kernel::task::scheduler::{self, CpuMask};
+use crate::sync::Semaphore;
+use {crate::task::scheduler, crate::task::scheduler::CpuMask};
 
 const ROUNDS: usize = 256;
 const TIMEOUT_US: u64 = 5_000_000;
@@ -27,7 +27,7 @@ pub(super) enum Error {
 }
 
 pub(super) fn run() -> Result<(), Error> {
-    if crate::kernel::cpu::online_cpu_count() < 4 {
+    if crate::cpu::online_cpu_count() < 4 {
         return Ok(());
     }
     super::support::quiesce_workers().map_err(Error::Quiescence)?;
@@ -45,10 +45,10 @@ pub(super) fn run() -> Result<(), Error> {
     }
     // All ownership publications precede the deliberately held reader lane.
     START.store(true, Ordering::Release);
-    let start = crate::kernel::time::monotonic_microseconds();
+    let start = crate::time::monotonic_microseconds();
     // Require both continuations to actually park before starting the ring.
     while PING.waiter_count() != Ok(1) || PONG.waiter_count() != Ok(1) {
-        if crate::kernel::time::monotonic_microseconds().saturating_sub(start) > TIMEOUT_US {
+        if crate::time::monotonic_microseconds().saturating_sub(start) > TIMEOUT_US {
             FAILED.store(true, Ordering::Release);
             RELEASE.store(true, Ordering::Release);
             return Err(Error::Progress);
@@ -60,7 +60,7 @@ pub(super) fn run() -> Result<(), Error> {
         return Err(Error::Progress);
     }
     while DONE.load(Ordering::Acquire) != 2 && !FAILED.load(Ordering::Acquire) {
-        if crate::kernel::time::monotonic_microseconds().saturating_sub(start) > TIMEOUT_US {
+        if crate::time::monotonic_microseconds().saturating_sub(start) > TIMEOUT_US {
             FAILED.store(true, Ordering::Release);
             break;
         }
@@ -81,9 +81,9 @@ extern "C" fn holder(_: usize) {
     }
     if scheduler::hold_reader_for_test(|| {
         HELD.store(true, Ordering::Release);
-        let start = crate::kernel::time::monotonic_microseconds();
+        let start = crate::time::monotonic_microseconds();
         while !RELEASE.load(Ordering::Acquire) {
-            if crate::kernel::time::monotonic_microseconds().saturating_sub(start) > TIMEOUT_US {
+            if crate::time::monotonic_microseconds().saturating_sub(start) > TIMEOUT_US {
                 FAILED.store(true, Ordering::Release);
                 break;
             }

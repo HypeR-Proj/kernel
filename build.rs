@@ -35,8 +35,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-changed=hal/src/arch/riscv64/trap.S");
     println!("cargo:rerun-if-changed=hal/src/arch/riscv64/context.S");
     println!("cargo:rerun-if-changed=hal/src/arch/riscv64/fp.S");
-    println!("cargo:rerun-if-changed=hal/src/arch/riscv64/guest.S");
-    println!("cargo:rerun-if-changed=hal/src/arch/riscv64/user.S");
+    println!("cargo:rerun-if-changed=hal/src/arch/riscv64/vm/entry.S");
+    println!("cargo:rerun-if-changed=hal/src/arch/riscv64/user/entry.S");
     println!("cargo:rerun-if-changed=hal/src/arch/riscv64/cache.S");
     println!("cargo:rerun-if-changed=hal/src/arch/riscv64/registers.rs");
     println!("cargo:rerun-if-changed=hal/src/arch/riscv64/linker.ld");
@@ -44,8 +44,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-changed=hal/src/arch/x86_64/context.S");
     println!("cargo:rerun-if-changed=hal/src/arch/x86_64/vectors.S");
     println!("cargo:rerun-if-changed=hal/src/arch/x86_64/ap_trampoline.S");
-    println!("cargo:rerun-if-changed=hal/src/arch/x86_64/vmx.S");
-    println!("cargo:rerun-if-changed=hal/src/arch/x86_64/svm.S");
+    println!("cargo:rerun-if-changed=hal/src/arch/x86_64/vm/vmx/entry.S");
+    println!("cargo:rerun-if-changed=hal/src/arch/x86_64/vm/svm/entry.S");
     println!("cargo:rerun-if-changed=hal/src/arch/x86_64/registers.rs");
     println!("cargo:rerun-if-changed=hal/src/arch/x86_64/linker.ld");
     println!("cargo:rerun-if-env-changed=HYPER_KALLSYMS_BLOB");
@@ -77,8 +77,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ("hal/src/arch/riscv64/trap.S", "riscv64_trap.o"),
                 ("hal/src/arch/riscv64/context.S", "riscv64_context.o"),
                 ("hal/src/arch/riscv64/fp.S", "riscv64_fp.o"),
-                ("hal/src/arch/riscv64/guest.S", "riscv64_guest.o"),
-                ("hal/src/arch/riscv64/user.S", "riscv64_user.o"),
+                ("hal/src/arch/riscv64/vm/entry.S", "riscv64_guest.o"),
+                ("hal/src/arch/riscv64/user/entry.S", "riscv64_user.o"),
                 ("hal/src/arch/riscv64/cache.S", "riscv64_cache.o"),
             ],
         ),
@@ -93,8 +93,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     "hal/src/arch/x86_64/ap_trampoline.S",
                     "x86_64_ap_trampoline.o",
                 ),
-                ("hal/src/arch/x86_64/vmx.S", "x86_64_vmx.o"),
-                ("hal/src/arch/x86_64/svm.S", "x86_64_svm.o"),
+                ("hal/src/arch/x86_64/vm/vmx/entry.S", "x86_64_vmx.o"),
+                ("hal/src/arch/x86_64/vm/svm/entry.S", "x86_64_svm.o"),
             ],
         ),
         _ => return Ok(()),

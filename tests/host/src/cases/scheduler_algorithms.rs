@@ -3,7 +3,7 @@
 
 //! Execute the production policy accounting and arbitration without machine state.
 
-#[path = "../../../../src/kernel/task/scheduler/algorithms/mod.rs"]
+#[path = "../../../../src/task/scheduler/algorithms/mod.rs"]
 #[allow(
     dead_code,
     reason = "The host harness imports production algorithms without CPU queue integration"

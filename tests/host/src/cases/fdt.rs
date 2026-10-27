@@ -9,13 +9,14 @@ mod pci;
 use std::boxed::Box;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use hyper::{
-    drivers::console,
-    drivers::platform::{
-        DeviceScanner, DriverInstance, DriverManager, DriverServices, MmioMappingError,
-        MmioResource, PermanentMmioMapping, PlatformDevice, PlatformDriver, ProbeError, ScanError,
-    },
-    platform::{chosen, fdt},
+use {
+    hyper_drivers::platform::DeviceScanner, hyper_drivers::platform::DriverInstance,
+    hyper_drivers::platform::DriverManager, hyper_drivers::platform::DriverServices,
+    hyper_drivers::platform::MmioMappingError, hyper_drivers::platform::MmioResource,
+    hyper_drivers::platform::PermanentMmioMapping, hyper_drivers::platform::PlatformDevice,
+    hyper_drivers::platform::PlatformDriver, hyper_drivers::platform::ProbeError,
+    hyper_drivers::platform::ScanError, hyper_drivers::serial::console, hyper_platform::chosen,
+    hyper_platform::fdt,
 };
 
 const FDT_MAGIC: u32 = 0xd00d_feed;
@@ -315,10 +316,10 @@ fn discovers_generic_devices_and_translates_resources() {
     assert_eq!(initrd.end(), 0x4900_0000);
     assert_eq!(
         crate::require_ok(console::early_console(Some(command_line))),
-        Some(hyper::platform::ConsoleInfo {
-            kind: hyper::platform::ConsoleKind::Pl011,
+        Some(hyper_platform::ConsoleInfo {
+            kind: hyper_platform::ConsoleKind::Pl011,
             base: 0x0900_0000,
-            access: hyper::platform::ConsoleRegisterAccess::Native,
+            access: hyper_platform::ConsoleRegisterAccess::Native,
         })
     );
 
@@ -349,7 +350,7 @@ fn discovers_generic_devices_and_translates_resources() {
     assert_eq!(psci.property("method"), Some(b"smc\0".as_slice()));
     assert_eq!(
         platform.memory.as_slice(),
-        &[crate::require_some(hyper::platform::PhysicalRange::new(
+        &[crate::require_some(hyper::mm::ranges::PhysicalRange::new(
             0x4000_0000,
             0x2000_0000,
         ))]
@@ -372,7 +373,7 @@ fn discovers_generic_devices_and_translates_resources() {
     );
     assert_eq!(
         platform.no_map.as_slice(),
-        &[crate::require_some(hyper::platform::PhysicalRange::new(
+        &[crate::require_some(hyper::mm::ranges::PhysicalRange::new(
             0x4100_0000,
             0x2000,
         ))]
@@ -815,7 +816,7 @@ fn discovers_gicv2_and_preserves_gicv3_selection() {
             153
         );
         match crate::require_some(result.interrupt_controller) {
-            hyper::platform::InterruptControllerInfo::GicV2(info) => {
+            hyper_platform::InterruptControllerInfo::GicV2(info) => {
                 assert_ne!(compatible, b"arm,gic-v3\0");
                 assert_eq!(info.distributor.start(), 0x08000000);
                 assert_eq!(info.cpu_interface.start(), 0x0801_0000);
@@ -832,7 +833,7 @@ fn discovers_gicv2_and_preserves_gicv3_selection() {
                     25
                 );
             }
-            hyper::platform::InterruptControllerInfo::GicV3(_) => {
+            hyper_platform::InterruptControllerInfo::GicV3(_) => {
                 assert_eq!(compatible, b"arm,gic-v3\0")
             }
             _ => panic!("unexpected controller"),
@@ -846,7 +847,7 @@ fn raspberry_pi5_debug_uart_address_is_not_truncated() {
         "earlycon=pl011,0x107d001000,115200n8",
     ));
     let console = crate::require_some(crate::require_ok(console::early_console(Some(&command))));
-    assert_eq!(console.kind, hyper::platform::ConsoleKind::Pl011);
+    assert_eq!(console.kind, hyper_platform::ConsoleKind::Pl011);
     assert_eq!(console.base, 0x107d001000);
 }
 

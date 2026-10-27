@@ -9,8 +9,11 @@ use hyper::mm::FallibleArc;
 use hyper::sync::InterruptSpinLock;
 use hyper::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use crate::kernel::task::scheduler::{self, CpuMask};
-use crate::kernel::time::{self, Callout, CalloutRef, CancelOutcome, TimerEvent};
+use {crate::task::scheduler, crate::task::scheduler::CpuMask};
+use {
+    crate::time, crate::time::Callout, crate::time::CalloutRef, crate::time::CancelOutcome,
+    crate::time::TimerEvent,
+};
 
 const BLOCKER_LIMIT_NS: u64 = 5_000_000_000;
 const REMOTE_DEADLINE_NS: u64 = 100_000;
@@ -77,7 +80,7 @@ impl From<scheduler::Error> for Error {
 }
 
 pub(super) fn run() -> Result<(), Error> {
-    if crate::kernel::cpu::online_cpu_count() < 2 {
+    if crate::cpu::online_cpu_count() < 2 {
         return Ok(());
     }
     let cpu = CpuIndex::new(1).ok_or(Error::Invariant("remote CPU"))?;
@@ -195,7 +198,7 @@ static RUNNING: InterruptSpinLock<Option<RunningControl>, crate::hal::irq::Local
     InterruptSpinLock::new(None);
 
 fn exercise_running_shutdown() -> Result<(), Error> {
-    if crate::kernel::cpu::online_cpu_count() < 3 {
+    if crate::cpu::online_cpu_count() < 3 {
         return Ok(());
     }
     let source = CpuIndex::new(1).ok_or(Error::Invariant("source CPU"))?;
@@ -343,10 +346,9 @@ fn record(context: &OwnedContext, _: CalloutRef<'_>, _: TimerEvent) {
 }
 
 fn progress(mut condition: impl FnMut() -> bool) -> Result<(), Error> {
-    let done = crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || Ok::<_, crate::kernel::task::SleepError>(condition()),
-    )
+    let done = crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+        Ok::<_, crate::task::SleepError>(condition())
+    })
     .map_err(|_| Error::Progress)?;
     if done { Ok(()) } else { Err(Error::Progress) }
 }

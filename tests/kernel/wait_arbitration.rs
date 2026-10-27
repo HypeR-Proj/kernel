@@ -7,9 +7,12 @@ use hyper::cpu::CpuIndex;
 use hyper::sync::InterruptSpinLock;
 use hyper::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::kernel::sync::Semaphore;
-use crate::kernel::task::scheduler::{self, CpuMask};
-use crate::kernel::task::{WaitMobility, WaitOutcome, WaitQueue, WaitTicket};
+use crate::sync::Semaphore;
+use {
+    crate::task::WaitMobility, crate::task::WaitOutcome, crate::task::WaitQueue,
+    crate::task::WaitTicket,
+};
+use {crate::task::scheduler, crate::task::scheduler::CpuMask};
 
 static CPU_LOCAL_DONE: Semaphore = Semaphore::new(0);
 static CPU_LOCAL_FAILURE: AtomicUsize = AtomicUsize::new(0);
@@ -53,9 +56,9 @@ static QUEUED_ARBITRATION: QueuedArbitration = QueuedArbitration::new();
 pub(super) enum Error {
     Quiescence(super::support::QuiescenceError),
     Scheduler(scheduler::Error),
-    Sleep(crate::kernel::task::SleepError),
-    Synchronization(crate::kernel::sync::Error),
-    TimedWait(crate::kernel::task::TimedWaitError),
+    Sleep(crate::task::SleepError),
+    Synchronization(crate::sync::Error),
+    TimedWait(crate::task::TimedWaitError),
     StateMismatch(usize),
 }
 
@@ -65,8 +68,8 @@ impl From<scheduler::Error> for Error {
     }
 }
 
-impl From<crate::kernel::task::SleepError> for Error {
-    fn from(error: crate::kernel::task::SleepError) -> Self {
+impl From<crate::task::SleepError> for Error {
+    fn from(error: crate::task::SleepError) -> Self {
         Self::Sleep(error)
     }
 }
@@ -77,14 +80,14 @@ impl From<super::support::QuiescenceError> for Error {
     }
 }
 
-impl From<crate::kernel::sync::Error> for Error {
-    fn from(error: crate::kernel::sync::Error) -> Self {
+impl From<crate::sync::Error> for Error {
+    fn from(error: crate::sync::Error) -> Self {
         Self::Synchronization(error)
     }
 }
 
-impl From<crate::kernel::task::TimedWaitError> for Error {
-    fn from(error: crate::kernel::task::TimedWaitError) -> Self {
+impl From<crate::task::TimedWaitError> for Error {
+    fn from(error: crate::task::TimedWaitError) -> Self {
         Self::TimedWait(error)
     }
 }
@@ -128,7 +131,7 @@ fn exercise_timed_wait_paths() -> Result<(), Error> {
     }
 
     TIMED_OUTCOME.store(0, Ordering::Release);
-    let source = if crate::kernel::cpu::online_cpu_count() > 1 {
+    let source = if crate::cpu::online_cpu_count() > 1 {
         CpuIndex::new(1).ok_or(Error::StateMismatch(13))?
     } else {
         CpuIndex::BOOT
@@ -190,10 +193,9 @@ fn exercise_timed_wait_paths() -> Result<(), Error> {
 }
 
 fn wait_for_timed_waiter() -> Result<(), Error> {
-    if crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || Ok::<_, Error>(TIMED_QUEUE.len()? == 1),
-    )? {
+    if crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+        Ok::<_, Error>(TIMED_QUEUE.len()? == 1)
+    })? {
         Ok(())
     } else {
         Err(Error::StateMismatch(19))
@@ -261,7 +263,7 @@ fn exercise_queued_arbitration_and_stale_ticket() -> Result<(), Error> {
         inner.committed_observation = 0;
     });
 
-    let worker_cpu = if crate::kernel::cpu::online_cpu_count() > 1 {
+    let worker_cpu = if crate::cpu::online_cpu_count() > 1 {
         CpuIndex::new(1).ok_or(Error::StateMismatch(6))?
     } else {
         CpuIndex::BOOT
@@ -319,9 +321,8 @@ fn exercise_queued_arbitration_and_stale_ticket() -> Result<(), Error> {
 
 fn wait_for_published_ticket(previous: Option<WaitTicket>) -> Result<WaitTicket, Error> {
     let mut observed = None;
-    let published = crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || {
+    let published =
+        crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
             let ticket = QUEUED_ARBITRATION
                 .state
                 .with(|state| state.published_ticket);
@@ -330,8 +331,7 @@ fn wait_for_published_ticket(previous: Option<WaitTicket>) -> Result<WaitTicket,
                 return Ok::<_, Error>(true);
             }
             Ok(false)
-        },
-    )?;
+        })?;
     if published {
         observed.ok_or(Error::StateMismatch(20))
     } else {
@@ -396,7 +396,7 @@ fn park_for_test() -> Result<WaitOutcome, usize> {
 /// single-CPU systems still execute every arbitration case above through the
 /// same scheduler implementation.
 fn exercise_cpu_local_migration_barrier() -> Result<(), Error> {
-    if crate::kernel::cpu::online_cpu_count() < 2 {
+    if crate::cpu::online_cpu_count() < 2 {
         return Ok(());
     }
     CPU_LOCAL_FAILURE.store(0, Ordering::Release);
@@ -423,10 +423,9 @@ fn exercise_cpu_local_migration_barrier() -> Result<(), Error> {
 /// The timed observer blocks briefly between nonblocking claims, allowing a
 /// remote worker to progress while retaining a deterministic failure bound.
 fn wait_for_completion(done: &Semaphore, failure: usize) -> Result<(), Error> {
-    if crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || Ok::<_, Error>(done.try_acquire()),
-    )? {
+    if crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+        Ok::<_, Error>(done.try_acquire())
+    })? {
         Ok(())
     } else {
         Err(Error::StateMismatch(failure))
@@ -435,7 +434,7 @@ fn wait_for_completion(done: &Semaphore, failure: usize) -> Result<(), Error> {
 
 extern "C" fn cpu_local_worker(_argument: usize) {
     let result = (|| {
-        let current_cpu = crate::kernel::cpu::current_index().ok_or(1usize)?;
+        let current_cpu = crate::cpu::current_index().ok_or(1usize)?;
         let target = if current_cpu == CpuIndex::BOOT {
             CpuIndex::new(1).ok_or(2usize)?
         } else {

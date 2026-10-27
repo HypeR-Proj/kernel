@@ -135,7 +135,7 @@ impl InterruptFrame<'_> {
             Some(LowerAarch64Owner::Guest { .. }) => hyper::hal::interrupt::InterruptOrigin::Guest,
             Some(LowerAarch64Owner::Native { .. }) => {
                 hyper::hal::interrupt::InterruptOrigin::Native {
-                    unwind: super::user_entry::unwind_callback(),
+                    unwind: crate::arch::aarch64::user::entry::unwind_callback(),
                 }
             }
             None => hyper::hal::interrupt::InterruptOrigin::Host,
@@ -587,7 +587,7 @@ fn dispatch_synchronous(
     if exception_class == registers::ESR_EC_FP_ASIMD {
         let restored = match owner {
             Some(LowerAarch64Owner::Native { generation }) => {
-                super::user_entry::restore_fp(frame, generation).map_err(|_| ())
+                crate::arch::aarch64::user::entry::restore_fp(frame, generation).map_err(|_| ())
             }
             Some(LowerAarch64Owner::Guest { generation }) => restore_guest_fp(frame, generation),
             None => Err(()),
@@ -600,12 +600,16 @@ fn dispatch_synchronous(
 
     match owner {
         Some(LowerAarch64Owner::Native { generation }) => {
-            match super::user_entry::handle_synchronous(frame, generation) {
-                Ok(super::user_entry::SynchronousAction::Resume) => VectorAction::RESUME,
-                Ok(super::user_entry::SynchronousAction::Unwind) => {
-                    VectorAction::unwind(super::user_entry::unwind_callback() as usize)
+            match crate::arch::aarch64::user::entry::handle_synchronous(frame, generation) {
+                Ok(crate::arch::aarch64::user::entry::SynchronousAction::Resume) => {
+                    VectorAction::RESUME
                 }
-                Err(_) => super::user_entry::fail_stop(),
+                Ok(crate::arch::aarch64::user::entry::SynchronousAction::Unwind) => {
+                    VectorAction::unwind(
+                        crate::arch::aarch64::user::entry::unwind_callback() as usize
+                    )
+                }
+                Err(_) => crate::arch::aarch64::user::entry::fail_stop(),
             }
         }
         Some(LowerAarch64Owner::Guest { generation }) => {
@@ -681,7 +685,7 @@ fn dispatch_irq(
     let interrupt_origin = match owner {
         Some(LowerAarch64Owner::Guest { .. }) => hyper::hal::interrupt::InterruptOrigin::Guest,
         Some(LowerAarch64Owner::Native { .. }) => hyper::hal::interrupt::InterruptOrigin::Native {
-            unwind: super::user_entry::unwind_callback(),
+            unwind: crate::arch::aarch64::user::entry::unwind_callback(),
         },
         None => hyper::hal::interrupt::InterruptOrigin::Host,
     };
@@ -703,12 +707,13 @@ fn dispatch_irq(
             if let (Some(generation), Some(target)) = (native_generation, postlude) {
                 // Native entry must unwind, never resume this frame after its
                 // register image is saved and physical FP state is scrubbed.
-                let unwind = super::user_entry::unwind_callback() as usize;
+                let unwind = crate::arch::aarch64::user::entry::unwind_callback() as usize;
                 if target as usize != unwind {
-                    super::user_entry::fail_stop();
+                    crate::arch::aarch64::user::entry::fail_stop();
                 }
-                if super::user_entry::capture_interrupt(frame, generation).is_err() {
-                    super::user_entry::fail_stop();
+                if crate::arch::aarch64::user::entry::capture_interrupt(frame, generation).is_err()
+                {
+                    crate::arch::aarch64::user::entry::fail_stop();
                 }
                 return VectorAction::unwind(unwind);
             }
@@ -801,7 +806,7 @@ fn fatal_exception(frame: &ExceptionFrame, entry: ExceptionEntry, exception_clas
 enum GuestDispatch {
     Resume,
     Wait,
-    Device(super::vsysreg::GuestDeviceCompletion),
+    Device(crate::arch::aarch64::vm::sysreg::GuestDeviceCompletion),
     Terminal(super::context::GuestTerminalCause),
 }
 
@@ -823,15 +828,17 @@ fn dispatch_guest_synchronous(
         };
         if let Some(fault) = super::decode_guest_memory_fault(frame.esr, physical_address) {
             match crate::arch::vm::dispatch_memory_fault(fault) {
-                hyper::vm::exit::MemoryFaultAction::Retry => return Ok(GuestDispatch::Resume),
-                hyper::vm::exit::MemoryFaultAction::ForwardToDevice => {
+                hyper_vm_models::exit::MemoryFaultAction::Retry => {
+                    return Ok(GuestDispatch::Resume);
+                }
+                hyper_vm_models::exit::MemoryFaultAction::ForwardToDevice => {
                     if exception_class == registers::ESR_EC_INSTRUCTION_ABORT_LOWER {
                         return Ok(GuestDispatch::Terminal(
                             super::context::GuestTerminalCause::MemoryFault,
                         ));
                     }
                 }
-                hyper::vm::exit::MemoryFaultAction::Stop => {
+                hyper_vm_models::exit::MemoryFaultAction::Stop => {
                     return Ok(GuestDispatch::Terminal(
                         super::context::GuestTerminalCause::MemoryFault,
                     ));
@@ -847,12 +854,13 @@ fn dispatch_guest_synchronous(
         };
         let action = crate::arch::vm::dispatch_mmio(access);
         return match action {
-            hyper::vm::exit::MmioAction::Deferred => Ok(GuestDispatch::Device(
-                super::vsysreg::GuestDeviceCompletion::Mmio(completion),
+            hyper_vm_models::exit::MmioAction::Deferred => Ok(GuestDispatch::Device(
+                crate::arch::aarch64::vm::sysreg::GuestDeviceCompletion::Mmio(completion),
             )),
-            hyper::vm::exit::MmioAction::Unhandled | hyper::vm::exit::MmioAction::Stop => Ok(
-                GuestDispatch::Terminal(super::context::GuestTerminalCause::Mmio),
-            ),
+            hyper_vm_models::exit::MmioAction::Unhandled
+            | hyper_vm_models::exit::MmioAction::Stop => Ok(GuestDispatch::Terminal(
+                super::context::GuestTerminalCause::Mmio,
+            )),
             action if completion.apply(&mut frame.general, &mut frame.elr, action) => {
                 Ok(GuestDispatch::Resume)
             }
@@ -877,11 +885,11 @@ fn dispatch_guest_synchronous(
         ));
     }
     if action == super::GuestSyncAction::InterruptAccess {
-        if !super::vsysreg::guest_sync_action_matches(exit, action) {
+        if !crate::arch::aarch64::vm::sysreg::guest_sync_action_matches(exit, action) {
             return Err(());
         }
         return Ok(GuestDispatch::Device(
-            super::vsysreg::GuestDeviceCompletion::DeactivateInterrupt,
+            crate::arch::aarch64::vm::sysreg::GuestDeviceCompletion::DeactivateInterrupt,
         ));
     }
     let applied = super::apply_guest_sync_action(
@@ -919,7 +927,7 @@ fn capture_waiting_guest(frame: &ExceptionFrame, generation: u64) -> Result<(), 
 fn capture_device_guest(
     frame: &ExceptionFrame,
     generation: u64,
-    completion: super::vsysreg::GuestDeviceCompletion,
+    completion: crate::arch::aarch64::vm::sysreg::GuestDeviceCompletion,
 ) -> Result<(), ()> {
     let mut context = super::lower_el::guest_context(generation).map_err(|_| ())?;
     // SAFETY: This exact generation owns the pinned context; the masked vector

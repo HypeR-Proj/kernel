@@ -4,17 +4,20 @@
 //! Fault injection complements real DMA tests; this mock does not translate DMA.
 
 use crate::{require_ok, require_some};
-use hyper::drivers::{
-    iommu::smmuv3::{
-        Capabilities, CommandError, Containment, Controller, DmaBuffer, DmaMemory, Environment,
-        Error, Event, FaultKind, FaultOutcome, Permissions, firmware::pci_stream_id,
-    },
-    platform::{MmioResource, PermanentMmioMapping},
-};
-use hyper::{mm::VirtualAddress, platform::PhysicalRange};
 use std::{
     alloc::{Layout, alloc_zeroed, dealloc},
     cell::{Cell, RefCell, UnsafeCell},
+};
+use {hyper::mm::VirtualAddress, hyper::mm::ranges::PhysicalRange};
+use {
+    hyper_drivers::iommu::smmuv3::Capabilities, hyper_drivers::iommu::smmuv3::CommandError,
+    hyper_drivers::iommu::smmuv3::Containment, hyper_drivers::iommu::smmuv3::Controller,
+    hyper_drivers::iommu::smmuv3::DmaBuffer, hyper_drivers::iommu::smmuv3::DmaMemory,
+    hyper_drivers::iommu::smmuv3::Environment, hyper_drivers::iommu::smmuv3::Error,
+    hyper_drivers::iommu::smmuv3::Event, hyper_drivers::iommu::smmuv3::FaultKind,
+    hyper_drivers::iommu::smmuv3::FaultOutcome, hyper_drivers::iommu::smmuv3::Permissions,
+    hyper_drivers::iommu::smmuv3::firmware::pci_stream_id, hyper_drivers::platform::MmioResource,
+    hyper_drivers::platform::PermanentMmioMapping,
 };
 
 #[derive(Default)]
@@ -674,7 +677,7 @@ fn event_decode_distinguishes_permission_and_walk_abort() {
 
 #[test]
 fn wired_irq_routes_support_separate_and_combined_but_reject_ambiguous_firmware() {
-    use hyper::drivers::iommu::smmuv3::firmware::wired_interrupts;
+    use hyper_drivers::iommu::smmuv3::firmware::wired_interrupts;
     let routes = require_ok(wired_interrupts(
         b"gerror\0eventq\0priq\0cmdq-sync\0",
         &[0, 77, 1, 0, 74, 1, 0, 75, 1, 0, 76, 1],

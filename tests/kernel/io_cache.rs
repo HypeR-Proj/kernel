@@ -5,10 +5,16 @@
 
 use core::num::NonZeroU64;
 
-use crate::kernel::accounting::{ResourceDomain, ResourceKind, ResourceLimits};
-use crate::kernel::io_cache::{
-    CacheAccess, CacheError, CacheKey, ContentRevision, FileDataCache, FileIdentity, FilePageIndex,
-    FilesystemGeneration, NodeIdentity, Refill, worker,
+use {
+    crate::accounting::ResourceDomain, crate::accounting::ResourceKind,
+    crate::accounting::ResourceLimits,
+};
+use {
+    crate::fs::cache::CacheAccess, crate::fs::cache::CacheError, crate::fs::cache::CacheKey,
+    crate::fs::cache::ContentRevision, crate::fs::cache::FileDataCache,
+    crate::fs::cache::FileIdentity, crate::fs::cache::FilePageIndex,
+    crate::fs::cache::FilesystemGeneration, crate::fs::cache::NodeIdentity,
+    crate::fs::cache::Refill, crate::fs::cache::worker,
 };
 
 static CONTENTS: [u8; 4096] = [0xa5; 4096];
@@ -40,11 +46,10 @@ impl Drop for Pressure {
 }
 
 pub(super) fn run() -> Result<(), Error> {
-    let cache = crate::kernel::vfs::file_cache().ok_or(Error::Cache)?;
+    let cache = crate::fs::vfs::file_cache().ok_or(Error::Cache)?;
     let domain =
         ResourceDomain::try_new_root(ResourceLimits::UNLIMITED).map_err(|_| Error::Allocation)?;
-    let record =
-        crate::kernel::vfs::cache_test_record(1, &domain).map_err(|_| Error::Allocation)?;
+    let record = crate::fs::vfs::cache_test_record(1, &domain).map_err(|_| Error::Allocation)?;
     let weak = record.downgrade();
     let initial_capacity = cache.usage().capacity;
     let identity = FileIdentity::new(
@@ -59,7 +64,7 @@ pub(super) fn run() -> Result<(), Error> {
             Ok(CacheAccess::Hit(_)) => true,
             Ok(CacheAccess::Load(reservation)) => reservation
                 .fill_and_publish(
-                    || crate::kernel::vfs::CachePage::try_copy(&CONTENTS, record.clone()),
+                    || crate::fs::vfs::CachePage::try_copy(&CONTENTS, record.clone()),
                     |_| Refill::Recreate,
                 )
                 .is_ok(),
@@ -84,13 +89,11 @@ pub(super) fn run() -> Result<(), Error> {
         return Err(Error::PinnedBytes);
     }
     wait(|| {
-        crate::kernel::mm::cache_memory::availability()
-            .is_some_and(|memory| memory.file_cache_pages == 1)
+        crate::mm::cache_memory::availability().is_some_and(|memory| memory.file_cache_pages == 1)
     })?;
     drop(pinned);
     wait(|| {
-        crate::kernel::mm::cache_memory::availability()
-            .is_some_and(|memory| memory.file_cache_pages == 0)
+        crate::mm::cache_memory::availability().is_some_and(|memory| memory.file_cache_pages == 0)
     })?;
     // Page accounting can reach zero before another CPU finishes dropping
     // that payload's identity sidecar. Require eventual final ownership loss.
@@ -104,9 +107,7 @@ pub(super) fn run() -> Result<(), Error> {
     scheduled_domain_reclaim(cache, &domain)?;
     scheduled_impossible_order(cache, &domain)?;
     metadata_and_last_mapping_under_pressure(cache, &domain)?;
-    if crate::kernel::mm::cache_memory::availability()
-        .is_none_or(|memory| memory.file_cache_pages != 0)
-    {
+    if crate::mm::cache_memory::availability().is_none_or(|memory| memory.file_cache_pages != 0) {
         return Err(Error::PhysicalPages);
     }
     Ok(())
@@ -117,7 +118,7 @@ pub(super) fn run() -> Result<(), Error> {
 /// releasing the last mapping must wake the worker without allocator activity.
 #[inline(never)]
 fn metadata_and_last_mapping_under_pressure(
-    cache: &FileDataCache<crate::kernel::vfs::CachePage>,
+    cache: &FileDataCache<crate::fs::vfs::CachePage>,
     domain: &ResourceDomain,
 ) -> Result<(), Error> {
     cache.maintain_capacity(64).map_err(|_| Error::Cache)?;
@@ -126,14 +127,10 @@ fn metadata_and_last_mapping_under_pressure(
         .lookup_mapping(key)
         .map_err(|_| Error::Cache)?
         .ok_or(Error::Cache)?;
-    let baseline = crate::kernel::mm::statistics()
-        .ok_or(Error::PhysicalPages)?
-        .runtime;
+    let baseline = crate::mm::statistics().ok_or(Error::PhysicalPages)?.runtime;
     cache.maintain_capacity(8192).map_err(|_| Error::Cache)?;
     fill_request_pages(cache, domain, 8, 4096)?;
-    let warm = crate::kernel::mm::statistics()
-        .ok_or(Error::PhysicalPages)?
-        .runtime;
+    let warm = crate::mm::statistics().ok_or(Error::PhysicalPages)?.runtime;
     if warm.file_cache_large_pages <= baseline.file_cache_large_pages
         || warm.file_cache_slab_pages <= baseline.file_cache_slab_pages
     {
@@ -143,7 +140,7 @@ fn metadata_and_last_mapping_under_pressure(
     let pressure = Pressure::start();
     wait(|| {
         let usage = cache.usage();
-        let Some(memory) = crate::kernel::mm::statistics() else {
+        let Some(memory) = crate::mm::statistics() else {
             return false;
         };
         usage.clean == 1
@@ -172,7 +169,7 @@ fn metadata_and_last_mapping_under_pressure(
 /// payloads, then reject optional retention while the pressure episode lasts.
 #[inline(never)]
 fn directory_pages_under_pressure(
-    cache: &FileDataCache<crate::kernel::vfs::CachePage>,
+    cache: &FileDataCache<crate::fs::vfs::CachePage>,
     domain: &ResourceDomain,
 ) -> Result<(), Error> {
     use hyper_filesystem::protocol::{
@@ -182,7 +179,7 @@ fn directory_pages_under_pressure(
 
     let baseline = domain.usage().committed(ResourceKind::KernelMemoryBytes);
     let stream_identity =
-        crate::kernel::vfs::cache_test_record(6, domain).map_err(|_| Error::Allocation)?;
+        crate::fs::vfs::cache_test_record(6, domain).map_err(|_| Error::Allocation)?;
     let weak = stream_identity.downgrade();
     let identity = FileIdentity::new(
         FilesystemGeneration::new(NonZeroU64::MAX),
@@ -224,12 +221,7 @@ fn directory_pages_under_pressure(
         drop(
             reservation
                 .fill_and_publish(
-                    || {
-                        crate::kernel::vfs::CachePage::try_copy_parts(
-                            &parts,
-                            stream_identity.clone(),
-                        )
-                    },
+                    || crate::fs::vfs::CachePage::try_copy_parts(&parts, stream_identity.clone()),
                     |page| page.refill_parts(&parts, stream_identity.clone()),
                 )
                 .map_err(|_| Error::Cache)?,
@@ -250,8 +242,7 @@ fn directory_pages_under_pressure(
         worker::draining_for_test() && cache.usage().clean == 0 && cache.usage().live_payloads == 0
     })?;
     wait(|| {
-        crate::kernel::mm::cache_memory::availability()
-            .is_some_and(|memory| memory.file_cache_pages == 0)
+        crate::mm::cache_memory::availability().is_some_and(|memory| memory.file_cache_pages == 0)
     })?;
     if checkpoint != continuation
         || weak.upgrade().is_none()
@@ -280,13 +271,12 @@ fn directory_pages_under_pressure(
 }
 
 fn fill_request_pages(
-    cache: &FileDataCache<crate::kernel::vfs::CachePage>,
+    cache: &FileDataCache<crate::fs::vfs::CachePage>,
     domain: &ResourceDomain,
     node: u64,
     pages: u64,
 ) -> Result<CacheKey, Error> {
-    let record =
-        crate::kernel::vfs::cache_test_record(node, domain).map_err(|_| Error::Allocation)?;
+    let record = crate::fs::vfs::cache_test_record(node, domain).map_err(|_| Error::Allocation)?;
     let identity = FileIdentity::new(
         FilesystemGeneration::new(NonZeroU64::MAX),
         NodeIdentity::new(NonZeroU64::new(node).ok_or(Error::Cache)?),
@@ -301,7 +291,7 @@ fn fill_request_pages(
         drop(
             reservation
                 .fill_and_publish(
-                    || crate::kernel::vfs::CachePage::try_copy(&CONTENTS, record.clone()),
+                    || crate::fs::vfs::CachePage::try_copy(&CONTENTS, record.clone()),
                     |_| Refill::Recreate,
                 )
                 .map_err(|_| Error::Cache)?,
@@ -311,10 +301,10 @@ fn fill_request_pages(
 }
 
 fn scheduled_domain_reclaim(
-    cache: &FileDataCache<crate::kernel::vfs::CachePage>,
+    cache: &FileDataCache<crate::fs::vfs::CachePage>,
     domain: &ResourceDomain,
 ) -> Result<(), Error> {
-    use crate::kernel::mm::reclaim::{Target, reclaim};
+    use {crate::mm::reclaim::Target, crate::mm::reclaim::reclaim};
 
     cache.maintain_capacity(256).map_err(|_| Error::Cache)?;
     let child = domain
@@ -349,8 +339,7 @@ fn scheduled_domain_reclaim(
     }
     // The real allocation retry runs while optional cache admission is still
     // paused, after the request serializer has already been released.
-    let retry =
-        crate::kernel::mm::page_block::PageBlock::allocate(0).map_err(|_| Error::Allocation)?;
+    let retry = crate::mm::page_block::PageBlock::allocate(0).map_err(|_| Error::Allocation)?;
     drop(retry);
     drop(guard);
     cache.reclaim_batch(64);
@@ -359,19 +348,16 @@ fn scheduled_domain_reclaim(
 }
 
 fn scheduled_impossible_order(
-    cache: &FileDataCache<crate::kernel::vfs::CachePage>,
+    cache: &FileDataCache<crate::fs::vfs::CachePage>,
     domain: &ResourceDomain,
 ) -> Result<(), Error> {
-    use crate::kernel::mm::{
-        cache_memory,
-        reclaim::{Target, reclaim},
-    };
+    use {crate::mm::cache_memory, crate::mm::reclaim::Target, crate::mm::reclaim::reclaim};
 
     let memory = cache_memory::availability().ok_or(Error::PhysicalPages)?;
     // The usual 1 GiB QEMU machine cannot form an order-18 block after boot
     // reservations. Larger machines need a separately controlled allocator
     // fixture; do not consume their RAM merely to force this failure shape.
-    if memory.managed_pages >= 1_usize << hyper::mm::MAX_ORDER {
+    if memory.managed_pages >= 1_usize << crate::mm::allocator::MAX_ORDER {
         return Ok(());
     }
     cache.maintain_capacity(256).map_err(|_| Error::Cache)?;
@@ -385,7 +371,8 @@ fn scheduled_impossible_order(
     if memory.available_for_cache() <= cache_memory::watermarks(memory.managed_pages).resume_pages {
         return Err(Error::PhysicalPages);
     }
-    let guard = reclaim(Target::PhysicalOrder(hyper::mm::MAX_ORDER)).ok_or(Error::Progress)?;
+    let guard =
+        reclaim(Target::PhysicalOrder(crate::mm::allocator::MAX_ORDER)).ok_or(Error::Progress)?;
     // Percentage pressure would do nothing here. The explicit demand must
     // finish its entire finite sweep even though one pin cannot be reclaimed
     // and the requested buddy order can never exist on this machine.
@@ -397,7 +384,7 @@ fn scheduled_impossible_order(
     {
         return Err(Error::PinnedBytes);
     }
-    if crate::kernel::mm::page_block::PageBlock::allocate(hyper::mm::MAX_ORDER).is_ok() {
+    if crate::mm::page_block::PageBlock::allocate(crate::mm::allocator::MAX_ORDER).is_ok() {
         return Err(Error::PhysicalPages);
     }
     drop(pinned);
@@ -410,10 +397,10 @@ fn scheduled_impossible_order(
 }
 
 fn late_publication_under_pressure(
-    cache: &FileDataCache<crate::kernel::vfs::CachePage>,
+    cache: &FileDataCache<crate::fs::vfs::CachePage>,
     domain: &ResourceDomain,
 ) -> Result<(), Error> {
-    let record = crate::kernel::vfs::cache_test_record(2, domain).map_err(|_| Error::Allocation)?;
+    let record = crate::fs::vfs::cache_test_record(2, domain).map_err(|_| Error::Allocation)?;
     let identity = FileIdentity::new(
         FilesystemGeneration::new(NonZeroU64::MAX),
         NodeIdentity::new(NonZeroU64::new(2).ok_or(Error::Cache)?),
@@ -430,7 +417,7 @@ fn late_publication_under_pressure(
         };
         let _ = reservation
             .fill_and_publish(
-                || crate::kernel::vfs::CachePage::try_copy(&CONTENTS, record.clone()),
+                || crate::fs::vfs::CachePage::try_copy(&CONTENTS, record.clone()),
                 |_| Refill::Recreate,
             )
             .map_err(|_| Error::Cache)?;
@@ -440,16 +427,15 @@ fn late_publication_under_pressure(
         return Err(Error::Cache);
     };
     let pressure = Pressure::start();
-    let service_workers = crate::kernel::log::permanent_worker_count_for_test()
-        + crate::kernel::task::scheduler::permanent_worker_count_for_test()
-        + crate::kernel::time::permanent_worker_count_for_test()
+    let service_workers = crate::diagnostics::log::permanent_worker_count_for_test()
+        + crate::task::scheduler::permanent_worker_count_for_test()
+        + crate::time::permanent_worker_count_for_test()
         + worker::permanent_worker_count_for_test()
-        + crate::kernel::vfs::read_ahead::permanent_worker_count_for_test()
-        + crate::kernel::device::iommu::runtime::permanent_worker_count_for_test();
+        + crate::fs::vfs::read_ahead::permanent_worker_count_for_test()
+        + crate::device::iommu::runtime::permanent_worker_count_for_test();
     wait_without_allocation(|| {
         let usage = cache.usage();
-        let statistics =
-            crate::kernel::task::scheduler::statistics().map_err(|_| Error::Quiescence)?;
+        let statistics = crate::task::scheduler::statistics().map_err(|_| Error::Quiescence)?;
         Ok(worker::draining_for_test()
             && usage.capacity == 64
             && usage.clean == 0
@@ -498,26 +484,25 @@ fn late_publication_under_pressure(
 fn wait_without_allocation(
     mut condition: impl FnMut() -> Result<bool, Error>,
 ) -> Result<(), Error> {
-    let deadline =
-        crate::kernel::time::deadline_after(crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS)
-            .map_err(|_| Error::Progress)?;
+    let deadline = crate::time::deadline_after(crate::task::TEST_PROGRESS_TIMEOUT_NS)
+        .map_err(|_| Error::Progress)?;
     loop {
         if condition()? {
             return Ok(());
         }
-        if hyper::hal::timer::deadline_reached(crate::kernel::time::monotonic_ticks(), deadline) {
+        if hyper::hal::timer::deadline_reached(crate::time::monotonic_ticks(), deadline) {
             return Err(Error::Progress);
         }
-        crate::kernel::task::scheduler::yield_now().map_err(|_| Error::Progress)?;
+        crate::task::scheduler::yield_now().map_err(|_| Error::Progress)?;
     }
 }
 
 fn wait(mut condition: impl FnMut() -> bool) -> Result<(), Error> {
-    let completed = crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || Ok::<_, crate::kernel::task::SleepError>(condition()),
-    )
-    .map_err(|_| Error::Progress)?;
+    let completed =
+        crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+            Ok::<_, crate::task::SleepError>(condition())
+        })
+        .map_err(|_| Error::Progress)?;
     if completed {
         Ok(())
     } else {

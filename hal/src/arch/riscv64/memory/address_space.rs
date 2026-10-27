@@ -5,7 +5,7 @@ use hyper::hal::memory::KernelImageLayout;
 #[cfg(feature = "crash-console")]
 use hyper::hal::memory::Stage1Mapping;
 use hyper::mm::{BootAllocator, PhysicalAddress};
-use hyper::platform::PlatformInfo;
+use hyper_platform::PlatformInfo;
 
 use super::page_table::{self, FinalAddressSpace};
 

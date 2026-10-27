@@ -3,7 +3,7 @@
 
 //! Host checks for static scheduler classes and placement invariants.
 
-#[path = "../../../../src/kernel/task/scheduler/balance_policy.rs"]
+#[path = "../../../../src/task/scheduler/balance_policy.rs"]
 mod balance_policy;
 use crate::scheduler_policy_model as policy;
 

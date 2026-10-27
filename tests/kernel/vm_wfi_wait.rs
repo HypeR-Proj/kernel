@@ -5,12 +5,12 @@
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Error {
-    Endpoint(crate::kernel::vm::WaitSelfTestError),
+    Endpoint(crate::vm::WaitSelfTestError),
     Quiescence(super::support::QuiescenceError),
 }
 
 pub(super) fn run() -> Result<(), Error> {
-    let result = crate::kernel::vm::run_wait_self_test().map_err(Error::Endpoint);
+    let result = crate::vm::run_wait_self_test().map_err(Error::Endpoint);
     let quiescence = super::support::quiesce_workers().map_err(Error::Quiescence);
     result?;
     quiescence?;

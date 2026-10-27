@@ -5,11 +5,11 @@
 
 use hyper::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::kernel::log::console;
-use crate::kernel::sync::Semaphore;
-use crate::kernel::task::WaitOutcome;
-use crate::kernel::task::scheduler::{self, ThreadPriority};
-use crate::kernel::task::thread::ThreadId;
+use crate::diagnostics::log::console;
+use crate::sync::Semaphore;
+use crate::task::WaitOutcome;
+use crate::task::thread::ThreadId;
+use {crate::task::scheduler, crate::task::scheduler::ThreadPriority};
 
 const EMPTY_SLOT: usize = usize::MAX;
 static SLOTS: [AtomicUsize; 2] = [AtomicUsize::new(EMPTY_SLOT), AtomicUsize::new(EMPTY_SLOT)];
@@ -20,7 +20,7 @@ static DONE: Semaphore = Semaphore::new(0);
 pub(super) enum Error {
     Quiescence(super::support::QuiescenceError),
     Scheduler(scheduler::Error),
-    Sleep(crate::kernel::task::SleepError),
+    Sleep(crate::task::SleepError),
     State(usize),
 }
 
@@ -30,8 +30,8 @@ impl From<scheduler::Error> for Error {
     }
 }
 
-impl From<crate::kernel::task::SleepError> for Error {
-    fn from(error: crate::kernel::task::SleepError) -> Self {
+impl From<crate::task::SleepError> for Error {
+    fn from(error: crate::task::SleepError) -> Self {
         Self::Sleep(error)
     }
 }
@@ -95,9 +95,8 @@ fn create_workers(count: usize) -> Result<[Option<ThreadId>; 2], Error> {
 
 fn wait_until_queued(count: usize) -> Result<[usize; 2], Error> {
     let mut observed = [EMPTY_SLOT; 2];
-    let queued = crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || {
+    let queued =
+        crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
             let mut slots = [EMPTY_SLOT; 2];
             let mut queued = true;
             for (index, slot) in slots.iter_mut().enumerate().take(count) {
@@ -111,8 +110,7 @@ fn wait_until_queued(count: usize) -> Result<[usize; 2], Error> {
                 observed = slots;
             }
             Ok::<_, Error>(queued)
-        },
-    )?;
+        })?;
     if queued {
         Ok(observed)
     } else {
@@ -137,15 +135,13 @@ fn cancel_workers(
 }
 
 fn wait_until_done(mut remaining: usize) -> Result<(), Error> {
-    let completed = crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || {
+    let completed =
+        crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
             while remaining != 0 && DONE.try_acquire() {
                 remaining -= 1;
             }
             Ok::<_, Error>(remaining == 0)
-        },
-    )?;
+        })?;
     if completed {
         Ok(())
     } else {
@@ -170,7 +166,7 @@ extern "C" fn flush_waiter(index: usize) {
         Ok(barrier) => {
             SLOTS[index].store(barrier.slot_for_test(), Ordering::Release);
             match console::wait_pending_flush_barrier_for_test(barrier) {
-                Err(crate::kernel::sync::Error::WaitInterrupted(WaitOutcome::Cancelled)) => 1,
+                Err(crate::sync::Error::WaitInterrupted(WaitOutcome::Cancelled)) => 1,
                 Ok(_) => 2,
                 Err(_) => 3,
             }

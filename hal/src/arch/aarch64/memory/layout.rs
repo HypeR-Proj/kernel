@@ -10,11 +10,15 @@
 use hyper::hal::memory::{AddressTranslation, VirtualMemoryLayout};
 use hyper::mm::{PhysicalAddress, VirtualAddress};
 
-use super::super::address_layout::{AddressLayout, AddressRange};
+use {
+    crate::arch::aarch64::memory::address_layout::AddressLayout,
+    crate::arch::aarch64::memory::address_layout::AddressRange,
+};
 
-pub(super) const HOST_LAYOUT: AddressLayout = super::super::address::STAGE1_LAYOUT;
-const _: () = assert!(super::super::address_layout::PAGE_SIZE == hyper::mm::PAGE_SIZE);
-const BOOTSTRAP_ACCESSIBLE_LIMIT: u64 = super::super::bootstrap_map::IDENTITY_LIMIT;
+pub(super) const HOST_LAYOUT: AddressLayout = crate::arch::aarch64::memory::address::STAGE1_LAYOUT;
+const _: () =
+    assert!(crate::arch::aarch64::memory::address_layout::PAGE_SIZE == hyper::mm::PAGE_SIZE);
+const BOOTSTRAP_ACCESSIBLE_LIMIT: u64 = crate::arch::aarch64::memory::bootstrap_map::IDENTITY_LIMIT;
 pub(super) type HostLayout = AddressLayout;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

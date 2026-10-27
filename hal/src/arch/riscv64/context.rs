@@ -75,7 +75,7 @@ struct GuestAnchorExit {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GuestSynchronousTerminal {
     Undecodable,
-    Unsupported(super::guest::UnsupportedGuestExit),
+    Unsupported(crate::arch::riscv64::vm::exit::UnsupportedGuestExit),
 }
 
 /// Typed guest-policy cause for one terminal run.
@@ -297,7 +297,7 @@ impl VcpuContext {
             }
             // SAFETY: The validated raw pointer remains pinned; this short
             // borrow ends before any trap or scheduler callback may run.
-            if !unsafe { super::vm_vcpu::owns(&*context) } {
+            if !unsafe { crate::arch::riscv64::vm::vcpu::owns(&*context) } {
                 return Err(GuestRunError::Owner);
             }
             // SAFETY: The run owner has exclusive access before guest entry;

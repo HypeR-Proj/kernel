@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::services::ProcessServices;
-use crate::kernel::abi::native::{InspectServices, IpcServices};
-use crate::kernel::capability::{HandleError, Rights, handle_wire};
-use crate::kernel::inspect::{Error, ObjectInspector};
-use crate::kernel::object::diagnostics::DetailRecord;
-use crate::kernel::process::{Process, ProcessError, UserThread};
+use crate::object::diagnostics::DetailRecord;
+use {crate::abi::native::InspectServices, crate::abi::native::IpcServices};
+use {crate::capability::HandleError, crate::capability::Rights, crate::capability::handle_wire};
+use {crate::diagnostics::inspect::Error, crate::diagnostics::inspect::ObjectInspector};
+use {crate::process::Process, crate::process::ProcessError, crate::process::UserThread};
 
 /// Exercise actual syscall service authorization, generation lookup, and peer
 /// publication against a real prepared Native process.

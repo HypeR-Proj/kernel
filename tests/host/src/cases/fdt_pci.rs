@@ -61,7 +61,7 @@ fn pci_tree(pci: bool, tag: u32, lanes: u32) -> Vec<u8> {
     add_root_nodes(blob, &nodes)
 }
 
-fn discover(blob: &[u8]) -> (hyper::platform::PlatformInfo, Vec<PlatformDevice>) {
+fn discover(blob: &[u8]) -> (hyper_platform::PlatformInfo, Vec<PlatformDevice>) {
     let mut scanner = DeviceScanner::new(&[]);
     let platform = crate::require_ok(fdt::discover_from_bytes_with(blob, &mut scanner));
     (platform, crate::require_ok(scanner.finish()))

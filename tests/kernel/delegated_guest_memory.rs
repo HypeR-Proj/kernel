@@ -4,8 +4,8 @@
 //! Delegated words retain the hardware lease and cannot bypass `NativeBlock` ownership.
 
 use super::{Error, GuestMemoryObject, scalar_object};
-use crate::kernel::accounting::ResourceDomain;
-use crate::kernel::mm::user_space::VmoObject;
+use crate::accounting::ResourceDomain;
+use crate::mm::user_space::VmoObject;
 
 pub(super) fn run(domain: &ResourceDomain) -> Result<(), &'static str> {
     let vmo = VmoObject::try_new_writable(8192, domain).map_err(|_| "delegated backing")?;

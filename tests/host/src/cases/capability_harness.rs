@@ -3,9 +3,9 @@
 
 //! Minimal kernel-object module graph for host-side capability tests.
 
-#[path = "../../../../src/kernel/authority.rs"]
+#[path = "../../../../src/authority.rs"]
 pub(crate) mod authority;
-#[path = "../../../../src/kernel/capability/mod.rs"]
+#[path = "../../../../src/capability/mod.rs"]
 pub(crate) mod capability;
 pub(crate) use authority::Rights;
 
@@ -36,12 +36,12 @@ pub(crate) mod signals {
     }
 }
 
-#[path = "../../../../src/kernel/object/identity.rs"]
+#[path = "../../../../src/object/identity.rs"]
 pub(crate) mod identity;
-#[path = "../../../../src/kernel/object/core.rs"]
+#[path = "../../../../src/object/core.rs"]
 mod object_core;
 pub(crate) use object_core::{Koid, ObjectCreationError, ObjectKind, UserExportableObject};
-#[path = "../../../../src/kernel/object/diagnostics.rs"]
+#[path = "../../../../src/object/diagnostics.rs"]
 pub(crate) mod diagnostics;
 
 pub(crate) fn weak_is_alive(object: &object_core::WeakObjectRef) -> bool {

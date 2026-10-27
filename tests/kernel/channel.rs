@@ -3,8 +3,8 @@
 
 //! Bare-metal contracts for bounded `ByteChannel` ordering and level signals.
 
-use crate::kernel::accounting::{ResourceDomain, ResourceLimits};
-use crate::kernel::ipc::{ByteChannel, ByteChannelError, PreparedByteMessage};
+use {crate::accounting::ResourceDomain, crate::accounting::ResourceLimits};
+use {crate::ipc::ByteChannel, crate::ipc::ByteChannelError, crate::ipc::PreparedByteMessage};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Error {

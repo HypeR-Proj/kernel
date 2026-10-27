@@ -8,7 +8,10 @@
 //! geometry, architecture diagnostics, and optional port-I/O executor while
 //! keeping backend state private from kernel services.
 
-use hyper::platform::fdt::{NodeId, NodeResources, NodeVisitor, Property};
+use {
+    hyper_platform::fdt::NodeId, hyper_platform::fdt::NodeResources,
+    hyper_platform::fdt::NodeVisitor, hyper_platform::fdt::Property,
+};
 
 /// Failure reported by essential architecture-device discovery.
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -39,15 +42,15 @@ impl core::fmt::Debug for KaslrError {
 pub struct EssentialInfo(crate::arch::platform::EssentialInfo);
 
 impl EssentialInfo {
-    pub fn cpu_power(&self) -> Option<hyper::platform::CpuPowerInfo> {
+    pub fn cpu_power(&self) -> Option<hyper_platform::CpuPowerInfo> {
         self.0.cpu_power()
     }
 
-    pub fn interrupt_controller(&self) -> Option<hyper::platform::InterruptControllerInfo> {
+    pub fn interrupt_controller(&self) -> Option<hyper_platform::InterruptControllerInfo> {
         self.0.interrupt_controller()
     }
 
-    pub fn timer(&self) -> Option<hyper::platform::TimerInfo> {
+    pub fn timer(&self) -> Option<hyper_platform::TimerInfo> {
         self.0.timer()
     }
 
@@ -123,15 +126,15 @@ pub const fn port_io() -> Option<hyper::hal::io::PortIo> {
 #[derive(Clone, Copy)]
 pub struct ProtocolInputs {
     pub dtb_address: usize,
-    pub command_line: Option<hyper::platform::chosen::CommandLine>,
-    pub initial_ramdisk: Option<hyper::platform::PhysicalRange>,
+    pub command_line: Option<hyper_platform::chosen::CommandLine>,
+    pub initial_ramdisk: Option<hyper::mm::ranges::PhysicalRange>,
 }
 
 impl ProtocolInputs {
     pub const fn new(
         dtb_address: usize,
-        command_line: Option<hyper::platform::chosen::CommandLine>,
-        initial_ramdisk: Option<hyper::platform::PhysicalRange>,
+        command_line: Option<hyper_platform::chosen::CommandLine>,
+        initial_ramdisk: Option<hyper::mm::ranges::PhysicalRange>,
     ) -> Self {
         Self {
             dtb_address,
@@ -152,6 +155,6 @@ pub unsafe fn prepare_boot(raw0: usize, raw1: usize, ticks: u64) -> ProtocolInpu
 }
 
 /// Obtains one optional hardware/firmware sample at boot. Never waits for entropy.
-pub fn random_seed(power: Option<hyper::platform::CpuPowerInfo>) -> Option<u64> {
+pub fn random_seed(power: Option<hyper_platform::CpuPowerInfo>) -> Option<u64> {
     crate::arch::platform::random_seed(power)
 }

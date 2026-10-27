@@ -3,10 +3,10 @@
 
 //! Firmware-described MMIO ranges and permanent mapping capability contracts.
 
-use hyper::{
-    drivers::platform::{MmioMappingError, MmioResource, PermanentMmioMapping},
-    mm::VirtualAddress,
-    platform::PhysicalRange,
+use {
+    hyper::mm::VirtualAddress, hyper::mm::ranges::PhysicalRange,
+    hyper_drivers::platform::MmioMappingError, hyper_drivers::platform::MmioResource,
+    hyper_drivers::platform::PermanentMmioMapping,
 };
 
 fn resource(start: u64, size: u64) -> MmioResource {
@@ -72,7 +72,7 @@ fn rejects_a_virtual_interval_that_wraps_usize() {
 
 #[test]
 fn pl011_accepts_axi_window_without_reading_missing_identification_registers() {
-    use hyper::drivers::serial::Pl011;
+    use hyper_drivers::serial::Pl011;
     let registers = Box::leak(vec![0u32; 0x200 / 4].into_boxed_slice());
     // SAFETY: Leaked aligned storage backs the entire declared register window.
     let mapping = crate::require_ok(unsafe {

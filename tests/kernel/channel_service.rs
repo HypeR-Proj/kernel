@@ -3,28 +3,39 @@
 
 //! Process-facing `ByteChannel` transactions through real native mappings.
 
-use crate::kernel::capability::handle_wire;
+use crate::capability::handle_wire;
 
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use hyper::mm::PAGE_SIZE;
 
-use crate::kernel::accounting::{ResourceDomain, ResourceKind, ResourceLimits};
-use crate::kernel::capability::{HandleError, HandleFlags, HandleValue, PreparedHandle, Rights};
-use crate::kernel::ipc::{
-    ByteChannelError, ByteChannelReadOutcome, ByteChannelServiceError, CapabilityChannel,
-    CapabilityChannelServiceError, CapabilityDeliveryInfo, CapabilityReceiveOutcome,
-    byte_channel_create, byte_channel_read, byte_channel_write, capability_channel_receive,
-    capability_channel_try_send,
+use {
+    crate::accounting::ResourceDomain, crate::accounting::ResourceKind,
+    crate::accounting::ResourceLimits,
 };
-use crate::kernel::mm::user_space::{
-    UserAddress, UserSlice, fail_exposed_write_after_copy_for_test, prepare_native_entry_self_test,
+use {
+    crate::capability::HandleError, crate::capability::HandleFlags, crate::capability::HandleValue,
+    crate::capability::PreparedHandle, crate::capability::Rights,
 };
-use crate::kernel::object::{Event, KernelObject, ObjectPublication};
-use crate::kernel::process::{
-    MachineAbi, PreparedProcess, Process, ProcessError, ProcessImage, ProcessObject, ProcessPhase,
-    TaskGroup, TerminalReason,
+use {
+    crate::ipc::ByteChannelError, crate::ipc::ByteChannelReadOutcome,
+    crate::ipc::ByteChannelServiceError, crate::ipc::CapabilityChannel,
+    crate::ipc::CapabilityChannelServiceError, crate::ipc::CapabilityDeliveryInfo,
+    crate::ipc::CapabilityReceiveOutcome, crate::ipc::byte_channel_create,
+    crate::ipc::byte_channel_read, crate::ipc::byte_channel_write,
+    crate::ipc::capability_channel_receive, crate::ipc::capability_channel_try_send,
+};
+use {
+    crate::mm::user_space::UserAddress, crate::mm::user_space::UserSlice,
+    crate::mm::user_space::fail_exposed_write_after_copy_for_test,
+    crate::mm::user_space::prepare_native_entry_self_test,
+};
+use {crate::object::Event, crate::object::KernelObject, crate::object::ObjectPublication};
+use {
+    crate::process::MachineAbi, crate::process::PreparedProcess, crate::process::Process,
+    crate::process::ProcessError, crate::process::ProcessImage, crate::process::ProcessObject,
+    crate::process::ProcessPhase, crate::process::TaskGroup, crate::process::TerminalReason,
 };
 
 const IMAGE_BASE: u64 = 0x80_0000;
@@ -38,9 +49,9 @@ pub(super) enum Error {
     Group,
     Process(ProcessError),
     Quiescence(super::support::QuiescenceError),
-    Scheduler(crate::kernel::task::scheduler::Error),
+    Scheduler(crate::task::scheduler::Error),
     Service(ByteChannelServiceError),
-    Sleep(crate::kernel::task::SleepError),
+    Sleep(crate::task::SleepError),
     State(usize),
 }
 
@@ -88,14 +99,14 @@ impl From<super::support::QuiescenceError> for Error {
     }
 }
 
-impl From<crate::kernel::task::scheduler::Error> for Error {
-    fn from(error: crate::kernel::task::scheduler::Error) -> Self {
+impl From<crate::task::scheduler::Error> for Error {
+    fn from(error: crate::task::scheduler::Error) -> Self {
         Self::Scheduler(error)
     }
 }
 
-impl From<crate::kernel::task::SleepError> for Error {
-    fn from(error: crate::kernel::task::SleepError) -> Self {
+impl From<crate::task::SleepError> for Error {
+    fn from(error: crate::task::SleepError) -> Self {
         Self::Sleep(error)
     }
 }
@@ -123,7 +134,7 @@ pub(super) fn run() -> Result<(), Error> {
     if !report.newly_requested || !report.dispatch_complete {
         return Err(Error::State(20));
     }
-    crate::kernel::task::sleep_ms(20)?;
+    crate::task::sleep_ms(20)?;
     if process.snapshot().phase != ProcessPhase::Retiring {
         return Err(Error::State(21));
     }
@@ -142,9 +153,12 @@ fn verify_memory_authority_attenuation(
     process: &Process,
     domain: &ResourceDomain,
 ) -> Result<(), Error> {
-    use crate::kernel::capability::HandleError;
-    use crate::kernel::mm::user_space::{VmarObject, allocate_vmar, set_memory_residency};
-    use crate::kernel::process::TaskFactory;
+    use crate::capability::HandleError;
+    use crate::process::TaskFactory;
+    use {
+        crate::mm::user_space::VmarObject, crate::mm::user_space::allocate_vmar,
+        crate::mm::user_space::set_memory_residency,
+    };
 
     let factory = process.create_object(
         TaskFactory::try_new(domain).map_err(|_| Error::Construction)?,
@@ -247,9 +261,9 @@ fn verify_memory_authority_attenuation(
 /// Device payload authority is independent from mapping authority and cannot
 /// be restored through a stale or reduced handle.
 fn verify_guest_memory_authority(process: &Process, domain: &ResourceDomain) -> Result<(), Error> {
-    use crate::kernel::mm::user_space::VmoObject;
-    use crate::kernel::vm::objects::{GuestMemoryObject, guest_memory_access};
-    use crate::kernel::vm::service::Error as VmError;
+    use crate::mm::user_space::VmoObject;
+    use crate::vm::service::Error as VmError;
+    use {crate::vm::objects::GuestMemoryObject, crate::vm::objects::guest_memory_access};
 
     let vmo = VmoObject::try_new_writable(PAGE_SIZE, domain).map_err(|_| Error::Construction)?;
     let grant = GuestMemoryObject::try_new(&vmo, domain).map_err(|_| Error::Construction)?;
@@ -400,7 +414,7 @@ fn verify_cross_process_capability_transfer(
         status: AtomicUsize::new(0),
     });
     let context = Box::into_raw(context);
-    let worker = match crate::kernel::task::scheduler::kthread_create(
+    let worker = match crate::task::scheduler::kthread_create(
         "capability-receiver",
         capability_receive_worker,
         context.expose_provenance(),
@@ -412,19 +426,16 @@ fn verify_cross_process_capability_transfer(
             return Err(error.into());
         }
     };
-    crate::kernel::task::scheduler::thread_ready(worker)?;
+    crate::task::scheduler::thread_ready(worker)?;
 
     let sender_object = source.resolve_handle::<CapabilityChannel>(sender, Rights::WRITE)?;
-    if !crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || {
-            Ok::<_, Error>(
-                sender_object.object().signal_level_for_test()
-                    & CapabilityChannel::PEER_RECEIVING.bits()
-                    != 0,
-            )
-        },
-    )? {
+    if !crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+        Ok::<_, Error>(
+            sender_object.object().signal_level_for_test()
+                & CapabilityChannel::PEER_RECEIVING.bits()
+                != 0,
+        )
+    })? {
         return Err(Error::State(23));
     }
     capability_channel_try_send(
@@ -437,10 +448,9 @@ fn verify_cross_process_capability_transfer(
     // SAFETY: the allocation remains owned by this test until worker
     // quiescence, and all shared observations use atomics or immutable fields.
     let receive_status = unsafe { &(*context).status };
-    if !crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || Ok::<_, Error>(receive_status.load(Ordering::Acquire) != 0),
-    )? {
+    if !crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+        Ok::<_, Error>(receive_status.load(Ordering::Acquire) != 0)
+    })? {
         return Err(Error::State(24));
     }
     super::support::quiesce_workers()?;
@@ -474,11 +484,11 @@ fn verify_cross_process_capability_transfer(
     // The inspector belongs to the source process, but enumerates and resolves
     // the destination's exact received wire value, never the observer's codec.
     let inspector_handle = source.create_object(
-        crate::kernel::inspect::ObjectInspector::try_system(domain)
+        crate::diagnostics::inspect::ObjectInspector::try_system(domain)
             .map_err(|_| Error::Construction)?,
         Rights::INSPECT.union(Rights::INSPECT_DETAILS),
     )?;
-    let inspector = source.resolve_handle::<crate::kernel::inspect::ObjectInspector>(
+    let inspector = source.resolve_handle::<crate::diagnostics::inspect::ObjectInspector>(
         inspector_handle,
         Rights::INSPECT.union(Rights::INSPECT_DETAILS),
     )?;
@@ -677,7 +687,7 @@ fn verify_handle_admission_after_stop(
 ) -> Result<(), Error> {
     let baseline = domain.usage().total(ResourceKind::Handles);
     let process = create_process(domain, group)?;
-    let inspector = crate::kernel::inspect::ObjectInspector::try_system(domain)
+    let inspector = crate::diagnostics::inspect::ObjectInspector::try_system(domain)
         .map_err(|_| Error::Construction)?;
     inspector
         .scan_process_handles(process.koid().get(), 0)
@@ -711,11 +721,11 @@ fn verify_handle_admission_after_stop(
     // Retain the Process so lookup still finds its identity after its handle
     // table has retired. Inspection must report disappearance, not BAD_STATE.
     if !matches!(
-        process.scan_handles(crate::kernel::capability::HandleScanCursor::from_token(0)),
+        process.scan_handles(crate::capability::HandleScanCursor::from_token(0)),
         Err(ProcessError::Handle(HandleError::TableRetired))
     ) || !matches!(
         inspector.scan_process_handles(process.koid().get(), 0),
-        Err(crate::kernel::inspect::Error::NotFound)
+        Err(crate::diagnostics::inspect::Error::NotFound)
     ) {
         return Err(Error::State(49));
     }
@@ -901,7 +911,7 @@ fn create_process(domain: &ResourceDomain, group: &TaskGroup) -> Result<Process,
             Ok(prepared) => prepared,
             Err(failure) => {
                 let (_, address_space) = failure.into_parts();
-                crate::kernel::mm::user_space::NativeAddressSpace::retire(address_space)
+                crate::mm::user_space::NativeAddressSpace::retire(address_space)
                     .map_err(|_| Error::AddressSpace)?;
                 return Err(Error::Construction);
             }
@@ -909,7 +919,7 @@ fn create_process(domain: &ResourceDomain, group: &TaskGroup) -> Result<Process,
     let object = ProcessObject::try_service(prepared.process()).map_err(|_| Error::Construction)?;
     Ok(prepared.publish(
         object,
-        crate::kernel::process::ProcessNameSnapshot::from_validated("channel-test"),
+        crate::process::ProcessNameSnapshot::from_validated("channel-test"),
     ))
 }
 
@@ -931,10 +941,9 @@ fn scratch_image(offset: u64, length: u64) -> Result<UserSlice, Error> {
 }
 
 fn retire_process(process: &Process) -> Result<(), Error> {
-    if crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || Ok::<_, Error>(process.snapshot().phase == ProcessPhase::Retired),
-    )? {
+    if crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+        Ok::<_, Error>(process.snapshot().phase == ProcessPhase::Retired)
+    })? {
         Ok(())
     } else {
         Err(Error::Construction)

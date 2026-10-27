@@ -3,12 +3,10 @@
 
 //! Exercise permission checks through the real process handle table.
 
-use crate::kernel::{
-    authority::Rights,
-    device::assigned::{DeviceAssignmentAuthority, service},
-    object::KernelObject,
-    process::Process,
-    vm::service::Error,
+use {
+    crate::authority::Rights, crate::device::assigned::DeviceAssignmentAuthority,
+    crate::device::assigned::service, crate::object::KernelObject, crate::process::Process,
+    crate::vm::service::Error,
 };
 
 pub(super) fn verify(process: &Process) -> Result<(), &'static str> {

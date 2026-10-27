@@ -16,15 +16,22 @@ TARGET = 'aarch64-unknown-none-softfloat'
 TEST_FEATURES = {
     'hyper': ('kernel-self-test', 'kernel-smmuv3-test', 'kernel-vgic-tc-test',
               'io-dma-revoke-test', 'kernel-stack-audit'),
-    'hyper-core': ('kernel-self-test', 'io-dma-revoke-test', 'kernel-stack-audit'),
+    'hyper-core': (),
+    'hyper-platform': (),
+    'hyper-drivers': ('io-dma-revoke-test',),
+    'hyper-vm-models': (),
     'hyper-hal': ('kernel-self-test', 'kernel-vgic-tc-test', 'kernel-stack-audit'),
+    'hyper-trace': (),
 }
 
 
 def feature_contract():
     """Require new manifest features to be classified before matrix admission."""
     paths = {'hyper': KERNEL / 'Cargo.toml', 'hyper-core': KERNEL / 'core/Cargo.toml',
-             'hyper-hal': KERNEL / 'hal/Cargo.toml'}
+             'hyper-hal': KERNEL / 'hal/Cargo.toml', 'hyper-trace': KERNEL / 'trace/Cargo.toml',
+             'hyper-platform': KERNEL / 'platform/Cargo.toml',
+             'hyper-drivers': KERNEL / 'drivers/Cargo.toml',
+             'hyper-vm-models': KERNEL / 'vm-models/Cargo.toml'}
     manifests = {package: tomllib.loads(path.read_text()) for package, path in paths.items()}
     production = manifests['hyper']['package']['metadata']['hyper']['production-features']
     if (not isinstance(production, list) or not production

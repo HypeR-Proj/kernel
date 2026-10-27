@@ -1,17 +1,28 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-use hyper::vm::arm::gic::mmio::{
-    BitmapRegister, DISTRIBUTOR_BASE, DISTRIBUTOR_SIZE, DecodeError, DecodedRegister, Frame,
-    INTERRUPT_COUNT, ModelRegister, ModelRegisterDescriptor, REDISTRIBUTOR_BASE,
-    REDISTRIBUTOR_SIZE, RegisterState, ServiceRegister, decode_v3, read_model_register,
-    write_model_register,
+use hyper_vm_models::interrupt::VirtualCpuId;
+use {
+    hyper_vm_models::arm::gic::GicInterruptId, hyper_vm_models::arm::gic::InterruptGroup,
+    hyper_vm_models::arm::gic::InterruptTrigger, hyper_vm_models::arm::gic::VirtualGic,
+    hyper_vm_models::arm::gic::VirtualGicBuilder,
 };
-use hyper::vm::arm::gic::{
-    GicInterruptId, InterruptGroup, InterruptTrigger, VirtualGic, VirtualGicBuilder,
+use {
+    hyper_vm_models::arm::gic::mmio::BitmapRegister,
+    hyper_vm_models::arm::gic::mmio::DISTRIBUTOR_BASE,
+    hyper_vm_models::arm::gic::mmio::DISTRIBUTOR_SIZE,
+    hyper_vm_models::arm::gic::mmio::DecodeError, hyper_vm_models::arm::gic::mmio::DecodedRegister,
+    hyper_vm_models::arm::gic::mmio::Frame, hyper_vm_models::arm::gic::mmio::INTERRUPT_COUNT,
+    hyper_vm_models::arm::gic::mmio::ModelRegister,
+    hyper_vm_models::arm::gic::mmio::ModelRegisterDescriptor,
+    hyper_vm_models::arm::gic::mmio::REDISTRIBUTOR_BASE,
+    hyper_vm_models::arm::gic::mmio::REDISTRIBUTOR_SIZE,
+    hyper_vm_models::arm::gic::mmio::RegisterState,
+    hyper_vm_models::arm::gic::mmio::ServiceRegister, hyper_vm_models::arm::gic::mmio::decode_v3,
+    hyper_vm_models::arm::gic::mmio::read_model_register,
+    hyper_vm_models::arm::gic::mmio::write_model_register,
 };
-use hyper::vm::exit::{AccessWidth, GuestPhysicalAddress};
-use hyper::vm::interrupt::VirtualCpuId;
+use {hyper_vm_models::exit::AccessWidth, hyper_vm_models::exit::GuestPhysicalAddress};
 
 fn decode(address: u64, width: AccessWidth) -> Result<Option<DecodedRegister>, DecodeError> {
     decode_v3(GuestPhysicalAddress::new(address), width)
@@ -49,7 +60,7 @@ fn controller() -> VirtualGic {
 
 #[test]
 fn every_advertised_spi_bank_supports_configuration_and_delivery() {
-    use hyper::vm::arm::gic::mmio::decode_v2;
+    use hyper_vm_models::arm::gic::mmio::decode_v2;
     assert_eq!(INTERRUPT_COUNT, 256);
     let registers = RegisterState::new();
     for service in [
@@ -614,7 +625,7 @@ fn sparse_model_writes_fail_before_mutating_an_earlier_lane() {
 
 #[test]
 fn gicv2_decodes_private_interrupts_and_rejects_cross_frame_accesses() {
-    use hyper::vm::arm::gic::mmio::decode_v2;
+    use hyper_vm_models::arm::gic::mmio::decode_v2;
     let decoded = crate::require_some(crate::require_ok(decode_v2(
         GuestPhysicalAddress::new(u64::from(DISTRIBUTOR_BASE) + 0x100),
         AccessWidth::Word,
@@ -653,7 +664,7 @@ fn gicv2_decodes_private_interrupts_and_rejects_cross_frame_accesses() {
 
 #[test]
 fn gicv2_target_mask_and_priority_precision_preserve_pending() {
-    use hyper::vm::arm::gic::mmio::decode_v2;
+    use hyper_vm_models::arm::gic::mmio::decode_v2;
     let cpu = VirtualCpuId::new(0);
     let mut controller = controller();
     let decode = |offset| {
@@ -694,7 +705,7 @@ fn gicv2_target_mask_and_priority_precision_preserve_pending() {
 
 #[test]
 fn gicv3_banks_are_addressed_by_redistributor_not_accessing_cpu() {
-    use hyper::vm::arm::gic::mmio::decode_v3_cpus;
+    use hyper_vm_models::arm::gic::mmio::decode_v3_cpus;
     let state = RegisterState::new();
     for cpu in 0..8u32 {
         let base = u64::from(REDISTRIBUTOR_BASE) + u64::from(cpu) * 0x20000;
@@ -731,7 +742,7 @@ fn gicv3_banks_are_addressed_by_redistributor_not_accessing_cpu() {
 
 #[test]
 fn gicv2_sgi_filter_targets_and_banked_source_registers() {
-    use hyper::vm::arm::gic::mmio::decode_v2;
+    use hyper_vm_models::arm::gic::mmio::decode_v2;
     let mut builder = crate::require_ok(VirtualGicBuilder::new(4));
     for cpu in 0..4 {
         for id in 0..16 {

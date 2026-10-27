@@ -6,13 +6,19 @@
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use hyper::drivers::interrupt::gicv3::{CpuInterface, Error as GicError, GicV3};
 use hyper::hal::barrier::{Barrier, BarrierAccess, BarrierDomain};
 use hyper::hal::interrupt::{
     InterruptController, InterruptId, InterruptPriority, InterruptTransitionError, InterruptTrigger,
 };
 use hyper::hal::timer::MonotonicCounter;
-use hyper::platform::{GicV3Info, MAX_GIC_REDISTRIBUTOR_REGIONS, PhysicalRange, RegionList};
+use {
+    hyper::mm::ranges::PhysicalRange, hyper::mm::ranges::RegionList, hyper_platform::GicV3Info,
+    hyper_platform::MAX_GIC_REDISTRIBUTOR_REGIONS,
+};
+use {
+    hyper_drivers::interrupt::gicv3::CpuInterface,
+    hyper_drivers::interrupt::gicv3::Error as GicError, hyper_drivers::interrupt::gicv3::GicV3,
+};
 
 static CPU_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static ACKNOWLEDGED: AtomicU32 = AtomicU32::new(40);

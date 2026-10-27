@@ -477,7 +477,7 @@ extern "C" fn dispatch_trap(frame: &mut TrapFrame) -> TrapAction {
     if frame.scause & INTERRUPT != 0 {
         match frame.scause & !INTERRUPT {
             SUPERVISOR_SOFTWARE => {
-                super::interrupts::clear_software_interrupt();
+                crate::arch::riscv64::irq::clear_software_interrupt();
                 dispatch_irq_action(
                     frame,
                     crate::arch::irq::service_kernel_rpc_interrupt(interrupt_origin(frame)),
@@ -503,9 +503,9 @@ extern "C" fn dispatch_trap(frame: &mut TrapFrame) -> TrapAction {
             _ => fatal_trap(frame),
         }
     } else if frame.guest_origin != 0 {
-        match super::guest::dispatch(frame) {
-            super::guest::Dispatch::Resume => TrapAction::RESUME,
-            super::guest::Dispatch::Stop(exit) => stop_guest(frame, exit),
+        match crate::arch::riscv64::vm::exit::dispatch(frame) {
+            crate::arch::riscv64::vm::exit::Dispatch::Resume => TrapAction::RESUME,
+            crate::arch::riscv64::vm::exit::Dispatch::Stop(exit) => stop_guest(frame, exit),
         }
     } else {
         fatal_trap(frame)

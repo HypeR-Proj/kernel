@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-#[path = "../../../../src/kernel/vm/reconcile.rs"]
+#[path = "../../../../src/vm/reconcile.rs"]
 mod reconcile_model;
 
 use std::sync::{Arc, Barrier};
@@ -49,11 +49,12 @@ fn a_racing_publish_is_claimed_or_remains_pending() {
 
 #[test]
 fn entry_preserves_a_quiesce_request_until_bank_detachment() {
-    use hyper::vm::arm::gic::quiesce::ActiveAccessQuiesce;
-    use hyper::vm::arm::gic::{
-        GicInterruptId, InterruptGroup, InterruptTrigger, VirtualGicBuilder,
+    use hyper_vm_models::arm::gic::quiesce::ActiveAccessQuiesce;
+    use hyper_vm_models::interrupt::VirtualCpuId;
+    use {
+        hyper_vm_models::arm::gic::GicInterruptId, hyper_vm_models::arm::gic::InterruptGroup,
+        hyper_vm_models::arm::gic::InterruptTrigger, hyper_vm_models::arm::gic::VirtualGicBuilder,
     };
-    use hyper::vm::interrupt::VirtualCpuId;
 
     // Use production state machines without an unrelated scheduling event
     // to release residency. The request arrives after admission.

@@ -5,7 +5,7 @@
 
 use hyper::mm::PAGE_SIZE;
 
-use crate::kernel::vm::memory::{Error as MemoryError, GuestAddressSpace};
+use {crate::vm::memory::Error as MemoryError, crate::vm::memory::GuestAddressSpace};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Error {
@@ -14,8 +14,8 @@ pub(super) enum Error {
     Identity,
     InstructionPublication,
     Payload,
-    Scheduler(crate::kernel::task::scheduler::Error),
-    Resource(crate::kernel::accounting::ResourceError),
+    Scheduler(crate::task::scheduler::Error),
+    Resource(crate::accounting::ResourceError),
     Accounting,
     SnapshotAccounting,
     ReleaseAccounting,
@@ -27,17 +27,15 @@ pub(super) enum Error {
 pub(super) fn run() -> Result<(), Error> {
     const BASE: u64 = 0x4000_0000;
     GuestAddressSpace::verify_live_capacity_for_test().map_err(Error::ResidentMemory)?;
-    let identifier = crate::kernel::mm::translation_id::reserve::<
-        crate::kernel::mm::translation_id::Stage2Vmid,
-    >(
+    let identifier = crate::mm::translation_id::reserve::<crate::mm::translation_id::Stage2Vmid>(
         crate::hal::vm::guest_translation_identifier_bits().map_err(|_| Error::Identity)?,
     )
     .map_err(|_| Error::Identity)?;
-    let domain = crate::kernel::accounting::ResourceDomain::try_new_root(
-        crate::kernel::accounting::ResourceLimits::UNLIMITED,
+    let domain = crate::accounting::ResourceDomain::try_new_root(
+        crate::accounting::ResourceLimits::UNLIMITED,
     )
     .map_err(Error::Resource)?;
-    crate::kernel::vm::objects::guest_memory_access::verify_for_test(&domain)
+    crate::vm::objects::guest_memory_access::verify_for_test(&domain)
         .map_err(Error::ResidentMemory)?;
     GuestAddressSpace::verify_resident_memory_for_test(&domain).map_err(Error::ResidentMemory)?;
     GuestAddressSpace::verify_resident_blocks_for_test().map_err(Error::ResidentMemory)?;
@@ -83,7 +81,7 @@ pub(super) fn run() -> Result<(), Error> {
     }
     if domain
         .usage()
-        .committed(crate::kernel::accounting::ResourceKind::GuestPages)
+        .committed(crate::accounting::ResourceKind::GuestPages)
         != 2
     {
         return Err(Error::Accounting);
@@ -97,13 +95,13 @@ pub(super) fn run() -> Result<(), Error> {
     // preparation must independently publish a newly demand-created page.
     let memory_bytes_before_snapshot = domain
         .usage()
-        .committed(crate::kernel::accounting::ResourceKind::KernelMemoryBytes);
+        .committed(crate::accounting::ResourceKind::KernelMemoryBytes);
     let snapshot = memory
         .instruction_snapshot_for_test()
         .map_err(Error::Copy)?;
     if domain
         .usage()
-        .committed(crate::kernel::accounting::ResourceKind::KernelMemoryBytes)
+        .committed(crate::accounting::ResourceKind::KernelMemoryBytes)
         <= memory_bytes_before_snapshot
     {
         return Err(Error::SnapshotAccounting);
@@ -114,7 +112,7 @@ pub(super) fn run() -> Result<(), Error> {
     if memory.instruction_page_ready_for_test(2) {
         return Err(Error::InstructionPublication);
     }
-    let pin = crate::kernel::task::scheduler::preempt_disable().map_err(Error::Scheduler)?;
+    let pin = crate::task::scheduler::preempt_disable().map_err(Error::Scheduler)?;
     memory
         .publish_instruction_snapshot_for_test(&pin, &snapshot)
         .map_err(Error::Copy)?;
@@ -130,39 +128,36 @@ pub(super) fn run() -> Result<(), Error> {
     if !memory.instruction_page_ready_for_test(3) {
         return Err(Error::InstructionPublication);
     }
-    crate::kernel::task::scheduler::preempt_enable_without_reschedule(pin)
-        .map_err(Error::Scheduler)?;
+    crate::task::scheduler::preempt_enable_without_reschedule(pin).map_err(Error::Scheduler)?;
     let memory_bytes_with_snapshot = domain
         .usage()
-        .committed(crate::kernel::accounting::ResourceKind::KernelMemoryBytes);
+        .committed(crate::accounting::ResourceKind::KernelMemoryBytes);
     let snapshot_bytes = snapshot.retained_metadata_bytes_for_test();
     drop(snapshot);
     let memory_bytes_after_snapshot = domain
         .usage()
-        .committed(crate::kernel::accounting::ResourceKind::KernelMemoryBytes);
+        .committed(crate::accounting::ResourceKind::KernelMemoryBytes);
     if memory_bytes_after_snapshot.checked_add(snapshot_bytes) != Some(memory_bytes_with_snapshot) {
         return Err(Error::SnapshotAccounting);
     }
     drop(memory);
     for resource in [
-        crate::kernel::accounting::ResourceKind::KernelMemoryBytes,
-        crate::kernel::accounting::ResourceKind::CommittedPages,
-        crate::kernel::accounting::ResourceKind::PinnedPages,
-        crate::kernel::accounting::ResourceKind::GuestPages,
+        crate::accounting::ResourceKind::KernelMemoryBytes,
+        crate::accounting::ResourceKind::CommittedPages,
+        crate::accounting::ResourceKind::PinnedPages,
+        crate::accounting::ResourceKind::GuestPages,
     ] {
         if domain.usage().total(resource) != 0 {
             return Err(Error::ReleaseAccounting);
         }
     }
 
-    let limited = crate::kernel::accounting::ResourceDomain::try_new_root(
-        crate::kernel::accounting::ResourceLimits::UNLIMITED
-            .with(crate::kernel::accounting::ResourceKind::GuestPages, 1),
+    let limited = crate::accounting::ResourceDomain::try_new_root(
+        crate::accounting::ResourceLimits::UNLIMITED
+            .with(crate::accounting::ResourceKind::GuestPages, 1),
     )
     .map_err(Error::Resource)?;
-    let identifier = crate::kernel::mm::translation_id::reserve::<
-        crate::kernel::mm::translation_id::Stage2Vmid,
-    >(
+    let identifier = crate::mm::translation_id::reserve::<crate::mm::translation_id::Stage2Vmid>(
         crate::hal::vm::guest_translation_identifier_bits().map_err(|_| Error::Identity)?,
     )
     .map_err(|_| Error::Identity)?;
@@ -172,8 +167,8 @@ pub(super) fn run() -> Result<(), Error> {
     if !matches!(
         limited_memory.copy_to(BASE + PAGE_SIZE, &[2]),
         Err(MemoryError::Resource(
-            crate::kernel::accounting::ResourceError::LimitExceeded {
-                resource: crate::kernel::accounting::ResourceKind::GuestPages,
+            crate::accounting::ResourceError::LimitExceeded {
+                resource: crate::accounting::ResourceKind::GuestPages,
                 ..
             }
         ))
@@ -183,7 +178,7 @@ pub(super) fn run() -> Result<(), Error> {
     drop(limited_memory);
     if limited
         .usage()
-        .total(crate::kernel::accounting::ResourceKind::GuestPages)
+        .total(crate::accounting::ResourceKind::GuestPages)
         != 0
     {
         return Err(Error::LimitAccounting);
@@ -199,30 +194,28 @@ pub(super) fn run() -> Result<(), Error> {
     if kernel_owned_metadata <= common_metadata {
         return Err(Error::LimitAccounting);
     }
-    let metadata_limited = crate::kernel::accounting::ResourceDomain::try_new_root(
-        crate::kernel::accounting::ResourceLimits::UNLIMITED.with(
-            crate::kernel::accounting::ResourceKind::KernelMemoryBytes,
+    let metadata_limited = crate::accounting::ResourceDomain::try_new_root(
+        crate::accounting::ResourceLimits::UNLIMITED.with(
+            crate::accounting::ResourceKind::KernelMemoryBytes,
             kernel_owned_metadata - 1,
         ),
     )
     .map_err(Error::Resource)?;
-    let identifier = crate::kernel::mm::translation_id::reserve::<
-        crate::kernel::mm::translation_id::Stage2Vmid,
-    >(
+    let identifier = crate::mm::translation_id::reserve::<crate::mm::translation_id::Stage2Vmid>(
         crate::hal::vm::guest_translation_identifier_bits().map_err(|_| Error::Identity)?,
     )
     .map_err(|_| Error::Identity)?;
     if !matches!(
         GuestAddressSpace::new(identifier, BASE, 2 * PAGE_SIZE, &metadata_limited),
         Err(MemoryError::Resource(
-            crate::kernel::accounting::ResourceError::LimitExceeded {
-                resource: crate::kernel::accounting::ResourceKind::KernelMemoryBytes,
+            crate::accounting::ResourceError::LimitExceeded {
+                resource: crate::accounting::ResourceKind::KernelMemoryBytes,
                 ..
             }
         ))
     ) || metadata_limited
         .usage()
-        .total(crate::kernel::accounting::ResourceKind::KernelMemoryBytes)
+        .total(crate::accounting::ResourceKind::KernelMemoryBytes)
         != 0
     {
         return Err(Error::LimitAccounting);

@@ -23,20 +23,14 @@ pub(super) fn run() -> Result<(), &'static str> {
 
 #[cfg(feature = "kernel-trace")]
 pub(super) fn run() -> Result<(), &'static str> {
-    use crate::kernel::{
-        task::scheduler::{self, CpuMask},
-        trace,
-    };
-    use hyper::{
-        cpu::CpuIndex,
-        trace::{Category, Filter},
-    };
+    use {crate::diagnostics::trace, crate::task::scheduler, crate::task::scheduler::CpuMask};
+    use {hyper::cpu::CpuIndex, hyper_trace::Category, hyper_trace::Filter};
     FAILED.store(false, Ordering::Relaxed);
     for done in &IRQ_DONE {
         done.store(false, Ordering::Relaxed);
     }
     let session = trace::start(Filter::only(Category::Test)).map_err(|_| "trace start")?;
-    for index in 0..crate::kernel::cpu::online_cpu_count() {
+    for index in 0..crate::cpu::online_cpu_count() {
         let cpu = CpuIndex::new(index).ok_or("trace CPU")?;
         let thread = scheduler::kthread_create_with_affinity(
             "trace/test",
@@ -55,7 +49,7 @@ pub(super) fn run() -> Result<(), &'static str> {
     crate::tracepoint!(Test, "paused", value = panic_if_evaluated());
     trace::stop(session).map_err(|_| "trace stop")?;
     let mut records = [None; 8];
-    for cpu in 0..crate::kernel::cpu::online_cpu_count() {
+    for cpu in 0..crate::cpu::online_cpu_count() {
         let batch = trace::read(session, cpu, 0, &mut records).map_err(|_| "trace read")?;
         if batch.count != 3 || batch.incomplete || batch.overwritten != 0 {
             return Err("trace count/loss");
@@ -71,15 +65,11 @@ pub(super) fn run() -> Result<(), &'static str> {
 
 #[cfg(feature = "kernel-trace")]
 fn verify_ipc() -> Result<(), &'static str> {
-    use crate::kernel::{
-        accounting::{ResourceDomain, ResourceLimits},
-        ipc::{ByteChannel, PreparedByteMessage},
-        trace,
+    use {
+        crate::accounting::ResourceDomain, crate::accounting::ResourceLimits,
+        crate::diagnostics::trace, crate::ipc::ByteChannel, crate::ipc::PreparedByteMessage,
     };
-    use hyper::{
-        abi::native::*,
-        trace::{Category, Filter},
-    };
+    use {hyper::abi::native::*, hyper_trace::Category, hyper_trace::Filter};
     let domain =
         ResourceDomain::try_new_root(ResourceLimits::UNLIMITED).map_err(|_| "trace IPC domain")?;
     let (client, server) = ByteChannel::try_pair(&domain).map_err(|_| "trace IPC pair")?;
@@ -119,9 +109,7 @@ fn verify_ipc() -> Result<(), &'static str> {
         .trace_rpc(&[HYPER_NATIVE_RPC_TRACE_CLIENT_END, 1, 0, context[0], 0, 0])
         .map_err(|_| "trace RPC end")?;
     trace::stop(session).map_err(|_| "trace IPC stop")?;
-    let cpu = crate::kernel::cpu::current_index()
-        .ok_or("trace IPC CPU")?
-        .get();
+    let cpu = crate::cpu::current_index().ok_or("trace IPC CPU")?.get();
     let mut records = [None; 8];
     let batch = trace::read(session, cpu, 0, &mut records).map_err(|_| "trace IPC read")?;
     let count = |name| {
@@ -183,10 +171,7 @@ extern "C" fn writer(cpu: usize) {
 
 #[cfg(feature = "kernel-trace")]
 fn exercise_irq(cpu: usize) -> Result<(), &'static str> {
-    use crate::kernel::{
-        task,
-        time::{self, IrqCallout},
-    };
+    use {crate::task, crate::time, crate::time::IrqCallout};
     let timer =
         hyper::mm::FallibleArc::try_new(IrqCallout::try_new().map_err(|_| "reserve IRQ timer")?)
             .map_err(|_| "allocate IRQ timer")?;
@@ -206,7 +191,7 @@ fn exercise_irq(cpu: usize) -> Result<(), &'static str> {
 
 #[cfg(feature = "kernel-trace")]
 fn irq_event(expected: usize) {
-    if let Some(cpu) = crate::kernel::cpu::current_index() {
+    if let Some(cpu) = crate::cpu::current_index() {
         if cpu.get() != expected {
             FAILED.store(true, Ordering::Release);
         }
@@ -217,5 +202,5 @@ fn irq_event(expected: usize) {
 
 #[cfg(feature = "kernel-trace")]
 fn panic_if_evaluated() -> u64 {
-    crate::kernel::crash::fatal(format_args!("disabled trace evaluated its payload"))
+    crate::diagnostics::crash::fatal(format_args!("disabled trace evaluated its payload"))
 }

@@ -3,7 +3,7 @@
 
 //! Host checks for allocation-free reschedule request publication.
 
-#[path = "../../../../src/kernel/task/reschedule.rs"]
+#[path = "../../../../src/task/reschedule.rs"]
 mod request;
 
 use request::PendingReschedule;

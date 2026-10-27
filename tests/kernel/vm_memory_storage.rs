@@ -6,8 +6,11 @@
 use hyper::sync::InterruptSpinLock;
 
 use super::{Error, Stage2PagePool, Target};
-use crate::kernel::accounting::{ResourceDomain, ResourceError, ResourceKind, ResourceLimits};
-use crate::kernel::vm::memory::GuestAddressSpace;
+use crate::vm::memory::GuestAddressSpace;
+use {
+    crate::accounting::ResourceDomain, crate::accounting::ResourceError,
+    crate::accounting::ResourceKind, crate::accounting::ResourceLimits,
+};
 
 impl GuestAddressSpace {
     pub(crate) fn verify_live_capacity_for_test() -> Result<(), &'static str> {

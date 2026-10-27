@@ -15,9 +15,19 @@ this directory.
 
 | Path | Responsibility |
 | --- | --- |
-| `src/` | Kernel policy, portable contracts, drivers, VM models and reusable mechanisms |
-| `hal/` | Selected HAL crate and private architecture implementations |
-| `core/` | Manifest for the reusable `src/lib.rs` library |
+| `src/` | Kernel binary: boot, entry, runtime ownership and subsystem policy |
+| `src/diagnostics/` | Crash handling, symbols, inspection, logging, profiling and trace control |
+| `src/fs/` | Filesystem primitives, archive import, VFS ownership and file cache |
+| `src/mm/` | Runtime memory ownership, buddy/heap allocators, address spaces and reclamation |
+| `src/mm/allocator/` | Buddy and heap mechanisms plus global allocator policy |
+| `src/vm/serial/` and `src/vm/timer/` | VM serial transport and guest-timer binding/recovery |
+| `core/src/` | `hyper-core`: shared types, collections, synchronization, HAL contracts and foundational memory mechanisms |
+| `platform/src/` | `hyper-platform`: firmware parsing, resource descriptions and board-specific discovery |
+| `drivers/src/` | `hyper-drivers`: physical devices and firmware-interface drivers |
+| `vm-models/src/` | `hyper-vm-models`: guest-visible device models and portable virtualization contracts |
+| `hal/src/` | `hyper-hal`: selected machine interface and private architecture implementations |
+| `hal/src/arch/<arch>/` | Architecture mechanisms grouped into memory, IRQ, Native user execution and VM subsystems where implemented |
+| `trace/src/` | `hyper-trace`: event definitions, macros and bounded recording |
 | `configs/` and `Kconfig` | Supported platform configurations and configuration schema |
 | `docs/` | Kernel architecture, ABI, boot, VM, and platform contracts |
 | `tests/` | Host, self-test, image, and QEMU kernel verification |

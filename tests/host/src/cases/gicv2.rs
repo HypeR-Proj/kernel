@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-use hyper::drivers::interrupt::gicv2::{GicV2, SgiCompletions};
 use hyper::hal::barrier::{Barrier, BarrierAccess, BarrierDomain};
 use hyper::hal::interrupt::{
     InterruptId, InterruptPriority, InterruptTrigger, LocalInterruptController,
 };
-use hyper::platform::{GicV2Info, PhysicalRange};
+use {hyper::mm::ranges::PhysicalRange, hyper_platform::GicV2Info};
+use {hyper_drivers::interrupt::gicv2::GicV2, hyper_drivers::interrupt::gicv2::SgiCompletions};
 struct TestBarrier;
 impl Barrier for TestBarrier {
     fn data_memory(_: BarrierDomain, _: BarrierAccess) {}

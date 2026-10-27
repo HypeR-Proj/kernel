@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::services::ProcessServices;
-use crate::kernel::abi::native::TaskServices;
-use crate::kernel::capability::{HandleValue, Rights};
-use crate::kernel::mm::user_space::{UserAddress, UserSlice};
-use crate::kernel::process::{Process, UserThread, UserThreadPhase};
-use crate::kernel::task::scheduler::CpuMask;
+use crate::abi::native::TaskServices;
+use crate::task::scheduler::CpuMask;
+use {crate::capability::HandleValue, crate::capability::Rights};
+use {crate::mm::user_space::UserAddress, crate::mm::user_space::UserSlice};
+use {crate::process::Process, crate::process::UserThread, crate::process::UserThreadPhase};
 
 /// Exercises the real thread service before the caller becomes runnable.
 pub(crate) fn verify_thread_affinity_creation_for_test(
@@ -18,16 +18,21 @@ pub(crate) fn verify_thread_affinity_creation_for_test(
     const BYTES: usize = WORDS * core::mem::size_of::<u64>();
     let services = ProcessServices::new(process, caller);
     let caller_id = caller.scheduler_id().ok_or("caller scheduler identity")?;
-    let (cpu, _) = crate::kernel::task::scheduler::thread_placement(caller_id)
-        .map_err(|_| "caller placement")?;
+    let (cpu, _) =
+        crate::task::scheduler::thread_placement(caller_id).map_err(|_| "caller placement")?;
     let inherited = CpuMask::single(cpu);
-    crate::kernel::task::scheduler::set_thread_affinity(caller_id, inherited)
+    crate::task::scheduler::set_thread_affinity(caller_id, inherited)
         .map_err(|_| "caller affinity update")?;
-    let original = crate::kernel::task::scheduler::scheduling_snapshot(caller_id)
-        .map_err(|_| "caller scheduling")?;
-    use crate::kernel::task::policy::{SchedulingParameters, ThreadPriority, ThreadWeight};
-    use crate::kernel::task::scheduling_authority::{
-        SCHEDULING_RIGHTS, SchedulingAuthority, SchedulingLimits,
+    let original =
+        crate::task::scheduler::scheduling_snapshot(caller_id).map_err(|_| "caller scheduling")?;
+    use {
+        crate::task::policy::SchedulingParameters, crate::task::policy::ThreadPriority,
+        crate::task::policy::ThreadWeight,
+    };
+    use {
+        crate::task::scheduling_authority::SCHEDULING_RIGHTS,
+        crate::task::scheduling_authority::SchedulingAuthority,
+        crate::task::scheduling_authority::SchedulingLimits,
     };
     let lowered = SchedulingParameters::fair(
         ThreadWeight::new(1).ok_or("test weight")?,
@@ -37,7 +42,7 @@ pub(crate) fn verify_thread_affinity_creation_for_test(
         original.fair_backend(),
     )
     .ok_or("test scheduling")?;
-    crate::kernel::task::scheduler::configure_scheduling(
+    crate::task::scheduler::configure_scheduling(
         caller_id,
         lowered,
         SchedulingAuthority::new(Rights::SCHED_LOWER),
@@ -66,15 +71,15 @@ pub(crate) fn verify_thread_affinity_creation_for_test(
         let thread = UserThread::resolve_receiver(&receiver, Rights::INSPECT)
             .map_err(|_| "created thread resolve")?;
         let id = thread.scheduler_id().ok_or("created scheduler identity")?;
-        let actual_scheduling = crate::kernel::task::scheduler::scheduling_snapshot(id)
-            .map_err(|_| "created scheduling")?;
+        let actual_scheduling =
+            crate::task::scheduler::scheduling_snapshot(id).map_err(|_| "created scheduling")?;
         if actual_scheduling != lowered
             || receiver.info().rights.intersection(SCHEDULING_RIGHTS) != Rights::SCHED_LOWER
         {
             return Err("thread creation restored scheduling or elevated rights");
         }
-        let (_, actual) = crate::kernel::task::scheduler::thread_placement(id)
-            .map_err(|_| "created placement")?;
+        let (_, actual) =
+            crate::task::scheduler::thread_placement(id).map_err(|_| "created placement")?;
         if actual != expected || thread.snapshot().phase != UserThreadPhase::Dormant {
             return Err("thread creation affinity or dormant state");
         }
@@ -88,7 +93,7 @@ pub(crate) fn verify_thread_affinity_creation_for_test(
         create(None, 0).map_err(|_| "inherited creation")?,
         inherited,
     )?;
-    let selected = (0..crate::kernel::cpu::online_cpu_count())
+    let selected = (0..crate::cpu::online_cpu_count())
         .filter_map(hyper::cpu::CpuIndex::new)
         .find(|other| *other != cpu)
         .unwrap_or(cpu);
@@ -113,8 +118,8 @@ pub(crate) fn verify_thread_affinity_creation_for_test(
     if create(Some(input), WORDS).is_ok() {
         return Err("empty affinity accepted");
     }
-    if crate::kernel::cpu::online_cpu_count() < WORDS * u64::BITS as usize {
-        write(Some(crate::kernel::cpu::online_cpu_count()))?;
+    if crate::cpu::online_cpu_count() < WORDS * u64::BITS as usize {
+        write(Some(crate::cpu::online_cpu_count()))?;
         if create(Some(input), WORDS).is_ok() {
             return Err("unavailable affinity accepted");
         }
@@ -129,7 +134,7 @@ pub(crate) fn verify_thread_affinity_creation_for_test(
     {
         return Err("failed affinity creation published thread");
     }
-    crate::kernel::task::scheduler::configure_scheduling(
+    crate::task::scheduler::configure_scheduling(
         caller_id,
         original,
         SchedulingAuthority::new(SCHEDULING_RIGHTS),

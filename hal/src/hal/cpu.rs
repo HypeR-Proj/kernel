@@ -9,7 +9,7 @@
 
 use hyper::cpu::CpuIndex;
 use hyper::hal::cpu_power::{CpuHardwareId, ResumeAddress};
-use hyper::platform::CpuPowerInfo;
+use hyper_platform::CpuPowerInfo;
 
 pub use crate::arch::cpu::{PowerController, PowerError, SecondaryBootParameters};
 

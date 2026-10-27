@@ -13,7 +13,7 @@
 use hyper::hal::memory::Stage1Mapping;
 use hyper::hal::memory::{AddressTranslation, KernelImageLayout, VirtualMemoryLayout};
 use hyper::mm::{BootAllocator, PhysicalAddress, VirtualAddress};
-use hyper::platform::PlatformInfo;
+use hyper_platform::PlatformInfo;
 
 /// Selected architectural ordering policy for physical device drivers.
 pub type Barrier = crate::arch::memory::Barrier;

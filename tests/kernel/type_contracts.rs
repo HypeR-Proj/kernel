@@ -7,8 +7,8 @@
 //! they include manually implemented traits and changes in nested field types.
 
 use crate::hal::{exception, user, vm};
-use crate::kernel::irq::interrupt;
-use crate::kernel::task::scheduler;
+use crate::irq::interrupt;
+use crate::task::scheduler;
 
 // Inference has one answer until the forbidden trait is implemented. Each
 // assertion uses its own marker, including traits that are not dyn-compatible.

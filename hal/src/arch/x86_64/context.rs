@@ -125,7 +125,7 @@ impl VcpuContext {
     /// active vCPU for the guest-run lifetime. VM exit may mutate it.
     pub(crate) unsafe fn enter(context: *mut Self) -> ! {
         // SAFETY: The caller establishes the raw context and hardware-state contract.
-        unsafe { super::virtualization::enter(context) }
+        unsafe { crate::arch::x86_64::vm::enter(context) }
     }
 }
 

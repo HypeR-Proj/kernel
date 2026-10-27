@@ -5,7 +5,7 @@ use core::arch::asm;
 use core::mem::{offset_of, size_of};
 
 use super::registers;
-use super::user_contract::LowerElReturnRegime;
+use crate::arch::aarch64::user::contract::LowerElReturnRegime;
 
 pub type KernelThreadEntry = extern "C" fn(usize);
 
@@ -85,8 +85,8 @@ pub struct VcpuContext {
     terminal_fault_address: u64,
     terminal_vector: u64,
     terminal_synchronous: Option<GuestSynchronousTerminal>,
-    deferred_device: Option<super::vsysreg::GuestDeviceCompletion>,
-    vgic_bank: super::vgic::bank::Bank,
+    deferred_device: Option<crate::arch::aarch64::vm::sysreg::GuestDeviceCompletion>,
+    vgic_bank: crate::arch::aarch64::vm::vgic::bank::Bank,
 }
 
 const GUEST_RUN_READY: u64 = 1;
@@ -105,8 +105,8 @@ const WAIT_FOR_DEVICE: u64 = 6;
 pub enum GuestSynchronousTerminal {
     Undecodable,
     Failed {
-        exit: super::vsysreg::GuestSyncExit,
-        failure: super::vsysreg::GuestSyncFailure,
+        exit: crate::arch::aarch64::vm::sysreg::GuestSyncExit,
+        failure: crate::arch::aarch64::vm::sysreg::GuestSyncFailure,
     },
 }
 
@@ -254,7 +254,7 @@ impl VcpuContext {
             terminal_vector: 0,
             terminal_synchronous: None,
             deferred_device: None,
-            vgic_bank: super::vgic::bank::Bank::new(),
+            vgic_bank: crate::arch::aarch64::vm::vgic::bank::Bank::new(),
         }
     }
 
@@ -262,7 +262,7 @@ impl VcpuContext {
     pub(crate) fn initialize_virtual_interrupts(
         &mut self,
     ) -> Result<super::VgicCapabilities, super::VgicError> {
-        super::vgic::initialize_context(&mut self.vgic)
+        crate::arch::aarch64::vm::vgic::initialize_context(&mut self.vgic)
     }
 
     /// Sets the guest-visible virtual count to `value` at the supplied
@@ -286,7 +286,7 @@ impl VcpuContext {
     pub(crate) fn virtual_timer_wfi_wake_at(
         &self,
         physical_count: u64,
-    ) -> hyper::drivers::timer::arm_generic::VirtualTimerWake {
+    ) -> hyper_drivers::timer::arm_generic::VirtualTimerWake {
         self.timer.wfi_wake_at(physical_count)
     }
 
@@ -430,7 +430,7 @@ impl VcpuContext {
     pub(crate) unsafe fn activate_vgic(&mut self) -> Result<(), super::VgicError> {
         self.vgic_bank.load(super::VgicError::StateMismatch, || {
             // SAFETY: The caller owns the local bank; the guard rejects double loads.
-            unsafe { super::vgic::activate(&self.vgic) }
+            unsafe { crate::arch::aarch64::vm::vgic::activate(&self.vgic) }
         })
     }
 
@@ -444,7 +444,7 @@ impl VcpuContext {
     pub(crate) unsafe fn deactivate_vgic(&mut self) -> Result<(), super::VgicError> {
         self.vgic_bank.save(super::VgicError::StateMismatch, || {
             // SAFETY: The caller owns this bank. Already-saved cleanup never reads it.
-            unsafe { super::vgic::deactivate(&mut self.vgic) }
+            unsafe { crate::arch::aarch64::vm::vgic::deactivate(&mut self.vgic) }
         })
     }
 
@@ -592,7 +592,7 @@ impl VcpuContext {
     pub(super) fn capture_device(
         &mut self,
         frame: &super::exception::ExceptionFrame,
-        completion: super::vsysreg::GuestDeviceCompletion,
+        completion: crate::arch::aarch64::vm::sysreg::GuestDeviceCompletion,
     ) -> Result<(), GuestRunError> {
         if self.deferred_device.is_some() {
             return Err(GuestRunError::State);
@@ -606,7 +606,7 @@ impl VcpuContext {
     /// Completes the saved instruction only while hardware is detached.
     pub(crate) fn complete_device(
         &mut self,
-        action: hyper::vm::exit::MmioAction,
+        action: hyper_vm_models::exit::MmioAction,
     ) -> Result<(), GuestRunError> {
         if self.run_state != GUEST_RUN_READY {
             return Err(GuestRunError::State);

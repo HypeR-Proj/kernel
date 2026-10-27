@@ -4,15 +4,20 @@
 //! Virtual GIC pending, active, maintenance, and snapshot semantics.
 
 #[allow(dead_code)]
-#[path = "../../../../src/vm/arm/gic/ready.rs"]
+#[path = "../../../../vm-models/src/arm/gic/ready.rs"]
 mod ready_model;
 
-use hyper::vm::arm::gic::lr::{decode as decode_list_register, encode as encode_list_register};
-use hyper::vm::arm::gic::{
-    BuildError, GicInterruptId, InterruptGroup, InterruptTrigger, ListEntry, ListState,
-    RuntimeError, VirtualGicBuilder,
+use hyper_vm_models::interrupt::VirtualCpuId;
+use {
+    hyper_vm_models::arm::gic::BuildError, hyper_vm_models::arm::gic::GicInterruptId,
+    hyper_vm_models::arm::gic::InterruptGroup, hyper_vm_models::arm::gic::InterruptTrigger,
+    hyper_vm_models::arm::gic::ListEntry, hyper_vm_models::arm::gic::ListState,
+    hyper_vm_models::arm::gic::RuntimeError, hyper_vm_models::arm::gic::VirtualGicBuilder,
 };
-use hyper::vm::interrupt::VirtualCpuId;
+use {
+    hyper_vm_models::arm::gic::lr::decode as decode_list_register,
+    hyper_vm_models::arm::gic::lr::encode as encode_list_register,
+};
 
 fn interrupt(value: u32) -> GicInterruptId {
     crate::require_some(GicInterruptId::new(value))
@@ -35,7 +40,7 @@ fn bounded_runtime_storage_rejects_growth_past_its_preallocated_limit() {
 #[test]
 fn generic_interrupt_ids_do_not_inherit_gic_intid_limits() {
     assert_eq!(
-        hyper::vm::interrupt::VirtualInterruptId::new(u32::MAX).get(),
+        hyper_vm_models::interrupt::VirtualInterruptId::new(u32::MAX).get(),
         u32::MAX
     );
     assert!(GicInterruptId::new(1019).is_some());
@@ -78,7 +83,7 @@ fn wfi_wake_query_is_conservative_across_ready_and_resident_states() {
     );
 }
 
-fn one_interrupt(id: u32, cpus: u32, slots: usize) -> hyper::vm::arm::gic::VirtualGic {
+fn one_interrupt(id: u32, cpus: u32, slots: usize) -> hyper_vm_models::arm::gic::VirtualGic {
     let mut builder = crate::require_ok(VirtualGicBuilder::new(cpus));
     crate::require_ok(builder.configure(
         interrupt(id),
@@ -97,12 +102,14 @@ fn allocation_plan_matches_the_complete_retained_controller_layout() {
     const SHARED_ENTRIES: usize = 32;
     const LIST_REGISTERS: usize = 16;
 
-    let expected = crate::require_ok(hyper::vm::arm::gic::VirtualGic::allocation_requirement(
-        VCPU_COUNT,
-        PRIVATE_ENTRIES_PER_VCPU,
-        SHARED_ENTRIES,
-        LIST_REGISTERS,
-    ));
+    let expected = crate::require_ok(
+        hyper_vm_models::arm::gic::VirtualGic::allocation_requirement(
+            VCPU_COUNT,
+            PRIVATE_ENTRIES_PER_VCPU,
+            SHARED_ENTRIES,
+            LIST_REGISTERS,
+        ),
+    );
     let entry_count = PRIVATE_ENTRIES_PER_VCPU * VCPU_COUNT as usize + SHARED_ENTRIES;
     let mut builder = crate::require_ok(VirtualGicBuilder::new_with_entry_capacity(
         VCPU_COUNT,
@@ -135,7 +142,7 @@ fn allocation_plan_matches_the_complete_retained_controller_layout() {
 
 #[test]
 fn allocation_plan_rejects_unbounded_or_impossible_layouts() {
-    use hyper::vm::arm::gic::VirtualGic;
+    use hyper_vm_models::arm::gic::VirtualGic;
 
     assert_eq!(
         VirtualGic::allocation_requirement(0, 32, 32, 16),
@@ -685,7 +692,7 @@ fn reserves_worst_case_shared_route_capacity_before_runtime() {
 
 #[test]
 fn v2_list_registers_preserve_states_and_quantize_priority() {
-    use hyper::vm::arm::gic::lr_v2;
+    use hyper_vm_models::arm::gic::lr_v2;
     for state in [
         ListState::Pending,
         ListState::Active,
@@ -744,7 +751,7 @@ fn distributor_disable_preserves_pending_until_reenabled() {
 
 #[test]
 fn gicv2_sgi_sources_survive_a_full_bank_and_clear_independently() {
-    use hyper::vm::arm::gic::lr_v2;
+    use hyper_vm_models::arm::gic::lr_v2;
     let cpu = VirtualCpuId::new(0);
     let id = interrupt(3);
     let mut gic = one_interrupt(3, 4, 1);
@@ -1157,10 +1164,14 @@ fn active_admission_ignores_distributor_enable_but_pending_does_not() {
 
 #[test]
 fn active_bitmap_mmio_reads_aliases_and_writes_only_selected_bits() {
-    use hyper::vm::arm::gic::mmio::{
-        DISTRIBUTOR_BASE, DecodedRegister, decode_v2, read_model_register, write_model_register,
+    use {
+        hyper_vm_models::arm::gic::mmio::DISTRIBUTOR_BASE,
+        hyper_vm_models::arm::gic::mmio::DecodedRegister,
+        hyper_vm_models::arm::gic::mmio::decode_v2,
+        hyper_vm_models::arm::gic::mmio::read_model_register,
+        hyper_vm_models::arm::gic::mmio::write_model_register,
     };
-    use hyper::vm::exit::{AccessWidth, GuestPhysicalAddress};
+    use {hyper_vm_models::exit::AccessWidth, hyper_vm_models::exit::GuestPhysicalAddress};
     let cpu = VirtualCpuId::new(0);
     let mut builder = crate::require_ok(VirtualGicBuilder::new(1));
     for id in 32..64 {

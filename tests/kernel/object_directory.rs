@@ -3,9 +3,15 @@
 
 //! Runtime proof that global object discovery neither owns nor resurrects objects.
 
-use crate::kernel::accounting::{ResourceDomain, ResourceKind, ResourceLimits};
-use crate::kernel::object::{Event, ObjectKind, ObjectScanCursor, PublishableRef};
-use crate::kernel::task::{ThreadObjectRegistryPhase, ThreadObjectScanCursor};
+use {
+    crate::accounting::ResourceDomain, crate::accounting::ResourceKind,
+    crate::accounting::ResourceLimits,
+};
+use {
+    crate::object::Event, crate::object::ObjectKind, crate::object::ObjectScanCursor,
+    crate::object::PublishableRef,
+};
+use {crate::task::ThreadObjectRegistryPhase, crate::task::ThreadObjectScanCursor};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Error {
@@ -18,11 +24,11 @@ pub(super) enum Error {
     ObservationChangedOwnership,
     ReaperDidNotRun,
     RetainedDeadObject,
-    Sleep(crate::kernel::task::SleepError),
+    Sleep(crate::task::SleepError),
 }
 
-impl From<crate::kernel::task::SleepError> for Error {
-    fn from(error: crate::kernel::task::SleepError) -> Self {
+impl From<crate::task::SleepError> for Error {
+    fn from(error: crate::task::SleepError) -> Self {
         Self::Sleep(error)
     }
 }
@@ -53,9 +59,9 @@ pub(super) fn run() -> Result<(), Error> {
 }
 
 fn verify_system_inspectors(domain: &ResourceDomain) -> Result<(), Error> {
-    let tasks = crate::kernel::inspect::TaskInspector::try_system(domain)
+    let tasks = crate::diagnostics::inspect::TaskInspector::try_system(domain)
         .map_err(|_| Error::Construction)?;
-    let mut threads = crate::kernel::inspect::Page::empty();
+    let mut threads = crate::diagnostics::inspect::Page::empty();
     tasks
         .scan_threads(0, &mut threads)
         .map_err(|_| Error::MissingInspectorObservation)?;
@@ -63,9 +69,9 @@ fn verify_system_inspectors(domain: &ResourceDomain) -> Result<(), Error> {
         return Err(Error::MissingInspectorObservation);
     }
 
-    let objects = crate::kernel::inspect::ObjectInspector::try_system(domain)
+    let objects = crate::diagnostics::inspect::ObjectInspector::try_system(domain)
         .map_err(|_| Error::Construction)?;
-    let mut page = crate::kernel::inspect::Page::empty();
+    let mut page = crate::diagnostics::inspect::Page::empty();
     objects
         .scan_objects(0, &mut page)
         .map_err(|_| Error::MissingInspectorObservation)?;
@@ -86,10 +92,9 @@ fn verify_final_reap() -> Result<(), Error> {
         return Err(Error::Construction);
     }
     drop(probe);
-    if crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || Ok::<_, Error>(domain.usage().committed(ResourceKind::KernelObjects) == before),
-    )? {
+    if crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+        Ok::<_, Error>(domain.usage().committed(ResourceKind::KernelObjects) == before)
+    })? {
         Ok(())
     } else {
         Err(Error::ReaperDidNotRun)
@@ -97,11 +102,9 @@ fn verify_final_reap() -> Result<(), Error> {
 }
 
 fn verify_current_thread_object() -> Result<(), Error> {
-    let thread =
-        crate::kernel::task::scheduler::current_thread_id().map_err(|_| Error::CurrentThread)?;
-    let name =
-        crate::kernel::task::scheduler::thread_name(thread).map_err(|_| Error::CurrentThread)?;
-    let object = crate::kernel::task::scheduler::thread_object_snapshot(thread)
+    let thread = crate::task::scheduler::current_thread_id().map_err(|_| Error::CurrentThread)?;
+    let name = crate::task::scheduler::thread_name(thread).map_err(|_| Error::CurrentThread)?;
+    let object = crate::task::scheduler::thread_object_snapshot(thread)
         .map_err(|_| Error::MissingSchedulerObject)?;
     if object.object.kind != ObjectKind::THREAD
         || object.object.references.scheduler == 0
@@ -112,8 +115,8 @@ fn verify_current_thread_object() -> Result<(), Error> {
 
     let mut cursor = Some(ThreadObjectScanCursor::from_token(0));
     while let Some(position) = cursor {
-        let mut page = crate::kernel::task::ThreadObjectSnapshotPage::empty();
-        crate::kernel::task::scheduler::scan_thread_objects(position, &mut page)
+        let mut page = crate::task::ThreadObjectSnapshotPage::empty();
+        crate::task::scheduler::scan_thread_objects(position, &mut page)
             .map_err(|_| Error::MissingSchedulerRelation)?;
         if page.entries().any(|entry| {
             entry.thread == thread
@@ -128,10 +131,10 @@ fn verify_current_thread_object() -> Result<(), Error> {
     Err(Error::MissingSchedulerRelation)
 }
 
-fn contains(target: crate::kernel::object::Koid) -> bool {
+fn contains(target: crate::object::Koid) -> bool {
     let mut cursor = Some(ObjectScanCursor::start());
     while let Some(position) = cursor {
-        let page = crate::kernel::object::scan(position);
+        let page = crate::object::scan(position);
         if page.entries().any(|snapshot| snapshot.koid == target) {
             return true;
         }

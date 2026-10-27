@@ -4,7 +4,7 @@
 //! PRNG reproducibility, boundary behavior and firmware failure contracts.
 
 use core::num::NonZeroU64;
-use hyper::{drivers::trng, random::Random};
+use {hyper::random::Random, hyper_drivers::random::trng};
 
 #[test]
 fn splitmix64_reference_sequence_and_state_size() {

@@ -5,15 +5,15 @@
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Error {
-    Device(crate::kernel::vm::device::Error),
+    Device(crate::vm::device::Error),
     Interrupts(crate::hal::vm::InterruptError),
-    Memory(crate::kernel::vm::memory::Error),
-    Registry(crate::kernel::vm::registry::Error),
-    DormantVcpuQuiesce(crate::kernel::vm::registry::DormantVcpuQuiesceError),
-    Scheduler(crate::kernel::task::scheduler::Error),
-    VcpuPreparation(crate::kernel::vm::registry::VcpuPreparationError),
-    Resource(crate::kernel::accounting::ResourceError),
-    Sleep(crate::kernel::task::SleepError),
+    Memory(crate::vm::memory::Error),
+    Registry(crate::vm::registry::Error),
+    DormantVcpuQuiesce(crate::vm::registry::DormantVcpuQuiesceError),
+    Scheduler(crate::task::scheduler::Error),
+    VcpuPreparation(crate::vm::registry::VcpuPreparationError),
+    Resource(crate::accounting::ResourceError),
+    Sleep(crate::task::SleepError),
     Accounting,
     ObjectNotFound,
     ProgressTimeout,
@@ -25,49 +25,49 @@ pub(super) enum Error {
     Quiescence(super::support::QuiescenceError),
 }
 
-impl From<crate::kernel::task::SleepError> for Error {
-    fn from(error: crate::kernel::task::SleepError) -> Self {
+impl From<crate::task::SleepError> for Error {
+    fn from(error: crate::task::SleepError) -> Self {
         Self::Sleep(error)
     }
 }
 
 pub(super) fn run() -> Result<(), Error> {
-    crate::kernel::vm::registry::verify_reservation_rollback().map_err(Error::Registry)?;
-    if !crate::kernel::task::thread::verify_retirement_charge_lifetime() {
+    crate::vm::registry::verify_reservation_rollback().map_err(Error::Registry)?;
+    if !crate::task::thread::verify_retirement_charge_lifetime() {
         return Err(Error::Accounting);
     }
     if !crate::hal::vm::guest_execution_available() {
         return verify_unavailable_backend_admission();
     }
 
-    let before = crate::kernel::task::scheduler::statistics().map_err(Error::Scheduler)?;
+    let before = crate::task::scheduler::statistics().map_err(Error::Scheduler)?;
     let (prepared, domain) = prepare_test_vm()?;
     if domain
         .usage()
-        .committed(crate::kernel::accounting::ResourceKind::VirtualMachines)
+        .committed(crate::accounting::ResourceKind::VirtualMachines)
         != 1
         || domain
             .usage()
-            .committed(crate::kernel::accounting::ResourceKind::VirtualCpus)
+            .committed(crate::accounting::ResourceKind::VirtualCpus)
             != 1
         || domain
             .usage()
-            .committed(crate::kernel::accounting::ResourceKind::Threads)
+            .committed(crate::accounting::ResourceKind::Threads)
             != 1
         || domain
             .usage()
-            .committed(crate::kernel::accounting::ResourceKind::Timers)
-            != 1 + crate::kernel::vm::device::timer_count()
+            .committed(crate::accounting::ResourceKind::Timers)
+            != 1 + crate::vm::device::timer_count()
         || domain
             .usage()
-            .committed(crate::kernel::accounting::ResourceKind::KernelObjects)
+            .committed(crate::accounting::ResourceKind::KernelObjects)
             != 2
     {
         return Err(Error::Accounting);
     }
     drop(prepared);
     wait_for_vm_usage_release(&domain)?;
-    let after = crate::kernel::task::scheduler::statistics().map_err(Error::Scheduler)?;
+    let after = crate::task::scheduler::statistics().map_err(Error::Scheduler)?;
     if after.threads != before.threads {
         return Err(Error::SchedulerThreadLeaked);
     }
@@ -89,9 +89,8 @@ pub(super) fn run() -> Result<(), Error> {
 fn verify_notification_delivery() -> Result<(), Error> {
     let (front, front_domain) = prepare_test_vm()?;
     let (back, back_domain) = prepare_test_vm()?;
-    let result =
-        crate::kernel::vm::io::Notification::verify_delivery_for_test(front, back, &front_domain)
-            .map_err(Error::Notification);
+    let result = crate::vm::io::Notification::verify_delivery_for_test(front, back, &front_domain)
+        .map_err(Error::Notification);
     // Cleanup must run even after a failed assertion in the interleaving test.
     let front_released = wait_for_vm_usage_release(&front_domain);
     let back_released = wait_for_vm_usage_release(&back_domain);
@@ -105,15 +104,15 @@ fn verify_notification_delivery() -> Result<(), Error> {
 }
 
 fn verify_unavailable_backend_admission() -> Result<(), Error> {
-    let domain = crate::kernel::accounting::ResourceDomain::try_new_root(
-        crate::kernel::accounting::ResourceLimits::UNLIMITED,
+    let domain = crate::accounting::ResourceDomain::try_new_root(
+        crate::accounting::ResourceLimits::UNLIMITED,
     )
     .map_err(Error::Resource)?;
     let before = domain.usage();
     let (ram_base, _, platform_profile) = test_platform();
     for _ in 0..2 {
-        let pending = crate::kernel::vm::objects::PendingVirtualMachine::try_new(
-            crate::kernel::vm::objects::VirtualMachineConfiguration {
+        let pending = crate::vm::objects::PendingVirtualMachine::try_new(
+            crate::vm::objects::VirtualMachineConfiguration {
                 guest_physical_base: ram_base,
                 memory_size: 2 * hyper::mm::PAGE_SIZE,
                 vcpu_count: 1,
@@ -124,7 +123,7 @@ fn verify_unavailable_backend_admission() -> Result<(), Error> {
         );
         if !matches!(
             pending,
-            Err(crate::kernel::vm::objects::Error::UnsupportedArchitecture)
+            Err(crate::vm::objects::Error::UnsupportedArchitecture)
         ) {
             return Err(Error::UnsupportedAdmission);
         }
@@ -137,13 +136,13 @@ fn verify_unavailable_backend_admission() -> Result<(), Error> {
 
 fn prepare_test_vm() -> Result<
     (
-        crate::kernel::vm::registry::PreparedVm,
-        crate::kernel::accounting::ResourceDomain,
+        crate::vm::registry::PreparedVm,
+        crate::accounting::ResourceDomain,
     ),
     Error,
 > {
-    let domain = crate::kernel::accounting::ResourceDomain::try_new_root(
-        crate::kernel::accounting::ResourceLimits::UNLIMITED,
+    let domain = crate::accounting::ResourceDomain::try_new_root(
+        crate::accounting::ResourceLimits::UNLIMITED,
     )
     .map_err(Error::Resource)?;
     let prepared = prepare_test_vm_in(&domain)?;
@@ -151,21 +150,21 @@ fn prepare_test_vm() -> Result<
 }
 
 fn prepare_test_vm_in(
-    domain: &crate::kernel::accounting::ResourceDomain,
-) -> Result<crate::kernel::vm::registry::PreparedVm, Error> {
+    domain: &crate::accounting::ResourceDomain,
+) -> Result<crate::vm::registry::PreparedVm, Error> {
     prepare_test_vm_with(domain, |_, _| Ok(()))
 }
 
 fn prepare_test_vm_with(
-    domain: &crate::kernel::accounting::ResourceDomain,
-    initialize: impl FnOnce(&mut crate::kernel::vm::memory::GuestAddressSpace, u64) -> Result<(), Error>,
-) -> Result<crate::kernel::vm::registry::PreparedVm, Error> {
-    let lifecycle = crate::kernel::vm::registry::VmLifecycleResources::try_reserve(domain, 1)
+    domain: &crate::accounting::ResourceDomain,
+    initialize: impl FnOnce(&mut crate::vm::memory::GuestAddressSpace, u64) -> Result<(), Error>,
+) -> Result<crate::vm::registry::PreparedVm, Error> {
+    let lifecycle = crate::vm::registry::VmLifecycleResources::try_reserve(domain, 1)
         .map_err(Error::Registry)?;
-    let mut reservation = crate::kernel::vm::registry::reserve().map_err(Error::Registry)?;
+    let mut reservation = crate::vm::registry::reserve().map_err(Error::Registry)?;
     let identifier = reservation.take_hardware_vmid().map_err(Error::Registry)?;
     let (ram_base, timer_interrupt, platform_profile) = test_platform();
-    let mut address_space = crate::kernel::vm::memory::GuestAddressSpace::new(
+    let mut address_space = crate::vm::memory::GuestAddressSpace::new(
         identifier,
         ram_base,
         2 * hyper::mm::PAGE_SIZE,
@@ -182,11 +181,11 @@ fn prepare_test_vm_with(
         .map_err(Error::Registry)?;
     let interrupts = crate::hal::vm::create_prepared_interrupt_controller(interrupt_plan)
         .map_err(Error::Interrupts)?;
-    let devices = crate::kernel::vm::device::prepare(None).map_err(Error::Device)?;
-    let builder = crate::kernel::vm::registry::VmBuilder::new(
+    let devices = crate::vm::device::prepare(None).map_err(Error::Device)?;
+    let builder = crate::vm::registry::VmBuilder::new(
         reservation,
         lifecycle,
-        crate::kernel::vm::objects::VirtualMachineConfiguration {
+        crate::vm::objects::VirtualMachineConfiguration {
             guest_physical_base: ram_base,
             memory_size: 2 * hyper::mm::PAGE_SIZE,
             vcpu_count: 1,
@@ -202,7 +201,7 @@ fn prepare_test_vm_with(
     let prepared = builder
         .prepare_boot_vcpu(
             0,
-            crate::kernel::vm::objects::VirtualCpuBootstrap {
+            crate::vm::objects::VirtualCpuBootstrap {
                 entry: ram_base,
                 stack: 0,
                 arguments: [ram_base + hyper::mm::PAGE_SIZE, 0, 0, 0],
@@ -213,25 +212,23 @@ fn prepare_test_vm_with(
 }
 
 fn verify_timer_resource_admission() -> Result<(), Error> {
-    use crate::kernel::accounting::{ResourceKind, ResourceLimits};
+    use {crate::accounting::ResourceKind, crate::accounting::ResourceLimits};
 
     // One endpoint timer plus the selected platform's reserved device timers
     // must be admitted before any backing or scheduler object is allocated.
-    let required = 1 + crate::kernel::vm::device::timer_count();
-    let domain = crate::kernel::accounting::ResourceDomain::try_new_root(
+    let required = 1 + crate::vm::device::timer_count();
+    let domain = crate::accounting::ResourceDomain::try_new_root(
         ResourceLimits::UNLIMITED.with(ResourceKind::Timers, required - 1),
     )
     .map_err(Error::Resource)?;
     if !matches!(
         prepare_test_vm_in(&domain),
-        Err(Error::Registry(
-            crate::kernel::vm::registry::Error::Resource(
-                crate::kernel::accounting::ResourceError::LimitExceeded {
-                    resource: ResourceKind::Timers,
-                    ..
-                }
-            )
-        ))
+        Err(Error::Registry(crate::vm::registry::Error::Resource(
+            crate::accounting::ResourceError::LimitExceeded {
+                resource: ResourceKind::Timers,
+                ..
+            }
+        )))
     ) || !vm_usage_released(&domain)
     {
         return Err(Error::Accounting);
@@ -240,18 +237,18 @@ fn verify_timer_resource_admission() -> Result<(), Error> {
 }
 
 fn verify_vcpu_resource_admission() -> Result<(), Error> {
-    use crate::kernel::accounting::{ResourceKind, ResourceLimits};
+    use {crate::accounting::ResourceKind, crate::accounting::ResourceLimits};
 
-    let domain = crate::kernel::accounting::ResourceDomain::try_new_root(
+    let domain = crate::accounting::ResourceDomain::try_new_root(
         ResourceLimits::UNLIMITED.with(ResourceKind::Threads, 0),
     )
     .map_err(Error::Resource)?;
     if !matches!(
         prepare_test_vm_in(&domain),
         Err(Error::VcpuPreparation(
-            crate::kernel::vm::registry::VcpuPreparationError::Registry(
-                crate::kernel::vm::registry::Error::Resource(
-                    crate::kernel::accounting::ResourceError::LimitExceeded {
+            crate::vm::registry::VcpuPreparationError::Registry(
+                crate::vm::registry::Error::Resource(
+                    crate::accounting::ResourceError::LimitExceeded {
                         resource: ResourceKind::Threads,
                         ..
                     }
@@ -266,11 +263,11 @@ fn verify_vcpu_resource_admission() -> Result<(), Error> {
 }
 
 fn verify_interrupt_resource_admission() -> Result<(), Error> {
-    use crate::kernel::accounting::{ResourceKind, ResourceLimits};
+    use {crate::accounting::ResourceKind, crate::accounting::ResourceLimits};
 
-    let domain = crate::kernel::accounting::ResourceDomain::try_new_root(ResourceLimits::UNLIMITED)
+    let domain = crate::accounting::ResourceDomain::try_new_root(ResourceLimits::UNLIMITED)
         .map_err(Error::Resource)?;
-    let lifecycle = crate::kernel::vm::registry::VmLifecycleResources::try_reserve(&domain, 1)
+    let lifecycle = crate::vm::registry::VmLifecycleResources::try_reserve(&domain, 1)
         .map_err(Error::Registry)?;
     let (_, timer_interrupt, _) = test_platform();
     let plan = crate::hal::vm::prepare_interrupt_controller(1, timer_interrupt)
@@ -291,8 +288,8 @@ fn verify_interrupt_resource_admission() -> Result<(), Error> {
         .map_err(Error::Resource)?;
     if !matches!(
         lifecycle.reserve_interrupt_controller(allocation),
-        Err(crate::kernel::vm::registry::Error::Resource(
-            crate::kernel::accounting::ResourceError::LimitExceeded {
+        Err(crate::vm::registry::Error::Resource(
+            crate::accounting::ResourceError::LimitExceeded {
                 resource: ResourceKind::KernelMemoryBytes,
                 ..
             }
@@ -311,27 +308,26 @@ fn verify_interrupt_resource_admission() -> Result<(), Error> {
 fn verify_dormant_vcpu_stop() -> Result<(), Error> {
     let (prepared, domain) = prepare_test_vm()?;
     let installed = prepared.install().map_err(Error::Registry)?;
-    crate::kernel::vm::registry::verify_dormant_vcpu_quiesce(installed)
+    crate::vm::registry::verify_dormant_vcpu_quiesce(installed)
         .map_err(Error::DormantVcpuQuiesce)?;
     wait_for_vm_usage_release(&domain)?;
     Ok(())
 }
 
 fn verify_thread_object_charge_lifetime() -> Result<(), Error> {
-    use crate::kernel::accounting::ResourceKind;
+    use crate::accounting::ResourceKind;
 
     let (prepared, domain) = prepare_test_vm()?;
     let installed = prepared.install().map_err(Error::Registry)?;
     let thread = installed.boot_vcpu_for_test();
-    let object = crate::kernel::task::scheduler::thread_object_snapshot(thread)
+    let object = crate::task::scheduler::thread_object_snapshot(thread)
         .map_err(Error::Scheduler)?
         .object;
-    let diagnostic =
-        crate::kernel::object::retain_for_test(object.koid).ok_or(Error::ObjectNotFound)?;
+    let diagnostic = crate::object::retain_for_test(object.koid).ok_or(Error::ObjectNotFound)?;
 
-    crate::kernel::vm::registry::verify_dormant_vcpu_quiesce(installed)
+    crate::vm::registry::verify_dormant_vcpu_quiesce(installed)
         .map_err(Error::DormantVcpuQuiesce)?;
-    let object_bytes = crate::kernel::task::system_thread_object_allocation_size()
+    let object_bytes = crate::task::system_thread_object_allocation_size()
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or(Error::Accounting)?;
     if domain.usage().total(ResourceKind::KernelObjects) != 1
@@ -350,29 +346,27 @@ fn verify_thread_object_charge_lifetime() -> Result<(), Error> {
     }
 
     drop(diagnostic);
-    if !crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || Ok::<_, Error>(vm_usage_released(&domain)),
-    )? {
+    if !crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+        Ok::<_, Error>(vm_usage_released(&domain))
+    })? {
         return Err(Error::ProgressTimeout);
     }
     Ok(())
 }
 
 pub(super) fn wait_for_vm_usage_release(
-    domain: &crate::kernel::accounting::ResourceDomain,
+    domain: &crate::accounting::ResourceDomain,
 ) -> Result<(), Error> {
-    if !crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || Ok::<_, Error>(vm_usage_released(domain)),
-    )? {
+    if !crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+        Ok::<_, Error>(vm_usage_released(domain))
+    })? {
         return Err(Error::ProgressTimeout);
     }
     Ok(())
 }
 
-fn vm_usage_released(domain: &crate::kernel::accounting::ResourceDomain) -> bool {
-    use crate::kernel::accounting::ResourceKind;
+fn vm_usage_released(domain: &crate::accounting::ResourceDomain) -> bool {
+    use crate::accounting::ResourceKind;
 
     [
         ResourceKind::KernelMemoryBytes,
@@ -388,7 +382,7 @@ fn vm_usage_released(domain: &crate::kernel::accounting::ResourceDomain) -> bool
 }
 
 // Dormant lifecycle fixtures never execute a payload and require no Linux ABI.
-fn test_platform() -> (u64, hyper::vm::interrupt::VirtualInterruptId, u32) {
+fn test_platform() -> (u64, hyper_vm_models::interrupt::VirtualInterruptId, u32) {
     #[cfg(CONFIG_ARCH_RISCV64)]
     let (ram_base, profile) = (
         hyper::abi::native::HYPER_NATIVE_VIRTUAL_PLATFORM_RISCV64_REFERENCE_GUEST_RAM_BASE,
@@ -401,18 +395,18 @@ fn test_platform() -> (u64, hyper::vm::interrupt::VirtualInterruptId, u32) {
     );
     (
         ram_base,
-        crate::kernel::vm::device::default_timer_interrupt(),
+        crate::vm::device::default_timer_interrupt(),
         profile as u32,
     )
 }
 
 fn verify_observed_vm_retirement() -> Result<(), Error> {
-    use crate::kernel::accounting::ResourceKind;
+    use crate::accounting::ResourceKind;
 
     for _ in 0..4 {
         let (prepared, domain) = prepare_test_vm()?;
         let installed = prepared.install().map_err(Error::Registry)?;
-        let observer = crate::kernel::vm::registry::verify_observed_vm_quiesce(installed)
+        let observer = crate::vm::registry::verify_observed_vm_quiesce(installed)
             .map_err(Error::DormantVcpuQuiesce)?;
         // The observer owns endpoint/tombstone metadata, but no guest RAM or
         // scheduler stacks. Their charges must drain before identity reuse.
@@ -441,14 +435,14 @@ pub(super) fn prepare_migration_guest(
     code: &[u8],
 ) -> Result<
     (
-        crate::kernel::vm::registry::PreparedVm,
-        crate::kernel::accounting::ResourceDomain,
+        crate::vm::registry::PreparedVm,
+        crate::accounting::ResourceDomain,
         *const core::sync::atomic::AtomicU64,
     ),
     Error,
 > {
-    let domain = crate::kernel::accounting::ResourceDomain::try_new_root(
-        crate::kernel::accounting::ResourceLimits::UNLIMITED,
+    let domain = crate::accounting::ResourceDomain::try_new_root(
+        crate::accounting::ResourceLimits::UNLIMITED,
     )
     .map_err(Error::Resource)?;
     let mut counter = core::ptr::null();

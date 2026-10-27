@@ -8,7 +8,10 @@
 //! architecture KASLR geometry, optional port-I/O capability, and diagnostic
 //! architecture report without exposing a backend module.
 
-use hyper::platform::fdt::{NodeId, NodeResources, NodeVisitor, Property};
+use {
+    hyper_platform::fdt::NodeId, hyper_platform::fdt::NodeResources,
+    hyper_platform::fdt::NodeVisitor, hyper_platform::fdt::Property,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DiscoveryError(super::imp::PlatformDiscoveryError);
@@ -24,15 +27,15 @@ pub(crate) enum KaslrError {
 pub(crate) struct EssentialInfo(super::imp::EssentialPlatformInfo);
 
 impl EssentialInfo {
-    pub(crate) fn cpu_power(&self) -> Option<hyper::platform::CpuPowerInfo> {
+    pub(crate) fn cpu_power(&self) -> Option<hyper_platform::CpuPowerInfo> {
         self.0.cpu_power
     }
 
-    pub(crate) fn interrupt_controller(&self) -> Option<hyper::platform::InterruptControllerInfo> {
+    pub(crate) fn interrupt_controller(&self) -> Option<hyper_platform::InterruptControllerInfo> {
         self.0.interrupt_controller
     }
 
-    pub(crate) fn timer(&self) -> Option<hyper::platform::TimerInfo> {
+    pub(crate) fn timer(&self) -> Option<hyper_platform::TimerInfo> {
         self.0.timer
     }
 
@@ -117,7 +120,7 @@ pub(crate) unsafe fn prepare_boot(
 }
 
 /// A boot-time hardware sample, if the selected architecture provides one.
-pub(crate) fn random_seed(power: Option<hyper::platform::CpuPowerInfo>) -> Option<u64> {
+pub(crate) fn random_seed(power: Option<hyper_platform::CpuPowerInfo>) -> Option<u64> {
     #[cfg(target_arch = "aarch64")]
     {
         super::imp::random_seed(power)

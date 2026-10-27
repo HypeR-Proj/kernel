@@ -5,8 +5,8 @@ use hyper::hal::memory::KernelImageLayout;
 #[cfg(feature = "crash-console")]
 use hyper::hal::memory::Stage1Mapping;
 use hyper::mm::{BootAllocator, PhysicalAddress};
-use hyper::platform::PlatformInfo;
 use hyper::sync::PublishedOnce;
+use hyper_platform::PlatformInfo;
 
 use super::page_table::{self, FinalAddressSpace};
 
@@ -78,7 +78,7 @@ impl PreparedAddressSpace {
             kernel_root: self.address_space.kernel_root,
             stack_top: self.address_space.stack_top,
             kernel_base: self.address_space.kernel_base,
-            tcr_el2: super::super::address::capabilities().stage1_tcr_el2(),
+            tcr_el2: crate::arch::aarch64::memory::address::capabilities().stage1_tcr_el2(),
         }
     }
 
@@ -86,7 +86,7 @@ impl PreparedAddressSpace {
         SecondaryActivationContext {
             transition_root: self.address_space.transition_root,
             kernel_root: self.address_space.kernel_root,
-            tcr_el2: super::super::address::capabilities().stage1_tcr_el2(),
+            tcr_el2: crate::arch::aarch64::memory::address::capabilities().stage1_tcr_el2(),
         }
     }
 

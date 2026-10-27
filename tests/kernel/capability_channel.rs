@@ -5,11 +5,12 @@
 
 use alloc::vec::Vec;
 
-use crate::kernel::accounting::{ResourceDomain, ResourceLimits};
-use crate::kernel::capability::Rights;
-use crate::kernel::ipc::{
-    CapabilityChannel, CapabilityChannelError, CapabilityDeliveryInfo, CapabilityReceiveContract,
-    CapabilityReceiveOutcome, CapabilitySlotContract,
+use crate::capability::Rights;
+use {crate::accounting::ResourceDomain, crate::accounting::ResourceLimits};
+use {
+    crate::ipc::CapabilityChannel, crate::ipc::CapabilityChannelError,
+    crate::ipc::CapabilityDeliveryInfo, crate::ipc::CapabilityReceiveContract,
+    crate::ipc::CapabilityReceiveOutcome, crate::ipc::CapabilitySlotContract,
 };
 
 const MAX_RECEIVERS: usize = 64;
@@ -18,7 +19,7 @@ pub(super) enum Error {
     Channel(CapabilityChannelError),
     Construction,
     State(usize),
-    Wait(crate::kernel::object::ObjectWaitError),
+    Wait(crate::object::ObjectWaitError),
 }
 
 impl core::fmt::Debug for Error {
@@ -38,8 +39,8 @@ impl From<CapabilityChannelError> for Error {
     }
 }
 
-impl From<crate::kernel::object::ObjectWaitError> for Error {
-    fn from(error: crate::kernel::object::ObjectWaitError) -> Self {
+impl From<crate::object::ObjectWaitError> for Error {
+    fn from(error: crate::object::ObjectWaitError) -> Self {
         Self::Wait(error)
     }
 }

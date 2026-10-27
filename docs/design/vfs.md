@@ -20,18 +20,18 @@ block services may run in userspace; neither placement is required by VFS.
 
 ## Layer boundaries
 
-`src/fs` contains reusable, policy-free filesystem mechanisms: validated names
+`src/fs/primitives` contains reusable, policy-free filesystem mechanisms: validated names
 and paths, stable backend node identities, metadata contracts, and the
 hierarchical RAM filesystem importer. It has no Process, handle, scheduler, or
 global-namespace dependency.
 
-`src/kernel/vfs` owns kernel policy: filesystem and mount identity, the system
+`src/fs/vfs` owns kernel policy: filesystem and mount identity, the system
 namespace, capability-relative resolution, Directory and File kernel objects,
 resource accounting, and the process-facing service boundary. Syscall parsing
 and user-memory validation stay in the Native ABI entry layer or its service
 adapter; backend code never observes a Process.
 
-`src/kernel/io_cache` owns reclaimable file-data and namespace-metadata residency. It does not resolve
+`src/fs/cache` owns reclaimable file-data and namespace-metadata residency. It does not resolve
 paths or grant authority, and a cache miss never calls back into VFS policy.
 CPU cache maintenance remains architecture/HAL work and is unrelated to the
 filesystem data cache.

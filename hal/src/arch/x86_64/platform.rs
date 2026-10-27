@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-use hyper::platform::{
-    CpuPowerInfo, InterruptControllerInfo, PlatformInterrupt, PlatformInterruptTrigger, TimerInfo,
-    TimerKind, X2ApicInfo, X86ApicInfo,
-    fdt::{NodeId, NodeVisitor, Property},
+use {
+    hyper_platform::CpuPowerInfo, hyper_platform::InterruptControllerInfo,
+    hyper_platform::PlatformInterrupt, hyper_platform::PlatformInterruptTrigger,
+    hyper_platform::TimerInfo, hyper_platform::TimerKind, hyper_platform::X2ApicInfo,
+    hyper_platform::X86ApicInfo, hyper_platform::fdt::NodeId, hyper_platform::fdt::NodeVisitor,
+    hyper_platform::fdt::Property,
 };
 
 pub const TIMER_VECTOR: u32 = 0xef;
@@ -22,7 +24,7 @@ pub struct EssentialPlatformInfo {
     pub interrupt_controller: Option<InterruptControllerInfo>,
     pub timer: Option<TimerInfo>,
     pub tsc_frequency: u64,
-    claims: [Option<hyper::platform::fdt::NodeId>; 0],
+    claims: [Option<hyper_platform::fdt::NodeId>; 0],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,7 +85,7 @@ impl EssentialDeviceDiscovery {
 }
 
 impl EssentialPlatformInfo {
-    pub fn claims(&self) -> &[Option<hyper::platform::fdt::NodeId>] {
+    pub fn claims(&self) -> &[Option<hyper_platform::fdt::NodeId>] {
         &self.claims
     }
 }

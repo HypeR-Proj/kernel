@@ -13,8 +13,8 @@ allocation or dependencies. A caller-owned instance provides `next_u64`,
 reproducible stream for tests; each draw advances the state even when no further
 seed material arrives. Partial-word fills consume a complete word.
 
-`kernel::random` owns the shared kernel instance. A short IRQ-masked lock
-serializes draws on multiple CPUs. Bulk fills acquire it for at most 64 bytes
+The binary's `crate::random` module owns the shared kernel instance. A short
+IRQ-masked lock serializes draws on multiple CPUs. Bulk fills acquire it for at most 64 bytes
 at a time; they never copy to userspace under this lock. There is no timer,
 interrupt sampling hook, worker, or periodic reseeding cost.
 
@@ -34,6 +34,11 @@ when the platform advertises a standard SMC firmware conduit. A successful
 there is no polling. FEAT_RNG/RNDR, when advertised, is the fallback. Other
 architectures currently use the boot inputs without a hardware RNG probe.
 Availability of ATF alone does not imply that its platform implements TRNG.
+
+The firmware protocol driver lives in `drivers/src/random/trng.rs`, exposed as
+`hyper_drivers::random::trng`. The AArch64 adapter in
+`hal/src/arch/aarch64/random.rs` supplies the firmware conduit and selects the
+hardware fallback; the portable PRNG remains in `core/src/random.rs`.
 
 KASLR uses the same PRNG implementation and the combined boot seed, without a
 private random mixing algorithm. `nokaslr` and the build configuration still

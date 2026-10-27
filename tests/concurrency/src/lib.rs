@@ -7,11 +7,11 @@
 
 #![cfg(test)]
 
-#[path = "../../../src/sync/deferred_work.rs"]
+#[path = "../../../core/src/sync/deferred_work.rs"]
 mod deferred_work;
-#[path = "../../../src/kernel/task/reschedule.rs"]
+#[path = "../../../src/task/reschedule.rs"]
 mod reschedule;
-#[path = "../../../src/kernel/vm/run_admission.rs"]
+#[path = "../../../src/vm/run_admission.rs"]
 mod run_admission;
 
 mod admission;
@@ -22,12 +22,12 @@ mod wakeup;
 use hyper::hal;
 use hyper::sync::InterruptMaskGuard;
 mod balance_continuation;
-#[path = "../../../src/kernel/task/scheduler/balance/retry.rs"]
+#[path = "../../../src/task/scheduler/balance/retry.rs"]
 mod balance_retry;
-#[path = "../../../src/kernel/task/scheduler/balance/work.rs"]
+#[path = "../../../src/task/scheduler/balance/work.rs"]
 mod balance_work;
 mod scheduler_lock;
-#[path = "../../../src/sync/lock/sharded.rs"]
+#[path = "../../../core/src/sync/lock/sharded.rs"]
 mod sharded_lock;
 
 fn require_ok<T, E: core::fmt::Debug>(result: Result<T, E>) -> T {
@@ -37,18 +37,18 @@ fn require_ok<T, E: core::fmt::Debug>(result: Result<T, E>) -> T {
     }
 }
 
-#[path = "../../../src/kernel/vfs/mount_admission.rs"]
+#[path = "../../../src/fs/vfs/mount_admission.rs"]
 mod mount_admission;
 mod mounts;
 
 mod protection;
-#[path = "../../../src/kernel/vfs/protection_state.rs"]
+#[path = "../../../src/fs/vfs/protection_state.rs"]
 mod protection_state;
 
-#[path = "../../../src/kernel/profile/admission.rs"]
+#[path = "../../../src/diagnostics/profile/admission.rs"]
 mod profile_admission;
 mod profiling;
 
 mod guest_entry;
-#[path = "../../../src/kernel/vm/reconcile.rs"]
+#[path = "../../../src/vm/reconcile.rs"]
 mod reconcile;

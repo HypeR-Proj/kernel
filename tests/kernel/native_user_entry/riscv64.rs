@@ -3,9 +3,12 @@
 
 //! Concurrent raw-register probes across Native traps and scheduler switches.
 
-use crate::kernel::accounting::{ResourceDomain, ResourceLimits};
-use crate::kernel::process::{MachineAbi, Process, TaskGroup, TerminalReason};
-use crate::kernel::task::scheduler::{self, CpuMask};
+use {crate::accounting::ResourceDomain, crate::accounting::ResourceLimits};
+use {
+    crate::process::MachineAbi, crate::process::Process, crate::process::TaskGroup,
+    crate::process::TerminalReason,
+};
+use {crate::task::scheduler, crate::task::scheduler::CpuMask};
 
 use super::{Error, prepare_process, retire_process};
 
@@ -102,7 +105,7 @@ fn run_pair(domain: &ResourceDomain, group: &TaskGroup, same_hart: bool) -> Resu
         };
         let pin = scheduler::preempt_disable().map_err(|_| Error::Scheduler)?;
         let prepared = (|| {
-            let cpu = crate::kernel::cpu::current_index().ok_or(Error::Scheduler)?;
+            let cpu = crate::cpu::current_index().ok_or(Error::Scheduler)?;
             let affinity = if same_hart {
                 CpuMask::single(cpu)
             } else {
@@ -130,7 +133,7 @@ fn run_pair(domain: &ResourceDomain, group: &TaskGroup, same_hart: bool) -> Resu
         })();
         scheduler::preempt_enable_and_reschedule(pin).map_err(|_| Error::Scheduler)?;
         let (first_thread, second_thread) = prepared?;
-        let completed = crate::kernel::task::wait_for_test_progress(REGISTER_TIMEOUT_NS, || {
+        let completed = crate::task::wait_for_test_progress(REGISTER_TIMEOUT_NS, || {
             // Process completion precedes the final Thread join notification.
             // On another CPU either process can be stopped while its reaper
             // is still publishing the Thread's completion.
@@ -187,10 +190,9 @@ fn run_fault_probes(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Er
                 .create_user_thread("selftest/native-fault", start, CpuMask::ALL)
                 .map_err(|_| Error::Construction)?;
             thread.ready().map_err(|_| Error::Scheduler)?;
-            let completed =
-                crate::kernel::task::wait_for_test_progress(REGISTER_TIMEOUT_NS, || {
-                    Ok::<_, Error>(process.try_join().is_some() && thread.try_join().is_some())
-                })?;
+            let completed = crate::task::wait_for_test_progress(REGISTER_TIMEOUT_NS, || {
+                Ok::<_, Error>(process.try_join().is_some() && thread.try_join().is_some())
+            })?;
             if !completed {
                 return Err(Error::Lifecycle);
             }
@@ -242,7 +244,7 @@ fn integer_only(domain: &ResourceDomain, group: &TaskGroup) -> Result<(), Error>
             .create_initial_user_thread("selftest/integer-only", CpuMask::ALL)
             .map_err(|_| Error::Construction)?;
         thread.ready().map_err(|_| Error::Scheduler)?;
-        if !crate::kernel::task::wait_for_test_progress(REGISTER_TIMEOUT_NS, || {
+        if !crate::task::wait_for_test_progress(REGISTER_TIMEOUT_NS, || {
             Ok::<_, Error>(process.try_join().is_some())
         })? {
             return Err(Error::Lifecycle);

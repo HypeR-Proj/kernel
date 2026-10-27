@@ -147,7 +147,7 @@ pub(super) fn run(domain: &ResourceDomain) -> Result<(), TestError> {
 /// source and for the destination root. This also covers retaining source mounts
 /// below the old root while only their selected directories are promoted.
 fn maximum_sources(domain: &ResourceDomain) -> Result<(), TestError> {
-    use crate::kernel::vfs::{ScratchString, ScratchVec};
+    use {crate::fs::vfs::ScratchString, crate::fs::vfs::ScratchVec};
 
     let names = [
         "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p",

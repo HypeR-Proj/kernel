@@ -4,9 +4,9 @@
 //! QEMU EDU endpoint, test-only. Both DMA directions traverse the PCI IOMMU.
 //! Contract: <https://www.qemu.org/docs/master/specs/edu.html>
 
-use crate::kernel::device::iommu::KernelEnvironment as E;
-use hyper::drivers::iommu::smmuv3::{Environment, Error};
-use hyper::drivers::platform::{DriverServices, PlatformDevice};
+use crate::device::iommu::KernelEnvironment as E;
+use {hyper_drivers::iommu::smmuv3::Environment, hyper_drivers::iommu::smmuv3::Error};
+use {hyper_drivers::platform::DriverServices, hyper_drivers::platform::PlatformDevice};
 
 pub(super) struct Edu {
     config: usize,

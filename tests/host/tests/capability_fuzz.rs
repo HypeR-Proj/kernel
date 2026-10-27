@@ -18,6 +18,7 @@ use std::sync::{
 #[path = "../src/cases/capability_harness.rs"]
 #[allow(dead_code, unused_imports)]
 mod kernel;
+pub(crate) use kernel::{accounting, authority, object};
 
 fn require_ok<T, E: core::fmt::Debug>(result: Result<T, E>) -> T {
     match result {

@@ -1,6 +1,13 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
+pub(crate) mod address;
+pub(crate) mod address_layout;
+pub(crate) mod bootstrap_map;
+pub(crate) mod kaslr;
+pub(crate) mod protection;
+pub(crate) mod translation_identifiers;
+
 mod address_space;
 mod layout;
 mod page_table;
@@ -22,7 +29,8 @@ pub(super) fn kernel_region_base() -> u64 {
 pub(super) fn linear_page_address(physical: hyper::mm::PhysicalAddress) -> Option<usize> {
     let value = physical.get();
     if !value.is_multiple_of(hyper::mm::PAGE_SIZE)
-        || value.checked_add(hyper::mm::PAGE_SIZE)? > super::address::physical_address_limit()
+        || value.checked_add(hyper::mm::PAGE_SIZE)?
+            > crate::arch::aarch64::memory::address::physical_address_limit()
     {
         return None;
     }

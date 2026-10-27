@@ -3,7 +3,7 @@
 
 pub(crate) use crate::capability_core::kernel::authority;
 use crate::scheduler_policy_model as policy;
-#[path = "../../../../src/kernel/task/scheduling_authority.rs"]
+#[path = "../../../../src/task/scheduling_authority.rs"]
 mod grants;
 
 use authority::Rights;

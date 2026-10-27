@@ -3,9 +3,12 @@
 
 //! CPIO parsing and immutable ramfs contracts.
 
-use hyper::archive::cpio::{Archive, EntryKind, Error};
-use hyper::fs::NodeKind;
-use hyper::fs::ramfs::{Error as RamFsError, RamFs};
+use crate::fs::primitives::NodeKind;
+use {
+    crate::fs::archive::cpio::Archive, crate::fs::archive::cpio::EntryKind,
+    crate::fs::archive::cpio::Error,
+};
+use {crate::fs::primitives::ramfs::Error as RamFsError, crate::fs::primitives::ramfs::RamFs};
 
 fn append_hex(output: &mut Vec<u8>, value: u32) {
     output.extend_from_slice(format!("{value:08x}").as_bytes());

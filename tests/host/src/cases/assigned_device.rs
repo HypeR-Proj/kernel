@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-#[path = "../../../../src/kernel/device/assigned/model.rs"]
+#[path = "../../../../src/device/assigned/model.rs"]
 mod model;
 
 #[test]
@@ -209,7 +209,7 @@ fn physical_register_windows_reject_gaps_and_crossing_accesses() {
 
 #[test]
 fn pci_function_owns_its_complete_aperture() {
-    let size = hyper::drivers::pci::APERTURE_SIZE;
+    let size = hyper_drivers::pci::APERTURE_SIZE;
     let base = 0x0b80_0000;
     assert!(model::assignment_aperture(base, size));
     assert!(!model::assignments_conflict(
@@ -245,7 +245,7 @@ fn pci_function_owns_its_complete_aperture() {
 
 #[test]
 fn bcm2712_inbound_size_rejects_reserved_encodings() {
-    use hyper::drivers::pci::inbound_size;
+    use hyper_drivers::pci::inbound_size;
     for encoded in [0, 22, 27, 32, u32::MAX] {
         assert_eq!(inbound_size(encoded), None);
     }

@@ -1,12 +1,15 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-use hyper::vm::arm::gic::quiesce::ActiveAccessQuiesce;
-use hyper::vm::arm::gic::{GicInterruptId, InterruptGroup, InterruptTrigger, VirtualGicBuilder};
-use hyper::vm::interrupt::VirtualCpuId;
+use hyper_vm_models::arm::gic::quiesce::ActiveAccessQuiesce;
+use hyper_vm_models::interrupt::VirtualCpuId;
 use loom::sync::atomic::{AtomicUsize, Ordering};
 use loom::sync::{Arc, Mutex};
 use loom::thread;
+use {
+    hyper_vm_models::arm::gic::GicInterruptId, hyper_vm_models::arm::gic::InterruptGroup,
+    hyper_vm_models::arm::gic::InterruptTrigger, hyper_vm_models::arm::gic::VirtualGicBuilder,
+};
 
 use crate::reconcile::ReconcilePublication;
 use crate::require_ok;

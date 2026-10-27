@@ -1,13 +1,23 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-use hyper::vm::arm::gic::mmio::{DISTRIBUTOR_BASE, DecodedRegister, ModelRegister, decode_v3_cpus};
-use hyper::vm::arm::gic::quiesce::ActiveAccessQuiesce;
-use hyper::vm::arm::gic::{
-    GicInterruptId, InterruptGroup, InterruptTrigger, ListState, VirtualGic, VirtualGicBuilder,
+use hyper_vm_models::arm::gic::quiesce::ActiveAccessQuiesce;
+use hyper_vm_models::interrupt::VirtualCpuId;
+use {
+    hyper_vm_models::arm::gic::GicInterruptId, hyper_vm_models::arm::gic::InterruptGroup,
+    hyper_vm_models::arm::gic::InterruptTrigger, hyper_vm_models::arm::gic::ListState,
+    hyper_vm_models::arm::gic::VirtualGic, hyper_vm_models::arm::gic::VirtualGicBuilder,
 };
-use hyper::vm::exit::{AccessWidth, GuestPhysicalAddress, MmioOperation};
-use hyper::vm::interrupt::VirtualCpuId;
+use {
+    hyper_vm_models::arm::gic::mmio::DISTRIBUTOR_BASE,
+    hyper_vm_models::arm::gic::mmio::DecodedRegister,
+    hyper_vm_models::arm::gic::mmio::ModelRegister,
+    hyper_vm_models::arm::gic::mmio::decode_v3_cpus,
+};
+use {
+    hyper_vm_models::exit::AccessWidth, hyper_vm_models::exit::GuestPhysicalAddress,
+    hyper_vm_models::exit::MmioOperation,
+};
 
 fn cpu(index: u32) -> VirtualCpuId {
     VirtualCpuId::new(index)
@@ -147,7 +157,7 @@ fn failed_activation_withdrawal_completes_waiter_and_reuses_slot() {
 
 #[test]
 fn remote_redistributor_access_uses_the_addressed_private_bank() {
-    use hyper::vm::arm::gic::mmio::REDISTRIBUTOR_BASE;
+    use hyper_vm_models::arm::gic::mmio::REDISTRIBUTOR_BASE;
     let mut builder = crate::require_ok(VirtualGicBuilder::new(2));
     for bank in 0..2 {
         for id in 0..32 {
@@ -203,7 +213,10 @@ fn remote_dir_waits_for_saved_lr_and_preserves_pending() {
 
 #[test]
 fn gicv2_dir_page_is_emulated_but_iar_eoir_page_remains_direct() {
-    use hyper::vm::arm::gic::mmio::{Frame, ServiceRegister, decode_v2};
+    use {
+        hyper_vm_models::arm::gic::mmio::Frame, hyper_vm_models::arm::gic::mmio::ServiceRegister,
+        hyper_vm_models::arm::gic::mmio::decode_v2,
+    };
     let base = 0x0801_0000;
     assert_eq!(
         crate::require_ok(decode_v2(

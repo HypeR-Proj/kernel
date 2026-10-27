@@ -1,14 +1,17 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-#[path = "../../../../src/kernel/vm/diagnostics.rs"]
+#[path = "../../../../src/vm/diagnostics.rs"]
 mod model;
 
 use std::sync::{Arc, Barrier};
 use std::thread;
 
-use hyper::vm::exit::{AccessWidth, GuestPhysicalAddress, MmioAccess, MmioOperation};
 use model::{Admission, UnhandledMmioGate, VmDiagnosticId, VmDiagnostics};
+use {
+    hyper_vm_models::exit::AccessWidth, hyper_vm_models::exit::GuestPhysicalAddress,
+    hyper_vm_models::exit::MmioAccess, hyper_vm_models::exit::MmioOperation,
+};
 
 #[test]
 fn admits_exactly_four_details_and_one_suppression_notice() {

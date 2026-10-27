@@ -3,7 +3,11 @@
 
 //! Architecture-independent decoding of AMD SVM capabilities and exits.
 
-use hyper::vm::x86::svm::{IoDirection, IoExit, NptAccess, NptViolation, SvmFeatures};
+use {
+    hyper_vm_models::x86::svm::IoDirection, hyper_vm_models::x86::svm::IoExit,
+    hyper_vm_models::x86::svm::NptAccess, hyper_vm_models::x86::svm::NptViolation,
+    hyper_vm_models::x86::svm::SvmFeatures,
+};
 
 #[test]
 fn validates_required_svm_facilities() {

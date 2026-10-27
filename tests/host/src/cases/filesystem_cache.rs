@@ -13,9 +13,9 @@ use hyper_filesystem::protocol::{
     DIRECTORY_BATCH_BYTES, DirectoryBatchBuilder, DirectoryCursor, Entry, FILE, entry_encode_into,
 };
 
-#[path = "../../../../src/kernel/vfs/remote/cache.rs"]
+#[path = "../../../../src/fs/vfs/remote/cache.rs"]
 mod cache;
-#[path = "../../../../src/kernel/vfs/remote/records/tree.rs"]
+#[path = "../../../../src/fs/vfs/remote/records/tree.rs"]
 mod tree;
 
 fn identity(revision: u64) -> FileIdentity {

@@ -3,7 +3,10 @@
 
 //! The kernel admits only the bootstrap ELF subset, not app dynamic policy.
 
-use hyper::exec::bootstrap::{Error, Image, Machine};
+use {
+    crate::process::formats::bootstrap::Error, crate::process::formats::bootstrap::Image,
+    crate::process::formats::bootstrap::Machine,
+};
 
 fn word(bytes: &mut [u8], offset: usize, value: u64, width: usize) {
     bytes[offset..offset + width].copy_from_slice(&value.to_le_bytes()[..width]);
@@ -156,7 +159,7 @@ fn unaligned_load_backing_keeps_the_prefix_and_final_data_byte() -> Result<(), E
 
 #[test]
 fn pure_bss_backing_is_empty_and_segment_extent_overflow_is_rejected() -> Result<(), Error> {
-    use hyper::exec::bootstrap::Segment;
+    use crate::process::formats::bootstrap::Segment;
     let bss = Segment {
         file_offset: 4096,
         data_offset: 4092,

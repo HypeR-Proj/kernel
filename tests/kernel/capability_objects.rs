@@ -3,23 +3,27 @@
 
 //! Runtime composition checks for init's typed authority objects.
 
-use crate::kernel::accounting::{
-    ResourceDomain, ResourceDomainObject, ResourceDomainObjectError, ResourceLimits,
+use crate::authority::Rights;
+use {
+    crate::accounting::ResourceDomain, crate::accounting::ResourceDomainObject,
+    crate::accounting::ResourceDomainObjectError, crate::accounting::ResourceLimits,
 };
-use crate::kernel::authority::Rights;
-use crate::kernel::capability::{HandleError, HandleFlags, PreparedHandle};
-use crate::kernel::mm::user_space::{ExecutableAuthority, VmoObject};
-use crate::kernel::object::{KernelObject, ObjectPublication};
-use crate::kernel::process::{TaskFactory, TaskGroup, TaskGroupObject};
+use {
+    crate::capability::HandleError, crate::capability::HandleFlags,
+    crate::capability::PreparedHandle,
+};
+use {crate::mm::user_space::ExecutableAuthority, crate::mm::user_space::VmoObject};
+use {crate::object::KernelObject, crate::object::ObjectPublication};
+use {crate::process::TaskFactory, crate::process::TaskGroup, crate::process::TaskGroupObject};
 
 pub(crate) enum Error {
     Domain(ResourceDomainObjectError),
     DuplicateDomainPublicationAccepted,
-    ExecutableAuthority(crate::kernel::mm::user_space::ExecutableAuthorityError),
-    Factory(crate::kernel::process::TaskObjectError),
+    ExecutableAuthority(crate::mm::user_space::ExecutableAuthorityError),
+    Factory(crate::process::TaskObjectError),
     Handle(HandleError),
-    Memory(crate::kernel::mm::user_space::MemoryObjectError),
-    Object(crate::kernel::object::ObjectCreationError),
+    Memory(crate::mm::user_space::MemoryObjectError),
+    Object(crate::object::ObjectCreationError),
     Rights,
 }
 
@@ -49,8 +53,8 @@ impl From<ResourceDomainObjectError> for Error {
     }
 }
 
-impl From<crate::kernel::process::TaskObjectError> for Error {
-    fn from(error: crate::kernel::process::TaskObjectError) -> Self {
+impl From<crate::process::TaskObjectError> for Error {
+    fn from(error: crate::process::TaskObjectError) -> Self {
         Self::Factory(error)
     }
 }
@@ -61,20 +65,20 @@ impl From<HandleError> for Error {
     }
 }
 
-impl From<crate::kernel::mm::user_space::ExecutableAuthorityError> for Error {
-    fn from(error: crate::kernel::mm::user_space::ExecutableAuthorityError) -> Self {
+impl From<crate::mm::user_space::ExecutableAuthorityError> for Error {
+    fn from(error: crate::mm::user_space::ExecutableAuthorityError) -> Self {
         Self::ExecutableAuthority(error)
     }
 }
 
-impl From<crate::kernel::mm::user_space::MemoryObjectError> for Error {
-    fn from(error: crate::kernel::mm::user_space::MemoryObjectError) -> Self {
+impl From<crate::mm::user_space::MemoryObjectError> for Error {
+    fn from(error: crate::mm::user_space::MemoryObjectError) -> Self {
         Self::Memory(error)
     }
 }
 
-impl From<crate::kernel::object::ObjectCreationError> for Error {
-    fn from(error: crate::kernel::object::ObjectCreationError) -> Self {
+impl From<crate::object::ObjectCreationError> for Error {
+    fn from(error: crate::object::ObjectCreationError) -> Self {
         Self::Object(error)
     }
 }
@@ -97,7 +101,7 @@ pub(crate) fn run() -> Result<(), Error> {
     let factory = ObjectPublication::try_new(TaskFactory::try_new(&domain)?)?;
     require_rights(factory.supported_rights(), TaskFactory::SUPPORTED_RIGHTS)?;
     let group = TaskGroupObject::try_publication(
-        TaskGroup::try_new(&domain).map_err(crate::kernel::process::TaskObjectError::TaskGroup)?,
+        TaskGroup::try_new(&domain).map_err(crate::process::TaskObjectError::TaskGroup)?,
     )?;
     require_rights(group.supported_rights(), TaskGroupObject::SUPPORTED_RIGHTS)?;
 

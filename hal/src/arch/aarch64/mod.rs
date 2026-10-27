@@ -1,48 +1,31 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-mod address;
-mod address_layout;
+pub(crate) mod irq;
+
+mod vm;
+
 mod atomics;
 mod barrier;
 mod cache;
 mod context;
 mod exception;
-mod exposed_copy;
 mod fp;
-mod gic_cpu_interface;
-mod guest_cpu_contract;
-mod guest_cpu_model;
 mod host;
-mod interrupt_controller;
-mod interrupt_virtualization;
-mod interrupts;
-mod kaslr;
 mod lower_el;
 mod memory;
 mod platform;
 #[cfg(feature = "pmu-profiling")]
 pub(crate) mod pmu;
-mod protection;
 mod psci;
 mod random;
 pub(crate) use random::seed as random_seed;
 pub mod registers;
 mod smp;
-mod stage2;
-mod stage2_retirement;
 mod timer;
-mod translation_identifiers;
 mod user;
-mod user_contract;
-mod user_entry;
-mod user_machine;
-mod vgic;
-mod vm_interrupt;
-mod vm_timer;
-mod vm_vcpu;
-mod vsysreg;
 
+pub use crate::arch::aarch64::irq::gic::Aarch64GicCpuInterface;
 pub use atomics::AtomicCapabilities;
 pub(crate) use atomics::capabilities as atomic_capabilities;
 pub use barrier::Aarch64Barrier as ArchitectureBarrier;
@@ -61,36 +44,44 @@ pub(crate) use exception::{
     capture_crash_context, install_exception_stacks, install_local_runtime_vectors,
     install_runtime_vectors, validate_local_runtime_vectors, validate_runtime_vectors,
 };
-pub use gic_cpu_interface::Aarch64GicCpuInterface;
-pub(crate) use gic_cpu_interface::{
-    acknowledge_interrupt, broadcast_crash_stop, crash_stop_interrupt, current_gic_affinity,
-    end_interrupt, is_crash_stop_interrupt, kernel_rpc_interrupt, notify_kernel_rpc,
-    notify_reschedule, reschedule_interrupt,
+pub(crate) use {
+    crate::arch::aarch64::irq::gic::acknowledge_interrupt,
+    crate::arch::aarch64::irq::gic::broadcast_crash_stop,
+    crate::arch::aarch64::irq::gic::crash_stop_interrupt,
+    crate::arch::aarch64::irq::gic::current_gic_affinity,
+    crate::arch::aarch64::irq::gic::end_interrupt,
+    crate::arch::aarch64::irq::gic::is_crash_stop_interrupt,
+    crate::arch::aarch64::irq::gic::kernel_rpc_interrupt,
+    crate::arch::aarch64::irq::gic::notify_kernel_rpc,
+    crate::arch::aarch64::irq::gic::notify_reschedule,
+    crate::arch::aarch64::irq::gic::reschedule_interrupt,
 };
 pub fn take_kernel_rpc_reasons() -> u8 {
     smp::take_kernel_rpc()
 }
 pub const fn arm_kernel_rpc_source() {}
+pub use crate::arch::aarch64::irq::LocalInterruptMask;
+pub use crate::arch::aarch64::memory::kaslr::Error as KaslrError;
+pub(crate) use crate::arch::aarch64::memory::kaslr::select as select_kaslr_layout;
+pub use crate::arch::aarch64::user::entry::Error as UserEntryError;
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+pub(crate) use crate::arch::aarch64::user::entry::direct_native_call_count_for_test;
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+pub(crate) use crate::arch::aarch64::user::entry::native_run_counts_for_test;
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+pub(crate) use crate::arch::aarch64::user::entry::syscall_fp_resident_for_test;
+pub use crate::arch::aarch64::user::memory::Error as UserAddressSpaceError;
+pub(crate) use crate::arch::aarch64::vm::interrupt_virtualization::description as interrupt_virtualization_description;
+pub(crate) use crate::arch::aarch64::vm::stage2::retire_root_local as retire_guest_stage2_root_local;
+pub use crate::arch::aarch64::vm::stage2::retirement::Request as GuestStage2RetirementRequest;
+pub use crate::arch::aarch64::vm::sysreg::ValidationError as GuestValidationError;
+pub(crate) use crate::arch::aarch64::vm::sysreg::validate as validate_vsysreg;
+pub use crate::arch::aarch64::vm::vcpu::Error as VcpuInterruptError;
+pub use crate::arch::aarch64::vm::vcpu::GicAccessError;
+pub use crate::arch::aarch64::vm::vcpu::StoppedDeactivationFailure;
+pub use crate::arch::aarch64::vm::vgic::Error as VirtualInterruptError;
 pub use host::mode_name as host_execution_mode_name;
-pub use hyper::drivers::power::psci::Error as CpuPowerError;
-pub use interrupt_controller::{
-    Aarch64InterruptController as ArchitectureInterruptController,
-    Error as InterruptControllerError,
-};
-pub(crate) use interrupt_virtualization::description as interrupt_virtualization_description;
-pub use interrupt_virtualization::{
-    Error as InterruptVirtualizationError, Prepared as PreparedInterruptVirtualization,
-};
-pub(crate) use interrupt_virtualization::{
-    commit as commit_interrupt_virtualization, prepare as prepare_interrupt_virtualization,
-};
-pub use interrupts::LocalInterruptMask;
-pub(crate) use interrupts::{
-    disable_all as disable_all_interrupts, enable_irq as enable_local_irq,
-    irq_enabled as local_irq_enabled, mask_irq as mask_local_irq,
-};
-pub use kaslr::Error as KaslrError;
-pub(crate) use kaslr::select as select_kaslr_layout;
+pub use hyper_drivers::power::psci::Error as CpuPowerError;
 pub(crate) use memory::bootstrap_stack_bounds;
 #[cfg(feature = "crash-console")]
 pub use memory::inspect_mapping as inspect_stage1_mapping;
@@ -102,19 +93,11 @@ pub(crate) use platform::decode_platform_interrupt;
 pub use platform::{
     Error as PlatformDiscoveryError, EssentialDeviceDiscovery, EssentialPlatformInfo,
 };
-pub(crate) use protection::{enable_local_memory_protection, local_memory_protection_enabled};
 pub use psci::Aarch64Psci as ArchitectureCpuPower;
 pub use smp::SecondaryBootParameters;
 pub(crate) use smp::{
     current_cpu_index, current_hardware_id, secondary_entry_physical, send_event,
 };
-pub(crate) use stage2::retire_root_local as retire_guest_stage2_root_local;
-pub use stage2::{Error as Stage2Error, Stage2AddressSpace};
-pub(crate) use stage2::{
-    publish_changes as publish_guest_stage2_changes,
-    synchronize_local as synchronize_guest_stage2_local,
-};
-pub use stage2_retirement::Request as GuestStage2RetirementRequest;
 pub use timer::{
     ArmGenericCounter as ArchitectureCounter, El2PhysicalTimer as ArchitectureTimer,
     Error as TimerError,
@@ -125,72 +108,114 @@ pub(crate) use user::{
     application_address_limit, user_address_limit, user_translation_identifier_bits,
 };
 pub(crate) use user::{copy_from_exposed, copy_to_exposed};
-pub use user_entry::Error as UserEntryError;
-#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
-pub(crate) use user_entry::direct_native_call_count_for_test;
-#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
-pub(crate) use user_entry::native_run_counts_for_test;
-#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
-pub(crate) use user_entry::syscall_fp_resident_for_test;
-pub(crate) use user_entry::{
-    CompletionFailure as UserCompletionFailure, ReturnCapability as UserReturnCapability,
-    UserContext, UserExit,
+pub use {
+    crate::arch::aarch64::irq::controller::Aarch64InterruptController as ArchitectureInterruptController,
+    crate::arch::aarch64::irq::controller::Error as InterruptControllerError,
 };
-pub(crate) use user_entry::{run_user, suspend_current_user};
-pub use user_machine::Error as UserAddressSpaceError;
-pub(crate) use user_machine::{
-    LocalActivation as UserLocalActivation, LocalIdentity as UserLocalIdentity,
-    LocalOperation as UserLocalOperation, LocalRequest as UserLocalRequest,
-    PreparedAddressSpace as PreparedUserAddressSpace,
+pub(crate) use {
+    crate::arch::aarch64::irq::disable_all as disable_all_interrupts,
+    crate::arch::aarch64::irq::enable_irq as enable_local_irq,
+    crate::arch::aarch64::irq::irq_enabled as local_irq_enabled,
+    crate::arch::aarch64::irq::mask_irq as mask_local_irq,
 };
-pub(crate) use user_machine::{
-    activate_local as activate_user_local, deactivate_local as deactivate_user_local,
-    edit_address_space as edit_host_user_address_space,
-    local_identity_is_active as user_local_identity_is_active,
-    prepare_address_space as prepare_host_user_address_space,
-    service_local_request as service_user_local_request,
+pub(crate) use {
+    crate::arch::aarch64::memory::protection::enable_local_memory_protection,
+    crate::arch::aarch64::memory::protection::local_memory_protection_enabled,
 };
-pub use vgic::Error as VirtualInterruptError;
-pub use vgic::{
-    Capabilities as VgicCapabilities, CpuContext as VgicCpuContext, Error as VgicError,
+pub(crate) use {
+    crate::arch::aarch64::user::entry::CompletionFailure as UserCompletionFailure,
+    crate::arch::aarch64::user::entry::ReturnCapability as UserReturnCapability,
+    crate::arch::aarch64::user::entry::UserContext, crate::arch::aarch64::user::entry::UserExit,
 };
-pub(crate) use vgic::{
-    disable as disable_vgic, maintenance_state as vgic_maintenance_state,
-    validate_context_switch as validate_vgic,
+pub(crate) use {
+    crate::arch::aarch64::user::entry::run_user,
+    crate::arch::aarch64::user::entry::suspend_current_user,
 };
-pub use vm_interrupt::{Error as VmInterruptError, VmInterruptController};
-pub use vm_vcpu::Error as VcpuInterruptError;
-pub use vm_vcpu::GicAccessError;
-pub use vm_vcpu::StoppedDeactivationFailure;
-pub(crate) use vm_vcpu::{
-    access_guest_gic, activate as activate_vcpu_hardware, deactivate as deactivate_vcpu_hardware,
-    deactivate_stopped as deactivate_stopped_vcpu_hardware,
-    handle_maintenance_interrupt as handle_virtualization_maintenance_interrupt,
-    handle_virtual_timer_interrupt as handle_guest_virtual_timer_interrupt,
-    inject_saved_guest_device_interrupt, inject_timer_for_validation,
-    maintenance_interrupt_pending as virtualization_maintenance_pending,
-    quiesce_virtual_interrupt_delivery, request_guest_exit, update_guest_device_interrupt,
-    update_saved_guest_device_interrupt, virtual_timer_eoi_pending,
+pub(crate) use {
+    crate::arch::aarch64::user::memory::LocalActivation as UserLocalActivation,
+    crate::arch::aarch64::user::memory::LocalIdentity as UserLocalIdentity,
+    crate::arch::aarch64::user::memory::LocalOperation as UserLocalOperation,
+    crate::arch::aarch64::user::memory::LocalRequest as UserLocalRequest,
+    crate::arch::aarch64::user::memory::PreparedAddressSpace as PreparedUserAddressSpace,
 };
-pub use vsysreg::ValidationError as GuestValidationError;
-pub(crate) use vsysreg::validate as validate_vsysreg;
-pub use vsysreg::{GuestSyncAction, GuestSyncExit, GuestSyncFailure};
-pub(crate) use vsysreg::{
-    apply_guest_sync_action, decode_guest_memory_fault, decode_guest_mmio_access,
-    decode_guest_sync, handle_guest_sync,
+pub(crate) use {
+    crate::arch::aarch64::user::memory::activate_local as activate_user_local,
+    crate::arch::aarch64::user::memory::deactivate_local as deactivate_user_local,
+    crate::arch::aarch64::user::memory::edit_address_space as edit_host_user_address_space,
+    crate::arch::aarch64::user::memory::local_identity_is_active as user_local_identity_is_active,
+    crate::arch::aarch64::user::memory::prepare_address_space as prepare_host_user_address_space,
+    crate::arch::aarch64::user::memory::service_local_request as service_user_local_request,
+};
+pub use {
+    crate::arch::aarch64::vm::interrupt::Error as VmInterruptError,
+    crate::arch::aarch64::vm::interrupt::VmInterruptController,
+};
+pub use {
+    crate::arch::aarch64::vm::interrupt_virtualization::Error as InterruptVirtualizationError,
+    crate::arch::aarch64::vm::interrupt_virtualization::Prepared as PreparedInterruptVirtualization,
+};
+pub(crate) use {
+    crate::arch::aarch64::vm::interrupt_virtualization::commit as commit_interrupt_virtualization,
+    crate::arch::aarch64::vm::interrupt_virtualization::prepare as prepare_interrupt_virtualization,
+};
+pub use {
+    crate::arch::aarch64::vm::stage2::Error as Stage2Error,
+    crate::arch::aarch64::vm::stage2::Stage2AddressSpace,
+};
+pub(crate) use {
+    crate::arch::aarch64::vm::stage2::publish_changes as publish_guest_stage2_changes,
+    crate::arch::aarch64::vm::stage2::synchronize_local as synchronize_guest_stage2_local,
+};
+pub use {
+    crate::arch::aarch64::vm::sysreg::GuestSyncAction,
+    crate::arch::aarch64::vm::sysreg::GuestSyncExit,
+    crate::arch::aarch64::vm::sysreg::GuestSyncFailure,
+};
+pub(crate) use {
+    crate::arch::aarch64::vm::sysreg::apply_guest_sync_action,
+    crate::arch::aarch64::vm::sysreg::decode_guest_memory_fault,
+    crate::arch::aarch64::vm::sysreg::decode_guest_mmio_access,
+    crate::arch::aarch64::vm::sysreg::decode_guest_sync,
+    crate::arch::aarch64::vm::sysreg::handle_guest_sync,
+};
+pub(crate) use {
+    crate::arch::aarch64::vm::vcpu::access_guest_gic,
+    crate::arch::aarch64::vm::vcpu::activate as activate_vcpu_hardware,
+    crate::arch::aarch64::vm::vcpu::deactivate as deactivate_vcpu_hardware,
+    crate::arch::aarch64::vm::vcpu::deactivate_stopped as deactivate_stopped_vcpu_hardware,
+    crate::arch::aarch64::vm::vcpu::handle_maintenance_interrupt as handle_virtualization_maintenance_interrupt,
+    crate::arch::aarch64::vm::vcpu::handle_virtual_timer_interrupt as handle_guest_virtual_timer_interrupt,
+    crate::arch::aarch64::vm::vcpu::inject_saved_guest_device_interrupt,
+    crate::arch::aarch64::vm::vcpu::inject_timer_for_validation,
+    crate::arch::aarch64::vm::vcpu::maintenance_interrupt_pending as virtualization_maintenance_pending,
+    crate::arch::aarch64::vm::vcpu::quiesce_virtual_interrupt_delivery,
+    crate::arch::aarch64::vm::vcpu::request_guest_exit,
+    crate::arch::aarch64::vm::vcpu::update_guest_device_interrupt,
+    crate::arch::aarch64::vm::vcpu::update_saved_guest_device_interrupt,
+    crate::arch::aarch64::vm::vcpu::virtual_timer_eoi_pending,
+};
+pub use {
+    crate::arch::aarch64::vm::vgic::Capabilities as VgicCapabilities,
+    crate::arch::aarch64::vm::vgic::CpuContext as VgicCpuContext,
+    crate::arch::aarch64::vm::vgic::Error as VgicError,
+};
+pub(crate) use {
+    crate::arch::aarch64::vm::vgic::disable as disable_vgic,
+    crate::arch::aarch64::vm::vgic::maintenance_state as vgic_maintenance_state,
+    crate::arch::aarch64::vm::vgic::validate_context_switch as validate_vgic,
 };
 
 #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub fn guest_execution_available() -> bool {
-    gic_cpu_interface::guest_interrupts_supported()
+    crate::arch::aarch64::irq::gic::guest_interrupts_supported()
 }
 
 pub fn initialize_cpu_power(
-    info: hyper::platform::CpuPowerInfo,
+    info: hyper_platform::CpuPowerInfo,
 ) -> Result<ArchitectureCpuPower, CpuPowerError> {
     match info {
-        hyper::platform::CpuPowerInfo::Psci(info) => psci::bind(info),
-        hyper::platform::CpuPowerInfo::Sbi(_) | hyper::platform::CpuPowerInfo::X86Apic(_) => {
+        hyper_platform::CpuPowerInfo::Psci(info) => psci::bind(info),
+        hyper_platform::CpuPowerInfo::Sbi(_) | hyper_platform::CpuPowerInfo::X86Apic(_) => {
             Err(CpuPowerError::NotSupported)
         }
     }
@@ -202,10 +227,10 @@ pub const fn prepare_primary_cpu_admission() -> bool {
 }
 
 pub fn secondary_cpu_is_compatible() -> bool {
-    address::current_cpu_is_compatible()
+    crate::arch::aarch64::memory::address::current_cpu_is_compatible()
         && atomics::current_cpu_supports_selected_backend()
         && cache::current_cpu_is_compatible()
-        && guest_cpu_model::current_cpu_is_compatible()
+        && crate::arch::aarch64::vm::cpu_model::current_cpu_is_compatible()
         && host::current_cpu_is_compatible()
         && user::current_cpu_is_compatible()
 }
@@ -231,13 +256,13 @@ pub fn prepare_cache(
 }
 
 pub fn decode_kernel_timer(
-    info: hyper::platform::TimerInfo,
+    info: hyper_platform::TimerInfo,
 ) -> Result<crate::arch::time::Description, crate::arch::time::DescriptionError> {
-    if info.kind != hyper::platform::TimerKind::ArmGeneric {
+    if info.kind != hyper_platform::TimerKind::ArmGeneric {
         return Err(crate::arch::time::DescriptionError::UnsupportedTimer);
     }
-    if info.hypervisor_physical.trigger != hyper::platform::PlatformInterruptTrigger::Level
-        || info.virtual_timer.trigger != hyper::platform::PlatformInterruptTrigger::Level
+    if info.hypervisor_physical.trigger != hyper_platform::PlatformInterruptTrigger::Level
+        || info.virtual_timer.trigger != hyper_platform::PlatformInterruptTrigger::Level
     {
         return Err(crate::arch::time::DescriptionError::InvalidInterruptTrigger);
     }
@@ -250,13 +275,14 @@ pub fn decode_kernel_timer(
     })
 }
 
-pub use vm_vcpu::InitializationError as VirtualDeviceInitializationError;
+pub use crate::arch::aarch64::vm::vcpu::InitializationError as VirtualDeviceInitializationError;
 
 pub fn initialize_virtual_devices(
     _timer_interrupt: hyper::hal::interrupt::InterruptId,
     host_timer_interrupt: Option<hyper::hal::interrupt::HostInterruptBinding>,
 ) -> Result<(), VirtualDeviceInitializationError> {
-    host_timer_interrupt.ok_or(vm_vcpu::InitializationError::MissingHostTimerInterrupt)?;
+    host_timer_interrupt
+        .ok_or(crate::arch::aarch64::vm::vcpu::InitializationError::MissingHostTimerInterrupt)?;
     Ok(())
 }
 
@@ -288,7 +314,7 @@ unsafe extern "C" {
 /// return.
 pub unsafe fn prepare_address_space(
     allocator: &mut hyper::mm::BootAllocator,
-    platform: &hyper::platform::PlatformInfo,
+    platform: &hyper_platform::PlatformInfo,
     image: hyper::hal::memory::KernelImageLayout,
     kernel_base: u64,
 ) -> Result<PreparedAddressSpace, MemoryError> {
@@ -374,12 +400,12 @@ pub(crate) unsafe fn prepare_boot(
     boot_counter_ticks: u64,
 ) -> crate::hal::platform::ProtocolInputs {
     super::time::record_boot_counter(boot_counter_ticks);
-    address::initialize().unwrap_or_else(|_| halt());
+    crate::arch::aarch64::memory::address::initialize().unwrap_or_else(|_| halt());
     atomics::initialize();
     if host::initialize().is_err() {
         halt()
     }
-    if !guest_cpu_model::initialize_boot_cpu() {
+    if !crate::arch::aarch64::vm::cpu_model::initialize_boot_cpu() {
         halt()
     }
     // SAFETY: The frozen model requires FP/SIMD. Boot still masks exceptions
@@ -392,7 +418,7 @@ pub(crate) unsafe fn prepare_boot(
 }
 
 pub(crate) fn describe_runtime(mut emit: impl FnMut(core::fmt::Arguments<'_>)) {
-    let address = address::capabilities();
+    let address = crate::arch::aarch64::memory::address::capabilities();
     emit(format_args!(
         "HypeR: AArch64 host execution mode: {}",
         host_execution_mode_name()
@@ -415,9 +441,7 @@ pub(crate) fn describe_runtime(mut emit: impl FnMut(core::fmt::Arguments<'_>)) {
     ));
 }
 
-pub use gic_cpu_interface::guest_interrupts_supported;
-
-mod bootstrap_map;
+pub use crate::arch::aarch64::irq::gic::guest_interrupts_supported;
 
 /// # Safety
 /// Runs once with MMU off, after relocation/BSS/stack setup. Firmware supplies
@@ -425,16 +449,19 @@ mod bootstrap_map;
 #[unsafe(no_mangle)]
 unsafe extern "C" fn aarch64_prepare_boot_map(dtb: usize, table: *mut [u64; 512]) -> u64 {
     // SAFETY: The boot ABI guarantees the complete firmware DTB is readable.
-    let Ok(platform) = (unsafe { hyper::platform::fdt::discover(dtb) }) else {
+    let Ok(platform) = (unsafe { hyper_platform::fdt::discover(dtb) }) else {
         return 0;
     };
     // SAFETY: Assembly passes the aligned, exclusive bootstrap L1 page.
-    u64::from(bootstrap_map::populate(unsafe { &mut *table }, &platform))
+    u64::from(crate::arch::aarch64::memory::bootstrap_map::populate(
+        unsafe { &mut *table },
+        &platform,
+    ))
 }
 
 /// Guest interrupt-controller revision of the selected reference board.
 pub(crate) fn guest_gic_version() -> u32 {
-    if vgic::v2::guest_physical().is_some() {
+    if crate::arch::aarch64::vm::vgic::v2::guest_physical().is_some() {
         2
     } else {
         3
@@ -442,16 +469,16 @@ pub(crate) fn guest_gic_version() -> u32 {
 }
 
 pub(crate) const fn maximum_guest_vcpus() -> u32 {
-    hyper::vm::arm::psci::MAX_CPUS as u32
+    hyper_vm_models::arm::psci::MAX_CPUS as u32
 }
 
 pub(crate) use smp::prepare_secondary_entry;
 
 pub(crate) fn guest_translation_identifier_bits() -> u8 {
-    address::capabilities().vmid_bits
+    crate::arch::aarch64::memory::address::capabilities().vmid_bits
 }
 
-pub(crate) use stage2::invalidate_namespace_local as invalidate_guest_translation_namespace_local;
+pub(crate) use crate::arch::aarch64::vm::stage2::invalidate_namespace_local as invalidate_guest_translation_namespace_local;
 
 #[cfg(all(
     target_arch = "aarch64",

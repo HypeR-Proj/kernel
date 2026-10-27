@@ -3,14 +3,20 @@
 
 //! Real namespace replacement: retained capability identity and concurrent lookup.
 
+use crate::fs::primitives::NodeKind;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use hyper::fs::NodeKind;
 use hyper::mm::FallibleArc;
 use hyper::sync::SpinLock;
 
 use super::{TestError, check};
-use crate::kernel::accounting::{ResourceDomain, ResourceKind, ResourceLimits};
-use crate::kernel::vfs::{DirectoryObject, Error, FileObject, ScratchBudget};
+use {
+    crate::accounting::ResourceDomain, crate::accounting::ResourceKind,
+    crate::accounting::ResourceLimits,
+};
+use {
+    crate::fs::vfs::DirectoryObject, crate::fs::vfs::Error, crate::fs::vfs::FileObject,
+    crate::fs::vfs::ScratchBudget,
+};
 
 #[path = "root_promotion.rs"]
 mod promotion;
@@ -176,10 +182,9 @@ fn reversible_root(domain: &ResourceDomain) -> Result<(), TestError> {
 }
 
 fn new_namespace(domain: &ResourceDomain) -> Result<DirectoryObject, TestError> {
-    let filesystem = crate::kernel::vfs::instance::FilesystemInstance::try_empty_ramfs(domain)?;
-    let cache =
-        crate::kernel::io_cache::FileDataCache::try_new_system().map_err(|_| Error::Allocation)?;
-    let namespace = crate::kernel::vfs::instance::MountNamespace::try_new(
+    let filesystem = crate::fs::vfs::instance::FilesystemInstance::try_empty_ramfs(domain)?;
+    let cache = crate::fs::cache::FileDataCache::try_new_system().map_err(|_| Error::Allocation)?;
+    let namespace = crate::fs::vfs::instance::MountNamespace::try_new(
         filesystem,
         FallibleArc::try_new(cache).map_err(|_| Error::Allocation)?,
     )?;
@@ -213,9 +218,9 @@ fn concurrent_lookup(
     })
     .map_err(|_| Error::Allocation)?;
     READER.with(|slot| *slot = Some(shared.clone()));
-    let worker = crate::kernel::task::scheduler::kthread_create("vfs-root-reader", reader, 0)
+    let worker = crate::task::scheduler::kthread_create("vfs-root-reader", reader, 0)
         .map_err(|_| TestError::Contract("root reader construction"))?;
-    crate::kernel::task::scheduler::thread_ready(worker)
+    crate::task::scheduler::thread_ready(worker)
         .map_err(|_| TestError::Contract("root reader publication"))?;
     let result = (|| {
         wait(|| shared.observations.load(Ordering::Acquire) >= 8)?;
@@ -223,7 +228,7 @@ fn concurrent_lookup(
             shared
                 .root
                 .switch_root(".next", "old", &[("data", "data")], domain)?;
-            crate::kernel::task::scheduler::yield_now()
+            crate::task::scheduler::yield_now()
                 .map_err(|_| TestError::Contract("root reader yield"))?;
             shared
                 .root
@@ -246,10 +251,9 @@ fn concurrent_lookup(
 }
 
 fn wait(predicate: impl Fn() -> bool) -> Result<(), TestError> {
-    let done = crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || Ok::<_, crate::kernel::task::SleepError>(predicate()),
-    )
+    let done = crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+        Ok::<_, crate::task::SleepError>(predicate())
+    })
     .map_err(|_| TestError::Contract("root reader wait"))?;
     check(done, "namespace reader makes progress")
 }
@@ -270,7 +274,7 @@ extern "C" fn reader(_: usize) {
                 break;
             }
         }
-        if crate::kernel::task::scheduler::yield_now().is_err() {
+        if crate::task::scheduler::yield_now().is_err() {
             shared.failed.store(true, Ordering::Release);
             break;
         }

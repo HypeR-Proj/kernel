@@ -15,23 +15,35 @@ import tempfile
 
 def verify_graph(metadata):
     packages = {package['name']: package for package in metadata['packages']}
-    required = ('hyper', 'hyper-hal', 'hyper-core')
-    if any(name not in packages for name in required):
-        raise ValueError('kernel, HAL and reusable core must be separate Cargo packages')
-    kernel, hal, core = (packages[name]['id'] for name in required)
+    required = {
+        'hyper': {'hyper-core', 'hyper-hal', 'hyper-platform', 'hyper-drivers',
+                  'hyper-vm-models', 'hyper-trace'},
+        'hyper-hal': {'hyper-core', 'hyper-platform', 'hyper-drivers', 'hyper-vm-models'},
+        'hyper-drivers': {'hyper-core', 'hyper-platform'},
+        'hyper-platform': {'hyper-core'},
+        'hyper-vm-models': {'hyper-core'},
+        'hyper-trace': {'hyper-core'},
+        'hyper-core': set(),
+    }
+    if missing := required.keys() - packages.keys():
+        raise ValueError(f'kernel subsystems must be separate Cargo packages: {sorted(missing)}')
     edges = {
         node['id']: {dependency['pkg'] for dependency in node['deps']}
         for node in metadata['resolve']['nodes']
     }
-    if not {hal, core} <= edges[kernel] or core not in edges[hal]:
-        raise ValueError('required dependency direction is kernel -> HAL/core and HAL -> core')
-    for origin, forbidden in ((hal, kernel), (core, kernel), (core, hal)):
-        pending = list(edges[origin])
+    ids = {name: packages[name]['id'] for name in required}
+    for name, dependencies in required.items():
+        if not {ids[dependency] for dependency in dependencies} <= edges[ids[name]]:
+            raise ValueError(f'required dependency direction violated for {name}')
+        # The declared graph includes each layer's transitive lower layers.
+        # Traverse external helper crates too: they cannot hide a reverse edge.
+        forbidden = {ids[other] for other in required if other not in dependencies}
+        pending = list(edges[ids[name]])
         visited = set()
         while pending:
             dependency = pending.pop()
-            if dependency == forbidden:
-                raise ValueError(f'forbidden reverse Cargo dependency: {origin} -> {forbidden}')
+            if dependency in forbidden:
+                raise ValueError(f'forbidden reverse Cargo dependency: {name} -> {dependency}')
             if dependency not in visited:
                 visited.add(dependency)
                 pending.extend(edges.get(dependency, ()))

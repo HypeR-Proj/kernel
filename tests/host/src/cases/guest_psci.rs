@@ -4,7 +4,7 @@
 //! Guest power handoff and restart contracts independent of hardware execution.
 
 #[allow(dead_code)]
-#[path = "../../../../src/vm/arm/psci.rs"]
+#[path = "../../../../vm-models/src/arm/psci.rs"]
 mod model;
 use model::*;
 

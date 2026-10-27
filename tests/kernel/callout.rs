@@ -8,8 +8,11 @@ use hyper::mm::FallibleArc;
 use hyper::sync::InterruptSpinLock;
 use hyper::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use crate::kernel::task::scheduler::{self, CpuMask};
-use crate::kernel::time::{self, Callout, CalloutRef, CancelOutcome, TimerEvent};
+use {crate::task::scheduler, crate::task::scheduler::CpuMask};
+use {
+    crate::time, crate::time::Callout, crate::time::CalloutRef, crate::time::CancelOutcome,
+    crate::time::TimerEvent,
+};
 
 const RACE_ROUNDS: usize = 256;
 const SELF_REARMS: usize = 8;
@@ -64,7 +67,7 @@ impl From<scheduler::Error> for Error {
 }
 
 pub(super) fn run() -> Result<(), Error> {
-    for index in 0..crate::kernel::cpu::online_cpu_count() {
+    for index in 0..crate::cpu::online_cpu_count() {
         let cpu = CpuIndex::new(index).ok_or(Error::Invariant("CPU identity"))?;
         exercise_delivery(cpu)?;
     }
@@ -126,7 +129,7 @@ fn exercise_self_rearm() -> Result<(), Error> {
 
 fn callback(probe: &FallibleArc<Probe>, callout: CalloutRef<'_>, _: TimerEvent) {
     if probe.active.swap(true, Ordering::AcqRel)
-        || crate::kernel::cpu::current_index() != Some(probe.cpu)
+        || crate::cpu::current_index() != Some(probe.cpu)
         || !crate::hal::irq::local_enabled()
         || scheduler::ensure_sleepable().is_err()
     {
@@ -212,7 +215,7 @@ fn exercise_worker_wait_rejection() -> Result<(), Error> {
 }
 
 fn exercise_close_race() -> Result<(), Error> {
-    let online = crate::kernel::cpu::online_cpu_count();
+    let online = crate::cpu::online_cpu_count();
     if online < 3 {
         return Ok(());
     }
@@ -293,11 +296,11 @@ extern "C" fn race_worker(index: usize) {
 }
 
 fn progress(mut condition: impl FnMut() -> bool) -> Result<(), Error> {
-    let complete = crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || Ok::<_, crate::kernel::task::SleepError>(condition()),
-    )
-    .map_err(|_| Error::Progress)?;
+    let complete =
+        crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+            Ok::<_, crate::task::SleepError>(condition())
+        })
+        .map_err(|_| Error::Progress)?;
     if complete {
         Ok(())
     } else {

@@ -3,11 +3,13 @@
 
 //! Architecture-independent x86 vCPU, VMX, CPUID, and MSR contracts.
 
-use hyper::vm::x86::vmx::{
-    ControlCapability, EptAccess, EptViolation, IoDirection, IoExit, VmxBasic,
-    VmxPhysicalAddressWidth,
+use {hyper_vm_models::x86::CpuidResult, hyper_vm_models::x86::GuestMsr};
+use {
+    hyper_vm_models::x86::vmx::ControlCapability, hyper_vm_models::x86::vmx::EptAccess,
+    hyper_vm_models::x86::vmx::EptViolation, hyper_vm_models::x86::vmx::IoDirection,
+    hyper_vm_models::x86::vmx::IoExit, hyper_vm_models::x86::vmx::VmxBasic,
+    hyper_vm_models::x86::vmx::VmxPhysicalAddressWidth,
 };
-use hyper::vm::x86::{CpuidResult, GuestMsr};
 
 #[test]
 fn classifies_the_supported_guest_msr_surface() {
@@ -92,31 +94,31 @@ fn hides_unmanaged_guest_state_from_cpuid() {
         ecx: u32::MAX,
         edx: u32::MAX,
     };
-    let leaf1 = hyper::vm::x86::sanitize_cpuid(1, 0, input);
+    let leaf1 = hyper_vm_models::x86::sanitize_cpuid(1, 0, input);
     assert_eq!((leaf1.ebx >> 16) & 0xff, 1);
     assert_eq!(leaf1.ecx & (1 << 5), 0);
     assert_eq!(leaf1.ecx & (1 << 28), 0);
     assert_ne!(leaf1.ecx & (1 << 31), 0);
     assert_eq!(leaf1.edx & (1 << 9), 0);
 
-    let topology = hyper::vm::x86::sanitize_cpuid(0x0b, 0, input);
+    let topology = hyper_vm_models::x86::sanitize_cpuid(0x0b, 0, input);
     assert_eq!(topology, CpuidResult::ZERO);
-    let xsave = hyper::vm::x86::sanitize_cpuid(0x0d, 0, input);
+    let xsave = hyper_vm_models::x86::sanitize_cpuid(0x0d, 0, input);
     assert_eq!(xsave, CpuidResult::ZERO);
-    let structured = hyper::vm::x86::sanitize_cpuid(7, 0, input);
+    let structured = hyper_vm_models::x86::sanitize_cpuid(7, 0, input);
     assert_eq!(structured.ebx & (1 << 2), 0);
     assert_eq!(structured.ebx & (1 << 25), 0);
     assert_eq!(structured.eax, 0);
     assert_eq!(
-        hyper::vm::x86::sanitize_cpuid(7, 1, input),
+        hyper_vm_models::x86::sanitize_cpuid(7, 1, input),
         CpuidResult::ZERO
     );
-    let extended_features = hyper::vm::x86::sanitize_cpuid(0x8000_0008, 0, input);
+    let extended_features = hyper_vm_models::x86::sanitize_cpuid(0x8000_0008, 0, input);
     assert_eq!(extended_features.eax, u32::MAX);
     assert_eq!(extended_features.ebx, 0);
     assert_eq!(extended_features.ecx, 0);
     assert_eq!(extended_features.edx, 0);
-    let hypervisor = hyper::vm::x86::hypervisor_cpuid();
+    let hypervisor = hyper_vm_models::x86::hypervisor_cpuid();
     assert_eq!(hypervisor.eax, 0x4000_0000);
     let mut vendor = [0_u8; 12];
     vendor[0..4].copy_from_slice(&hypervisor.ebx.to_le_bytes());
@@ -124,13 +126,13 @@ fn hides_unmanaged_guest_state_from_cpuid() {
     vendor[8..12].copy_from_slice(&hypervisor.edx.to_le_bytes());
     assert_eq!(&vendor, b"HypeR HyperV");
 
-    let basic = hyper::vm::x86::sanitize_cpuid(0, 0, input);
+    let basic = hyper_vm_models::x86::sanitize_cpuid(0, 0, input);
     let mut cpu_vendor = [0_u8; 12];
     cpu_vendor[0..4].copy_from_slice(&basic.ebx.to_le_bytes());
     cpu_vendor[4..8].copy_from_slice(&basic.edx.to_le_bytes());
     cpu_vendor[8..12].copy_from_slice(&basic.ecx.to_le_bytes());
     assert_eq!(&cpu_vendor, b"HypeR CPU   ");
-    let extended = hyper::vm::x86::sanitize_cpuid(0x8000_0000, 0, input);
+    let extended = hyper_vm_models::x86::sanitize_cpuid(0x8000_0000, 0, input);
     assert_eq!(extended.eax, 0x8000_0008);
 }
 
@@ -138,16 +140,16 @@ fn hides_unmanaged_guest_state_from_cpuid() {
 fn applies_x86_port_input_accumulator_semantics() {
     let initial = 0x1122_3344_5566_7788;
     assert_eq!(
-        hyper::vm::x86::merge_port_input(initial, 0xaabb_ccdd, 1),
+        hyper_vm_models::x86::merge_port_input(initial, 0xaabb_ccdd, 1),
         Some(0x1122_3344_5566_77dd)
     );
     assert_eq!(
-        hyper::vm::x86::merge_port_input(initial, 0xaabb_ccdd, 2),
+        hyper_vm_models::x86::merge_port_input(initial, 0xaabb_ccdd, 2),
         Some(0x1122_3344_5566_ccdd)
     );
     assert_eq!(
-        hyper::vm::x86::merge_port_input(initial, 0xaabb_ccdd, 4),
+        hyper_vm_models::x86::merge_port_input(initial, 0xaabb_ccdd, 4),
         Some(0x0000_0000_aabb_ccdd)
     );
-    assert_eq!(hyper::vm::x86::merge_port_input(initial, 0, 8), None);
+    assert_eq!(hyper_vm_models::x86::merge_port_input(initial, 0, 8), None);
 }

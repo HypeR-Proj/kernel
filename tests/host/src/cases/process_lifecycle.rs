@@ -3,10 +3,10 @@
 
 //! Process and user-thread lifecycle transaction tests.
 
-#[path = "../../../../src/kernel/process/lifecycle.rs"]
+#[path = "../../../../src/process/lifecycle.rs"]
 mod lifecycle;
 
-#[path = "../../../../src/kernel/process/retention/policy.rs"]
+#[path = "../../../../src/process/retention/policy.rs"]
 mod retention_policy;
 
 use lifecycle::{

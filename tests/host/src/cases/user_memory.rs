@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Barrier, mpsc};
 use std::time::Duration;
 
-#[path = "../../../../src/kernel/mm/user_space/mod.rs"]
+#[path = "../../../../src/mm/user_space/mod.rs"]
 #[allow(dead_code, unused_imports)]
 mod user;
 

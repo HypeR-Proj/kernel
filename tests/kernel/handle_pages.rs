@@ -3,7 +3,10 @@
 
 //! Empty slot and sidecar pages return to the physical allocator before exit.
 
-use crate::kernel::capability::{HandleSidecar, HandleTable, HandleTableStoragePlan};
+use {
+    crate::capability::HandleSidecar, crate::capability::HandleTable,
+    crate::capability::HandleTableStoragePlan,
+};
 
 pub(super) fn run() -> Result<(), &'static str> {
     let mut table = HandleTable::new(0x15a9_3d7b_4c62_8e01);
@@ -32,13 +35,13 @@ pub(super) fn run() -> Result<(), &'static str> {
     let mut count = 0;
     while let Some(page) = table.take_empty_page() {
         let index = sidecar.detach_empty(page.index());
-        let before = crate::kernel::mm::statistics()
+        let before = crate::mm::statistics()
             .ok_or("allocator stats")?
             .runtime
             .free_pages;
         drop(page);
         drop(index);
-        let after = crate::kernel::mm::statistics()
+        let after = crate::mm::statistics()
             .ok_or("allocator stats")?
             .runtime
             .free_pages;

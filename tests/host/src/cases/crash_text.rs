@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-#[path = "../../../../src/kernel/crash/fixed_text.rs"]
+#[path = "../../../../src/diagnostics/crash/fixed_text.rs"]
 mod model;
 
 use core::fmt::Write;

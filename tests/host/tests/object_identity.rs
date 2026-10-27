@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 #[path = "../src/cases/capability_harness.rs"]
 #[allow(dead_code, unused_imports)]
 mod kernel;
+pub(crate) use kernel::{accounting, authority, object};
 
 use kernel::object::{KernelObject, KernelRef, ObjectKind, Scheduler};
 use kernel::{ObjectCreationError, Rights, identity as allocator};

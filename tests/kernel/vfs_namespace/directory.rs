@@ -4,8 +4,8 @@
 //! Real directory stream identity, replay and independent-progress contracts.
 
 use super::{DirectoryObject, Error, ResourceDomain, ScratchBudget, TestError, check};
-use crate::kernel::vfs::DirectoryPage;
-use hyper::fs::NodeKind;
+use crate::fs::primitives::NodeKind;
+use crate::fs::vfs::DirectoryPage;
 
 pub(super) fn run(
     root: &DirectoryObject,

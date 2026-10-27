@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-//! Architecture-neutral contracts shared by userspace and kernel adapters.
+//! Kernel-owned application binary interface policy.
 //!
-//! This module owns machine-visible values and owned entry payloads. Syscall
-//! dispatch, capability validation, and architecture register encoding remain
-//! in their respective kernel and architecture modules.
-
-pub mod native;
+//! Public fixed-width declarations live in [`hyper::abi`]. This module owns
+//! validation, capability operations, user-copy policy, and translation from
+//! kernel errors to public status values.
+pub(crate) mod native;

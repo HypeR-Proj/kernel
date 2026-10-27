@@ -57,6 +57,7 @@ name = "hyper-concurrency-tests"
 version = "0.0.0"
 dependencies = [
  "hyper-core",
+ "hyper-vm-models",
  "loom",
 ]
 
@@ -65,6 +66,13 @@ name = "hyper-core"
 version = "0.1.0"
 dependencies = [
  "hyper-abi",
+]
+
+[[package]]
+name = "hyper-vm-models"
+version = "0.1.0"
+dependencies = [
+ "hyper-core",
 ]
 
 [[package]]

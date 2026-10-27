@@ -3,19 +3,21 @@
 
 //! NS16550 register-width, stride, MMIO, and port-I/O contracts.
 
-use hyper::drivers::platform::{MmioResource, PermanentMmioMapping};
-use hyper::drivers::serial::{
-    MmioAccess, Ns16550, Ns16550DataBits, Ns16550Error, Ns16550FifoTrigger, Ns16550LineConfig,
-    Ns16550Parity, Ns16550StopBits,
-};
 use hyper::hal::console::Console;
 use hyper::hal::io::PortIo;
 use std::sync::Mutex;
+use {hyper_drivers::platform::MmioResource, hyper_drivers::platform::PermanentMmioMapping};
+use {
+    hyper_drivers::serial::MmioAccess, hyper_drivers::serial::Ns16550,
+    hyper_drivers::serial::Ns16550DataBits, hyper_drivers::serial::Ns16550Error,
+    hyper_drivers::serial::Ns16550FifoTrigger, hyper_drivers::serial::Ns16550LineConfig,
+    hyper_drivers::serial::Ns16550Parity, hyper_drivers::serial::Ns16550StopBits,
+};
 
 static PORTS: Mutex<[u8; 8]> = Mutex::new([0; 8]);
 
 fn test_mapping(base: usize, size: u64) -> PermanentMmioMapping {
-    let range = crate::require_some(hyper::platform::PhysicalRange::new(base as u64, size));
+    let range = crate::require_some(hyper::mm::ranges::PhysicalRange::new(base as u64, size));
     // SAFETY: This test assigns the live register array to the test UART.
     let resource = unsafe { MmioResource::from_physical_range(range) };
     // SAFETY: The caller supplies a live test register array covering `size`;

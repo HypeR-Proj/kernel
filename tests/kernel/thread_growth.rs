@@ -6,9 +6,9 @@
 use hyper::cpu::CpuIndex;
 use hyper::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use crate::kernel::log::console;
-use crate::kernel::sync::Semaphore;
-use crate::kernel::task::scheduler::{self, CpuMask};
+use crate::diagnostics::log::console;
+use crate::sync::Semaphore;
+use {crate::task::scheduler, crate::task::scheduler::CpuMask};
 
 const CREATORS: usize = 4;
 const PER_CREATOR: usize = 300;
@@ -25,8 +25,7 @@ pub(super) fn run() -> Result<(), &'static str> {
         ENTERED.store(0, Ordering::Release);
         FAILED.store(false, Ordering::Release);
         for index in 0..CREATORS {
-            let cpu = CpuIndex::new(index % crate::kernel::cpu::online_cpu_count())
-                .ok_or("creator CPU")?;
+            let cpu = CpuIndex::new(index % crate::cpu::online_cpu_count()).ok_or("creator CPU")?;
             let id = scheduler::kthread_create_with_affinity(
                 "thread-growth/create",
                 creator,
@@ -36,8 +35,8 @@ pub(super) fn run() -> Result<(), &'static str> {
             .map_err(|_| "creator allocation")?;
             scheduler::thread_ready(id).map_err(|_| "creator publication")?;
         }
-        let ready = crate::kernel::task::wait_for_test_progress(30_000_000_000, || {
-            Ok::<_, crate::kernel::task::SleepError>(
+        let ready = crate::task::wait_for_test_progress(30_000_000_000, || {
+            Ok::<_, crate::task::SleepError>(
                 FAILED.load(Ordering::Acquire)
                     || (ENTERED.load(Ordering::Acquire) == WORKERS
                         && WORKER_GATE.waiter_count() == Ok(WORKERS)

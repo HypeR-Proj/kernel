@@ -11,17 +11,29 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::{NonNull, null_mut, write_bytes};
 
-use crate::cpu::{CpuIndex, PerCpu, PinnedExecution};
-use crate::hal::interrupt::InterruptMask;
-use crate::mm::{BuddyError, MemoryHandoff, PhysicalAddress};
-use crate::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use crate::sync::{InterruptMaskGuard, InterruptSpinLock, SpinLock};
+use hyper::hal::interrupt::InterruptMask;
+use {
+    crate::mm::allocator::BuddyError, hyper::mm::PhysicalAddress, hyper::mm::boot::MemoryHandoff,
+};
+use {hyper::cpu::CpuIndex, hyper::cpu::PerCpu, hyper::cpu::PinnedExecution};
+use {hyper::sync::InterruptMaskGuard, hyper::sync::InterruptSpinLock, hyper::sync::SpinLock};
+use {
+    hyper::sync::atomic::AtomicBool, hyper::sync::atomic::AtomicU64,
+    hyper::sync::atomic::AtomicUsize, hyper::sync::atomic::Ordering,
+};
 
-use super::cache_snapshot::CacheSnapshot;
-use super::local_cache::{MAGAZINE_STORAGE, Magazine, PushError};
-use super::{
-    AllocatorFault, CachedObject, HeapCacheStats, HeapSlabClass, HeapStats, InitError,
-    LargeAllocationError, PageOwner, SlabAllocator, allocator_fault,
+use crate::mm::allocator::heap::cache_snapshot::CacheSnapshot;
+use {
+    crate::mm::allocator::heap::AllocatorFault, crate::mm::allocator::heap::CachedObject,
+    crate::mm::allocator::heap::HeapCacheStats, crate::mm::allocator::heap::HeapSlabClass,
+    crate::mm::allocator::heap::HeapStats, crate::mm::allocator::heap::InitError,
+    crate::mm::allocator::heap::LargeAllocationError, crate::mm::allocator::heap::PageOwner,
+    crate::mm::allocator::heap::SlabAllocator, crate::mm::allocator::heap::allocator_fault,
+};
+use {
+    crate::mm::allocator::heap::local_cache::MAGAZINE_STORAGE,
+    crate::mm::allocator::heap::local_cache::Magazine,
+    crate::mm::allocator::heap::local_cache::PushError,
 };
 
 const CACHED_CLASS_COUNT: usize = 6;
@@ -32,9 +44,9 @@ const SNAPSHOT_OBJECTS: usize = {
         per_cpu += CACHE_LIMITS[class];
         class += 1;
     }
-    per_cpu * crate::cpu::MAX_CPUS
+    per_cpu * hyper::cpu::MAX_CPUS
 };
-type Snapshot = CacheSnapshot<SNAPSHOT_OBJECTS, { crate::cpu::MAX_CPUS }>;
+type Snapshot = CacheSnapshot<SNAPSHOT_OBJECTS, { hyper::cpu::MAX_CPUS }>;
 const CACHE_LIMITS: [usize; CACHED_CLASS_COUNT] = [16, 16, 12, 8, 4, 2];
 const EMERGENCY_RECLAIM_PAGES: usize = 64;
 
@@ -45,7 +57,7 @@ enum CacheReclaimReason {
 }
 
 const _: () = {
-    assert!(CACHED_CLASS_COUNT <= super::CLASS_SIZES.len());
+    assert!(CACHED_CLASS_COUNT <= crate::mm::allocator::heap::CLASS_SIZES.len());
     let mut class = 0;
     while class < CACHED_CLASS_COUNT {
         assert!(CACHE_LIMITS[class] > 0);
@@ -364,7 +376,8 @@ impl CacheAccounting {
 
 pub struct KernelGlobalAllocator<P: CpuLocalCachePolicy> {
     #[cfg(feature = "heap-profiling")]
-    profile: [super::profile::Traffic; super::profile::BUCKETS],
+    profile: [crate::mm::allocator::heap::profile::Traffic;
+        crate::mm::allocator::heap::profile::BUCKETS],
     state: InterruptSpinLock<AllocatorState, P>,
     caches: PerCpu<CacheSlot>,
     initialized: AtomicBool,
@@ -379,9 +392,10 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
     pub const fn new() -> Self {
         Self {
             #[cfg(feature = "heap-profiling")]
-            profile: [const { super::profile::Traffic::new() }; super::profile::BUCKETS],
+            profile: [const { crate::mm::allocator::heap::profile::Traffic::new() };
+                crate::mm::allocator::heap::profile::BUCKETS],
             state: InterruptSpinLock::new(AllocatorState::uninitialized()),
-            caches: PerCpu::new([const { CacheSlot::new() }; crate::cpu::MAX_CPUS]),
+            caches: PerCpu::new([const { CacheSlot::new() }; hyper::cpu::MAX_CPUS]),
             initialized: AtomicBool::new(false),
             caches_enabled: AtomicBool::new(false),
             participating_cpus: AtomicUsize::new(0),
@@ -424,7 +438,7 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
         if !self.initialized.load(Ordering::Acquire) {
             return Err(CacheActivationError::AllocatorUnavailable);
         }
-        if participating_cpus == 0 || participating_cpus > crate::cpu::MAX_CPUS {
+        if participating_cpus == 0 || participating_cpus > hyper::cpu::MAX_CPUS {
             return Err(CacheActivationError::InvalidCpuCount);
         }
         self.participating_cpus
@@ -486,17 +500,17 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
     /// not recurse into its own eviction path. The caller admits metadata first.
     pub fn allocate_file_cache(&self, layout: Layout) -> *mut u8 {
         self.logical.record_request();
-        let class = super::slab_class_for_layout(layout);
+        let class = crate::mm::allocator::heap::slab_class_for_layout(layout);
         let pointer = self.state.with(|state| {
             let Some(heap) = state.heap.as_mut() else {
                 return null_mut();
             };
             let pointer = match class {
                 Some(class) => heap
-                    .reserve_slab_object_in(class, super::HeapPool::FileCache)
+                    .reserve_slab_object_in(class, crate::mm::allocator::heap::HeapPool::FileCache)
                     .map_or(null_mut(), CachedObject::into_caller_pointer),
                 None => heap
-                    .allocate_large_in(layout, super::HeapPool::FileCache)
+                    .allocate_large_in(layout, crate::mm::allocator::heap::HeapPool::FileCache)
                     .unwrap_or(null_mut()),
             };
             state.observe_pressure::<P>();
@@ -507,8 +521,11 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
         } else {
             self.logical.record_allocation(layout, class.is_some());
             #[cfg(feature = "heap-profiling")]
-            self.profile[super::profile::bucket(super::HeapPool::FileCache, class)]
-                .allocate(layout.size());
+            self.profile[crate::mm::allocator::heap::profile::bucket(
+                crate::mm::allocator::heap::HeapPool::FileCache,
+                class,
+            )]
+            .allocate(layout.size());
         }
         pointer
     }
@@ -519,7 +536,10 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
 
     /// Does not drain magazines or allocate. None means profiling is disabled,
     /// initialization is incomplete, or the bucket index is outside the schema.
-    pub fn heap_class_stats(&self, index: usize) -> Option<super::profile::HeapClassStats> {
+    pub fn heap_class_stats(
+        &self,
+        index: usize,
+    ) -> Option<crate::mm::allocator::heap::profile::HeapClassStats> {
         #[cfg(not(feature = "heap-profiling"))]
         {
             let _ = index;
@@ -528,18 +548,21 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
         #[cfg(feature = "heap-profiling")]
         {
             let traffic = self.profile.get(index)?;
-            let pool = index / (super::SLAB_CLASS_COUNT + 1);
-            let class = index % (super::SLAB_CLASS_COUNT + 1);
+            let pool = index / (crate::mm::allocator::heap::SLAB_CLASS_COUNT + 1);
+            let class = index % (crate::mm::allocator::heap::SLAB_CLASS_COUNT + 1);
             let backing = self
                 .state
                 .with(|state| state.heap.as_ref().map(|heap| heap.profile_backing[index]))?;
-            let mut row = super::profile::HeapClassStats {
+            let mut row = crate::mm::allocator::heap::profile::HeapClassStats {
                 pool,
-                object_size: super::CLASS_SIZES.get(class).copied().unwrap_or(0),
+                object_size: crate::mm::allocator::heap::CLASS_SIZES
+                    .get(class)
+                    .copied()
+                    .unwrap_or(0),
                 pages: backing.pages,
                 capacity: backing.capacity,
                 reserved: backing.reserved,
-                ..super::profile::HeapClassStats::default()
+                ..crate::mm::allocator::heap::profile::HeapClassStats::default()
             };
             if pool == 0
                 && class < CACHED_CLASS_COUNT
@@ -594,7 +617,7 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
         owner: PageOwner,
         min_free_pages: usize,
     ) -> Result<PhysicalAddress, BuddyError> {
-        if order > crate::mm::MAX_ORDER {
+        if order > crate::mm::allocator::MAX_ORDER {
             return Err(BuddyError::InvalidOrder);
         }
         self.state.with(|state| {
@@ -740,7 +763,7 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
     /// reservation overlapping the same bytes must not be released here.
     pub unsafe fn reclaim_reservation(
         &self,
-        range: crate::platform::PhysicalRange,
+        range: hyper::mm::ranges::PhysicalRange,
     ) -> Result<usize, BuddyError> {
         self.state.with(|state| {
             let heap = state.heap.as_mut().ok_or(BuddyError::OutOfMemory)?;
@@ -918,7 +941,7 @@ impl<P: CpuLocalCachePolicy> KernelGlobalAllocator<P> {
                 Err(LargeAllocationError::OutOfMemory) => {}
             }
         }
-        let pages = super::allocation_page_bound(layout)
+        let pages = crate::mm::allocator::heap::allocation_page_bound(layout)
             .unwrap_or(1)
             .min(EMERGENCY_RECLAIM_PAGES);
         if P::try_reclaim(pages) == 0 {
@@ -1092,7 +1115,7 @@ unsafe impl<P: CpuLocalCachePolicy> GlobalAlloc for KernelGlobalAllocator<P> {
             return null_mut();
         }
         self.logical.record_request();
-        let class = super::slab_class_for_layout(layout);
+        let class = crate::mm::allocator::heap::slab_class_for_layout(layout);
         let pointer = match class {
             Some(class)
                 if class.index() < CACHED_CLASS_COUNT
@@ -1107,8 +1130,11 @@ unsafe impl<P: CpuLocalCachePolicy> GlobalAlloc for KernelGlobalAllocator<P> {
         } else {
             self.logical.record_allocation(layout, class.is_some());
             #[cfg(feature = "heap-profiling")]
-            self.profile[super::profile::bucket(super::HeapPool::Kernel, class)]
-                .allocate(layout.size());
+            self.profile[crate::mm::allocator::heap::profile::bucket(
+                crate::mm::allocator::heap::HeapPool::Kernel,
+                class,
+            )]
+            .allocate(layout.size());
         }
         pointer
     }
@@ -1131,13 +1157,14 @@ unsafe impl<P: CpuLocalCachePolicy> GlobalAlloc for KernelGlobalAllocator<P> {
         let Some(pointer) = NonNull::new(pointer) else {
             allocator_fault(AllocatorFault::InvalidSlabPointer);
         };
-        let class = super::slab_class_for_layout(layout);
+        let class = crate::mm::allocator::heap::slab_class_for_layout(layout);
         self.logical.record_deallocation(layout, class.is_some());
         // SAFETY: GlobalAlloc requires a live allocation with this exact layout.
-        let pool = unsafe { super::allocation_pool(pointer.as_ptr(), layout) };
-        let cache_owned = pool == super::HeapPool::FileCache;
+        let pool = unsafe { crate::mm::allocator::heap::allocation_pool(pointer.as_ptr(), layout) };
+        let cache_owned = pool == crate::mm::allocator::heap::HeapPool::FileCache;
         #[cfg(feature = "heap-profiling")]
-        self.profile[super::profile::bucket(pool, class)].deallocate(layout.size());
+        self.profile[crate::mm::allocator::heap::profile::bucket(pool, class)]
+            .deallocate(layout.size());
         match class {
             Some(class)
                 if !cache_owned

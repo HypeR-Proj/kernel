@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
+#[allow(
+    clippy::duplicate_mod,
+    reason = "exercise private allocator algorithms independently of the integrated heap"
+)]
 #[path = "../../../../src/mm/allocator/heap/partial.rs"]
 mod model;
 

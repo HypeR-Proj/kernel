@@ -9,13 +9,25 @@ use std::collections::HashSet;
 use std::mem::ManuallyDrop;
 
 use hyper::hal::interrupt::InterruptMask;
-use hyper::mm::allocator::heap::{
-    AllocatorInvariant, AllocatorInvariantInstallError, AllocatorInvariantReport,
-    CacheActivationError, CpuLocalCachePolicy, InitError, KernelGlobalAllocator, PageAvailability,
-    PageOwner, SlabAllocator, allocation_page_bound, install_allocator_invariant_handler,
+use {
+    crate::mm::allocator::BuddyAllocator, crate::mm::allocator::BuddyError,
+    hyper::mm::BootAllocator, hyper::mm::PAGE_SIZE, hyper::mm::PhysicalAddress,
 };
-use hyper::mm::{BootAllocator, BuddyAllocator, BuddyError, PAGE_SIZE, PhysicalAddress};
-use hyper::platform::{MAX_MEMORY_REGIONS, MAX_RESERVED_REGIONS, PhysicalRange, RegionList};
+use {
+    crate::mm::allocator::heap::AllocatorInvariant,
+    crate::mm::allocator::heap::AllocatorInvariantInstallError,
+    crate::mm::allocator::heap::AllocatorInvariantReport,
+    crate::mm::allocator::heap::CacheActivationError,
+    crate::mm::allocator::heap::CpuLocalCachePolicy, crate::mm::allocator::heap::InitError,
+    crate::mm::allocator::heap::KernelGlobalAllocator,
+    crate::mm::allocator::heap::PageAvailability, crate::mm::allocator::heap::PageOwner,
+    crate::mm::allocator::heap::SlabAllocator, crate::mm::allocator::heap::allocation_page_bound,
+    crate::mm::allocator::heap::install_allocator_invariant_handler,
+};
+use {
+    hyper::mm::boot::MAX_MEMORY_REGIONS, hyper::mm::boot::MAX_RESERVED_REGIONS,
+    hyper::mm::ranges::PhysicalRange, hyper::mm::ranges::RegionList,
+};
 
 struct AlignedMemory {
     pointer: *mut u8,
@@ -42,7 +54,7 @@ impl Drop for AlignedMemory {
     }
 }
 
-fn handoff(pages: usize) -> (AlignedMemory, hyper::mm::MemoryHandoff) {
+fn handoff(pages: usize) -> (AlignedMemory, hyper::mm::boot::MemoryHandoff) {
     let memory_buffer = AlignedMemory::new(pages);
     let mut memory = RegionList::<MAX_MEMORY_REGIONS>::new();
     crate::require_ok(memory.insert(crate::require_some(PhysicalRange::new(
@@ -1282,7 +1294,7 @@ fn allocation_backing_bound_covers_headers_alignment_and_all_classes() {
         }
     }
     let unsupported = crate::require_ok(Layout::from_size_align(
-        (1usize << hyper::mm::MAX_ORDER) * PAGE_SIZE as usize,
+        (1usize << crate::mm::allocator::MAX_ORDER) * PAGE_SIZE as usize,
         1,
     ));
     assert_eq!(allocation_page_bound(unsupported), None);
@@ -1756,7 +1768,7 @@ fn heap_profiling_distinguishes_callers_magazines_and_file_cache_backing() {
         assert_eq!((big.object_size, big.capacity, big.reserved), (0, 0, 0));
         assert!(big.pages >= 8);
         // Repeated reads never flush the magazines or reclaim an empty slab.
-        for index in 0..hyper::mm::allocator::heap::profile::BUCKETS {
+        for index in 0..crate::mm::allocator::heap::profile::BUCKETS {
             assert!(allocator.heap_class_stats(index).is_some());
         }
         assert!(allocator.heap_class_stats(18).is_none());

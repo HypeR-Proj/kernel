@@ -10,7 +10,7 @@ use hyper::hal::cpu_power::{
 };
 use hyper::hal::memory::AddressTranslation;
 use hyper::mm::PhysicalAddress;
-use hyper::platform::CpuPowerInfo;
+use hyper_platform::CpuPowerInfo;
 
 const TRAMPOLINE: u64 = 0x8000;
 const MAILBOX_BASE: u64 = 0x9000;

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #[allow(dead_code)]
-#[path = "../../../../src/kernel/vm/io/model.rs"]
+#[path = "../../../../src/vm/io/model.rs"]
 mod model;
 
 #[test]

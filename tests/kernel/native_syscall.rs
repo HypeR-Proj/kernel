@@ -3,6 +3,6 @@
 
 //! Architecture-neutral validation of the initial Native syscall dispatcher.
 
-pub(crate) fn run() -> Result<(), crate::kernel::abi::native::SelfTestError> {
-    crate::kernel::abi::native::run_self_test()
+pub(crate) fn run() -> Result<(), crate::abi::native::SelfTestError> {
+    crate::abi::native::run_self_test()
 }

@@ -8,8 +8,11 @@ use hyper::cpu::CpuIndex;
 use hyper::sync::InterruptSpinLock;
 use hyper::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::kernel::task::scheduler::{self, CpuMask};
-use crate::kernel::task::{WaitMobility, WaitOutcome, WaitQueue, WaitTicket};
+use {
+    crate::task::WaitMobility, crate::task::WaitOutcome, crate::task::WaitQueue,
+    crate::task::WaitTicket,
+};
+use {crate::task::scheduler, crate::task::scheduler::CpuMask};
 
 const ROUNDS: usize = 32;
 static TICKET: InterruptSpinLock<Option<WaitTicket>, crate::hal::irq::LocalMask> =
@@ -40,7 +43,7 @@ impl From<scheduler::Error> for Error {
 }
 
 pub(super) fn run() -> Result<(), Error> {
-    if crate::kernel::cpu::online_cpu_count() < 3 {
+    if crate::cpu::online_cpu_count() < 3 {
         crate::pr_info!("HypeR test: concurrent wait arbitration skipped (requires three CPUs)");
         return Ok(());
     }
@@ -191,10 +194,10 @@ extern "C" fn resolver(actor: usize) {
 // The controller may own an Armed registration, so it must not start another
 // timed wait. Actors have dedicated CPUs, hold no lock here, and keep IRQs on.
 fn wait_until(round: usize, phase: &'static str, ready: impl Fn() -> bool) -> Result<(), Error> {
-    let start = crate::kernel::time::monotonic_microseconds();
+    let start = crate::time::monotonic_microseconds();
     while !ready() {
         if FAILURE.load(Ordering::Acquire) != 0
-            || crate::kernel::time::monotonic_microseconds().saturating_sub(start) > 4_000_000
+            || crate::time::monotonic_microseconds().saturating_sub(start) > 4_000_000
         {
             return Err(Error::Progress { round, phase });
         }

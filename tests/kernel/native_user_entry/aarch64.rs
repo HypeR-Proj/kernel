@@ -6,11 +6,17 @@
 use super::{Error, IMAGE_BASE, prepare_process, retire_process};
 use hyper::mm::PAGE_SIZE;
 
-use crate::kernel::accounting::{ResourceDomain, ResourceLimits};
-use crate::kernel::capability::{ResolvedWaitable, Rights};
-use crate::kernel::object::{Event, ObjectHandleState, ObjectKind, SignalWaitOutcome};
-use crate::kernel::process::{MachineAbi, Process, TaskGroup, TerminalReason, UserThread};
-use crate::kernel::task::scheduler::CpuMask;
+use crate::task::scheduler::CpuMask;
+use {crate::accounting::ResourceDomain, crate::accounting::ResourceLimits};
+use {crate::capability::ResolvedWaitable, crate::capability::Rights};
+use {
+    crate::object::Event, crate::object::ObjectHandleState, crate::object::ObjectKind,
+    crate::object::SignalWaitOutcome,
+};
+use {
+    crate::process::MachineAbi, crate::process::Process, crate::process::TaskGroup,
+    crate::process::TerminalReason, crate::process::UserThread,
+};
 
 const DIRECT_CALL_COUNT: usize = 66;
 
@@ -289,7 +295,7 @@ fn run_program(
         Some(id) => id,
         None => return Err(Error::Construction),
     };
-    let scheduler_object = crate::kernel::task::scheduler::thread_object_snapshot(scheduler_id)
+    let scheduler_object = crate::task::scheduler::thread_object_snapshot(scheduler_id)
         .map_err(|_| Error::Scheduler)?;
     if scheduler_object.object.koid != object.koid {
         // Scheduler execution and userspace authority must refer to one
@@ -348,18 +354,16 @@ fn run_program(
         }
     }
     if matches!(control, RunControl::CancelPublishedAtomicWait) {
-        let ready = crate::kernel::task::wait_for_test_progress(
-            crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-            || {
+        let ready =
+            crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
                 Ok::<_, Error>(
-                    crate::kernel::process::atomic_wait::waiter_count(
+                    crate::process::atomic_wait::waiter_count(
                         &process,
                         IMAGE_BASE + PAGE_SIZE * 3 - 16,
                     )
                     .is_ok_and(|count| count == 1),
                 )
-            },
-        )?;
+            })?;
         if !ready {
             return Err(Error::Lifecycle);
         }
@@ -386,8 +390,8 @@ fn run_program(
                 let address_space = process
                     .address_space_owner()
                     .map_err(|_| Error::AddressSpace)?;
-                let code_range = crate::kernel::mm::user_space::UserSlice::new(
-                    crate::kernel::mm::user_space::UserAddress::new(IMAGE_BASE),
+                let code_range = crate::mm::user_space::UserSlice::new(
+                    crate::mm::user_space::UserAddress::new(IMAGE_BASE),
                     PAGE_SIZE,
                 )
                 .map_err(|_| Error::AddressSpace)?;
@@ -402,9 +406,9 @@ fn run_program(
                 let bits = crate::hal::user::address_space_plan()
                     .map_err(|_| Error::AddressSpace)?
                     .asid_bits();
-                crate::kernel::mm::translation_id::test_rollover::<
-                    crate::kernel::mm::translation_id::HostAsid,
-                >(bits)
+                crate::mm::translation_id::test_rollover::<crate::mm::translation_id::HostAsid>(
+                    bits,
+                )
                 .map_err(|_| Error::AddressSpace)?;
             }
             process
@@ -425,17 +429,17 @@ fn run_program(
     // published its terminal object signal before the Process reports stopped.
     let process_reason = process.join().map_err(|_| Error::Lifecycle)?;
     if let Some(waitable) = thread_waitable {
-        match crate::kernel::object::wait_one(
+        match crate::object::wait_one(
             waitable.source(),
             &process.resource_domain(),
-            crate::kernel::process::UserThread::TERMINATED.bits(),
+            crate::process::UserThread::TERMINATED.bits(),
             u64::MAX,
             || false,
         )
         .map_err(|_| Error::Lifecycle)?
         {
             SignalWaitOutcome::Observed(snapshot)
-                if snapshot.signals() == crate::kernel::process::UserThread::TERMINATED => {}
+                if snapshot.signals() == crate::process::UserThread::TERMINATED => {}
             _ => return Err(Error::Lifecycle),
         }
     }
@@ -458,16 +462,13 @@ fn run_program(
 }
 
 fn wait_for_event_registration(process: &Process) -> Result<(), Error> {
-    if crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || {
-            Ok::<_, Error>(super::event_handle(process).is_ok_and(|handle| {
-                process
-                    .resolve_handle::<Event>(handle, Rights::WAIT)
-                    .is_ok_and(|event| event.object().waiter_count() == 1)
-            }))
-        },
-    )? {
+    if crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+        Ok::<_, Error>(super::event_handle(process).is_ok_and(|handle| {
+            process
+                .resolve_handle::<Event>(handle, Rights::WAIT)
+                .is_ok_and(|event| event.object().waiter_count() == 1)
+        }))
+    })? {
         Ok(())
     } else {
         Err(Error::Lifecycle)
@@ -494,13 +495,11 @@ fn verify_pending_creation_exit() -> Result<(), Error> {
                 .prepare_thread_rollback_for_test()
                 .map_err(|_| Error::Construction)?;
             thread.ready().map_err(|_| Error::Scheduler)?;
-            let detached = crate::kernel::task::wait_for_test_progress(
-                crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-                || {
+            let detached =
+                crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
                     let snapshot = process.snapshot();
                     Ok::<_, Error>(snapshot.active_threads == 0 && snapshot.pending_threads == 1)
-                },
-            )?;
+                })?;
             if !detached {
                 return Err(Error::Lifecycle);
             }
@@ -517,10 +516,10 @@ fn verify_pending_creation_exit() -> Result<(), Error> {
         process.request_stop(TerminalReason::Requested);
         retire_process(&process)?;
         drop(process);
-        let reclaimed = crate::kernel::task::wait_for_test_progress(
-            crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-            || Ok::<_, Error>(domain.usage() == baseline),
-        )?;
+        let reclaimed =
+            crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+                Ok::<_, Error>(domain.usage() == baseline)
+            })?;
         result?;
         if !reclaimed {
             return Err(Error::Lifecycle);

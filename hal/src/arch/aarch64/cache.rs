@@ -6,7 +6,10 @@ use core::arch::asm;
 use hyper::hal::barrier::{Barrier, BarrierAccess, BarrierDomain};
 use hyper::hal::cache::{CacheError, CacheMaintenance};
 use hyper::sync::atomic::{AtomicU64, Ordering};
-use hyper::vm::aarch64::cache::{GuestInstructionCachePolicy, instruction_publication_contract};
+use {
+    hyper_vm_models::aarch64::cache::GuestInstructionCachePolicy,
+    hyper_vm_models::aarch64::cache::instruction_publication_contract,
+};
 
 use super::barrier::Aarch64Barrier;
 use super::registers;

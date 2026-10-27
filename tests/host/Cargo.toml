@@ -8,15 +8,20 @@ edition = "2024"
 publish = false
 
 [features]
-kernel-trace = ["hyper/kernel-trace"]
+kernel-trace = ["hyper-trace/kernel-trace"]
 pmu-profiling = []
-kernel-test = ["hyper/kernel-test"]
-heap-profiling = ["hyper/heap-profiling"]
-io-dma-revoke-test = ["hyper/io-dma-revoke-test"]
+kernel-test = ["hyper-drivers/kernel-test"]
+heap-profiling = []
+io-dma-revoke-test = ["hyper-drivers/io-dma-revoke-test"]
 
 [dependencies]
-hyper = { package = "hyper-core", path = "../../core", features = ["rtc", "runtime-symbols"] }
+rustc-demangle = { version = "0.1.28", default-features = false }
+hyper-platform = { path = "../../platform", default-features = false }
+hyper-drivers = { path = "../../drivers", default-features = false, features = ["rtc"] }
+hyper-vm-models = { path = "../../vm-models", default-features = false }
+hyper = { package = "hyper-core", path = "../../core", default-features = false }
 hyper-filesystem = { path = "../../../stdlib/rust/hyper-filesystem" }
+hyper-trace = { path = "../../trace", default-features = false }
 
 [lints.clippy]
 expect_used = "deny"

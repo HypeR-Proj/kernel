@@ -16,22 +16,22 @@ pub(super) enum Error {
 }
 
 pub(super) fn run() -> Result<(), Error> {
-    if !crate::kernel::mm::is_ready() {
+    if !crate::mm::is_ready() {
         return Err(Error::Memory);
     }
-    if !crate::kernel::mm::memory_protection_active() {
+    if !crate::mm::memory_protection_active() {
         return Err(Error::MemoryProtection);
     }
-    if !crate::kernel::debug::is_ready() {
+    if !crate::diagnostics::debug::is_ready() {
         return Err(Error::Debug);
     }
-    if !crate::kernel::task::is_ready() {
+    if !crate::task::is_ready() {
         return Err(Error::Scheduler);
     }
-    if !crate::kernel::irq::exceptions_ready() {
+    if !crate::irq::exceptions_ready() {
         return Err(Error::RuntimeExceptions);
     }
-    if !crate::kernel::crash::is_ready() {
+    if !crate::diagnostics::crash::is_ready() {
         return Err(Error::Crash);
     }
     Ok(())
@@ -39,11 +39,10 @@ pub(super) fn run() -> Result<(), Error> {
 
 /// Early rejection must not touch mappings needed by later CPU admission.
 pub(super) fn before_smp() -> Result<(), Error> {
-    if crate::kernel::cpu::frozen_topology().is_some() {
+    if crate::cpu::frozen_topology().is_some() {
         return Err(Error::PrematureTopology);
     }
-    if crate::kernel::mm::seal_address_space()
-        != Err(crate::kernel::mm::FinalizationError::CpuTopologyUnavailable)
+    if crate::mm::seal_address_space() != Err(crate::mm::FinalizationError::CpuTopologyUnavailable)
     {
         return Err(Error::PrematureSealing);
     }

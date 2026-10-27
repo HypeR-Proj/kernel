@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[allow(dead_code, unused_imports)]
 pub(crate) mod kernel;
 
-#[path = "../../../../src/kernel/process/builder_policy.rs"]
+#[path = "../../../../src/process/builder_policy.rs"]
 mod builder_policy;
 
 use kernel::capability::{
@@ -2147,7 +2147,7 @@ fn sparse_directory_growth_reuses_holes_without_changing_live_handles() {
     assert_eq!(transitions.load(Ordering::Relaxed), 6144);
 }
 
-#[path = "../../../../src/kernel/device/assigned/transaction.rs"]
+#[path = "../../../../src/device/assigned/transaction.rs"]
 mod physical_claim_transaction;
 
 #[test]

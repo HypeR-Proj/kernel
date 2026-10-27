@@ -536,15 +536,15 @@ pub fn stopped_wfi_state(
     #[cfg(CONFIG_ARCH_AARCH64)]
     {
         let interrupt_may_wake = interrupts
-            .may_wake_wfi(hyper::vm::interrupt::VirtualCpuId::new(vcpu_id))
+            .may_wake_wfi(hyper_vm_models::interrupt::VirtualCpuId::new(vcpu_id))
             .map_err(crate::arch::vm::VcpuInterruptError::Controller)
             .map_err(StoppedVcpuQueryError::Backend)?;
         let timer = match state.context.virtual_timer_wfi_wake_at(physical_count) {
-            hyper::drivers::timer::arm_generic::VirtualTimerWake::None => VcpuTimerWake::None,
-            hyper::drivers::timer::arm_generic::VirtualTimerWake::PendingNow => {
+            hyper_drivers::timer::arm_generic::VirtualTimerWake::None => VcpuTimerWake::None,
+            hyper_drivers::timer::arm_generic::VirtualTimerWake::PendingNow => {
                 VcpuTimerWake::PendingNow
             }
-            hyper::drivers::timer::arm_generic::VirtualTimerWake::Deadline(deadline) => {
+            hyper_drivers::timer::arm_generic::VirtualTimerWake::Deadline(deadline) => {
                 VcpuTimerWake::Deadline(deadline)
             }
         };
@@ -563,9 +563,9 @@ pub fn stopped_wfi_state(
         )
         .map_err(StoppedVcpuQueryError::Backend)?;
         let timer = match stopped.timer {
-            hyper::vm::riscv64::time::TimerWake::Disabled => VcpuTimerWake::None,
-            hyper::vm::riscv64::time::TimerWake::PendingNow => VcpuTimerWake::PendingNow,
-            hyper::vm::riscv64::time::TimerWake::AfterTicks(ticks) => {
+            hyper_vm_models::riscv64::time::TimerWake::Disabled => VcpuTimerWake::None,
+            hyper_vm_models::riscv64::time::TimerWake::PendingNow => VcpuTimerWake::PendingNow,
+            hyper_vm_models::riscv64::time::TimerWake::AfterTicks(ticks) => {
                 VcpuTimerWake::Deadline(physical_count.wrapping_add(ticks))
             }
         };
@@ -922,7 +922,7 @@ pub fn prepare_timer_validation(
 ) -> Result<Option<PreparedTimerValidation>, TimerValidationError> {
     #[cfg(CONFIG_ARCH_AARCH64)]
     {
-        let timer = hyper::vm::arm::gic::GicInterruptId::new(timer_interrupt.get())
+        let timer = hyper_vm_models::arm::gic::GicInterruptId::new(timer_interrupt.get())
             .ok_or(TimerValidationError::InvalidInterrupt)?;
         let interrupts = InterruptController::new(1, timer, usize::from(prepared.list_registers()))
             .map_err(TimerValidationError::InterruptController)?;
@@ -954,7 +954,7 @@ pub fn prepare_timer_validation(
 /// architecture-owned contract before it can be published.
 pub struct PreparedInterruptController {
     vcpu_count: u32,
-    timer_interrupt: hyper::vm::interrupt::VirtualInterruptId,
+    timer_interrupt: hyper_vm_models::interrupt::VirtualInterruptId,
     #[cfg(CONFIG_ARCH_AARCH64)]
     list_registers: usize,
     allocation_size: usize,
@@ -962,11 +962,11 @@ pub struct PreparedInterruptController {
 
 pub fn prepare_interrupt_controller(
     vcpu_count: u32,
-    timer_interrupt: hyper::vm::interrupt::VirtualInterruptId,
+    timer_interrupt: hyper_vm_models::interrupt::VirtualInterruptId,
 ) -> Result<PreparedInterruptController, InterruptError> {
     #[cfg(CONFIG_ARCH_AARCH64)]
     {
-        let _timer = hyper::vm::arm::gic::GicInterruptId::new(timer_interrupt.get())
+        let _timer = hyper_vm_models::arm::gic::GicInterruptId::new(timer_interrupt.get())
             .ok_or(InterruptError::InvalidInterrupt)?;
         let description =
             interrupt_virtualization_description().ok_or(InterruptError::MissingCapabilities)?;
@@ -1001,13 +1001,13 @@ pub fn create_prepared_interrupt_controller(
 ) -> Result<InterruptController, InterruptError> {
     #[cfg(CONFIG_ARCH_AARCH64)]
     {
-        let timer = hyper::vm::arm::gic::GicInterruptId::new(prepared.timer_interrupt.get())
+        let timer = hyper_vm_models::arm::gic::GicInterruptId::new(prepared.timer_interrupt.get())
             .ok_or(InterruptError::InvalidInterrupt)?;
         let controller =
             InterruptController::new(prepared.vcpu_count, timer, prepared.list_registers)?;
         if interrupt_controller_allocation_size(&controller) != Some(prepared.allocation_size) {
             return Err(InterruptError::Build(
-                hyper::vm::arm::gic::BuildError::InvalidStoragePlan,
+                hyper_vm_models::arm::gic::BuildError::InvalidStoragePlan,
             ));
         }
         Ok(controller)
@@ -1049,7 +1049,7 @@ pub fn timer_validation_succeeded(
     {
         let _ = capability;
         let snapshot = interrupts
-            .timer_snapshot(hyper::vm::interrupt::VirtualCpuId::new(0))
+            .timer_snapshot(hyper_vm_models::interrupt::VirtualCpuId::new(0))
             .map_err(InterruptError::Vgic)?;
         Ok(snapshot.pending && snapshot.listed)
     }
@@ -1075,7 +1075,7 @@ pub fn update_guest_device_interrupt(
     state: &mut VcpuHardwareState,
     vcpu_id: u32,
     interrupts: &InterruptController,
-    interrupt: hyper::vm::arm::gic::GicInterruptId,
+    interrupt: hyper_vm_models::arm::gic::GicInterruptId,
     asserted: bool,
 ) -> Result<(), VcpuInterruptError> {
     crate::arch::vm::update_guest_device_interrupt(
@@ -1091,7 +1091,7 @@ pub fn update_guest_device_interrupt(
 pub fn update_saved_guest_device_interrupt(
     interrupts: &InterruptController,
     vcpu_id: u32,
-    interrupt: hyper::vm::arm::gic::GicInterruptId,
+    interrupt: hyper_vm_models::arm::gic::GicInterruptId,
     asserted: bool,
 ) -> Result<(), VcpuInterruptError> {
     crate::arch::vm::update_saved_guest_device_interrupt(interrupts, vcpu_id, interrupt, asserted)
@@ -1118,8 +1118,8 @@ pub fn access_guest_gic(
     state: &mut VcpuHardwareState,
     vcpu_id: u32,
     interrupts: &InterruptController,
-    access: hyper::vm::arm::gic::mmio::DecodedAccess,
-    operation: hyper::vm::exit::MmioOperation,
+    access: hyper_vm_models::arm::gic::mmio::DecodedAccess,
+    operation: hyper_vm_models::exit::MmioOperation,
 ) -> Result<Option<u64>, GicAccessError> {
     crate::arch::vm::access_guest_gic(&mut state.context, vcpu_id, interrupts, access, operation)
 }
@@ -1165,15 +1165,15 @@ pub fn interrupt_access_pending(interrupts: &InterruptController, vcpu: u32) -> 
 pub fn take_interrupt_access(
     interrupts: &InterruptController,
     vcpu: u32,
-) -> Option<hyper::vm::exit::MmioAction> {
+) -> Option<hyper_vm_models::exit::MmioAction> {
     #[cfg(CONFIG_ARCH_AARCH64)]
     {
         interrupts
             .take_active_access(vcpu)
             .map(|result| match result {
-                Ok(Some(value)) => hyper::vm::exit::MmioAction::CompleteRead(value),
-                Ok(None) => hyper::vm::exit::MmioAction::CompleteWrite,
-                Err(_) => hyper::vm::exit::MmioAction::Stop,
+                Ok(Some(value)) => hyper_vm_models::exit::MmioAction::CompleteRead(value),
+                Ok(None) => hyper_vm_models::exit::MmioAction::CompleteWrite,
+                Err(_) => hyper_vm_models::exit::MmioAction::Stop,
             })
     }
     #[cfg(not(CONFIG_ARCH_AARCH64))]
@@ -1209,7 +1209,7 @@ pub fn update_guest_device_interrupt(
     state: &mut VcpuHardwareState,
     vcpu_id: u32,
     interrupts: &InterruptController,
-    interrupt: hyper::vm::interrupt::VirtualInterruptId,
+    interrupt: hyper_vm_models::interrupt::VirtualInterruptId,
     asserted: bool,
 ) -> Result<(), VcpuInterruptError> {
     crate::arch::vm::update_guest_device_interrupt(
@@ -1225,7 +1225,7 @@ pub fn update_guest_device_interrupt(
 pub fn update_saved_guest_device_interrupt(
     interrupts: &InterruptController,
     vcpu_id: u32,
-    interrupt: hyper::vm::interrupt::VirtualInterruptId,
+    interrupt: hyper_vm_models::interrupt::VirtualInterruptId,
     asserted: bool,
 ) -> Result<(), VcpuInterruptError> {
     crate::arch::vm::update_saved_guest_device_interrupt(interrupts, vcpu_id, interrupt, asserted)
@@ -1238,7 +1238,7 @@ pub fn access_plic(
     vcpu_id: u32,
     offset: u64,
     size: usize,
-    operation: hyper::vm::exit::MmioOperation,
+    operation: hyper_vm_models::exit::MmioOperation,
 ) -> Result<Option<u64>, VcpuInterruptError> {
     crate::arch::vm::access_plic(
         &mut state.context,
@@ -1295,7 +1295,7 @@ pub fn take_reconcile_targets(interrupts: &InterruptController) -> u64 {
 pub enum PowerContextError {
     Unsupported,
     Interrupt(VirtualInterruptError),
-    Controller(hyper::vm::arm::gic::RuntimeError),
+    Controller(hyper_vm_models::arm::gic::RuntimeError),
 }
 
 pub fn reset_vcpu_interrupts(
@@ -1305,7 +1305,7 @@ pub fn reset_vcpu_interrupts(
     #[cfg(CONFIG_ARCH_AARCH64)]
     {
         interrupts
-            .reset_vcpu(hyper::vm::interrupt::VirtualCpuId::new(vcpu))
+            .reset_vcpu(hyper_vm_models::interrupt::VirtualCpuId::new(vcpu))
             .map_err(PowerContextError::Controller)
     }
     #[cfg(not(CONFIG_ARCH_AARCH64))]
@@ -1344,7 +1344,7 @@ pub fn complete_power_call(
 ) -> Result<(), PowerContextError> {
     #[cfg(CONFIG_ARCH_AARCH64)]
     {
-        state.context.general[0] = hyper::vm::arm::psci::return_register(result);
+        state.context.general[0] = hyper_vm_models::arm::psci::return_register(result);
         Ok(())
     }
     #[cfg(not(CONFIG_ARCH_AARCH64))]
@@ -1368,7 +1368,7 @@ pub enum DeviceContextError {
 
 pub fn complete_device_call(
     state: &mut VcpuHardwareState,
-    action: hyper::vm::exit::MmioAction,
+    action: hyper_vm_models::exit::MmioAction,
 ) -> Result<(), DeviceContextError> {
     #[cfg(CONFIG_ARCH_AARCH64)]
     {
@@ -1401,7 +1401,7 @@ pub fn update_saved_device_line(
 ) -> Result<(), DeviceInterruptError> {
     #[cfg(CONFIG_ARCH_AARCH64)]
     {
-        let interrupt = hyper::vm::arm::gic::GicInterruptId::new(interrupt)
+        let interrupt = hyper_vm_models::arm::gic::GicInterruptId::new(interrupt)
             .ok_or(DeviceInterruptError::InvalidInterrupt)?;
         update_saved_guest_device_interrupt(interrupts, 0, interrupt, asserted)
             .map_err(|_| DeviceInterruptError::Backend)
@@ -1420,7 +1420,7 @@ pub fn inject_saved_device_interrupt(
 ) -> Result<(), DeviceInterruptError> {
     #[cfg(CONFIG_ARCH_AARCH64)]
     {
-        let interrupt = hyper::vm::arm::gic::GicInterruptId::new(interrupt)
+        let interrupt = hyper_vm_models::arm::gic::GicInterruptId::new(interrupt)
             .filter(|interrupt| interrupt.get() >= 32)
             .ok_or(DeviceInterruptError::InvalidInterrupt)?;
         crate::arch::vm::inject_saved_guest_device_interrupt(interrupts, interrupt)

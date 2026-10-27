@@ -11,13 +11,15 @@ use hyper::cpu::CpuIndex;
 use hyper::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use super::Error;
-use crate::kernel::task::policy::ThreadPriority;
-use crate::kernel::task::scheduler::{self, CpuMask};
-use crate::kernel::task::scheduling_authority::{
-    SCHEDULING_RIGHTS, SchedulingAuthority, SchedulingLimits,
+use crate::task::policy::ThreadPriority;
+use crate::task::thread::ThreadId;
+use {crate::task, crate::time};
+use {crate::task::scheduler, crate::task::scheduler::CpuMask};
+use {
+    crate::task::scheduling_authority::SCHEDULING_RIGHTS,
+    crate::task::scheduling_authority::SchedulingAuthority,
+    crate::task::scheduling_authority::SchedulingLimits,
 };
-use crate::kernel::task::thread::ThreadId;
-use crate::kernel::{task, time};
 
 const DORMANT_THREADS: usize = 66;
 const FIRST_SCAN_SLOTS: usize = 64;
@@ -27,7 +29,7 @@ static EXPECTED: AtomicU64 = AtomicU64::new(0);
 static OBSERVED_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 pub(super) fn run() -> Result<(), Error> {
-    if crate::kernel::cpu::online_cpu_count() < 2 {
+    if crate::cpu::online_cpu_count() < 2 {
         return Ok(());
     }
     super::super::support::quiesce_workers()?;
@@ -162,7 +164,7 @@ extern "C" fn worker(_: usize) {
         FAILED.store(true, Ordering::Release);
         return;
     }
-    let Some(cpu) = crate::kernel::cpu::current_index() else {
+    let Some(cpu) = crate::cpu::current_index() else {
         FAILED.store(true, Ordering::Release);
         return;
     };

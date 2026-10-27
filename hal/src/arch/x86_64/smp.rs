@@ -101,7 +101,7 @@ fn publish_apic_id(slot: &AtomicU64, hardware_id: u64) -> bool {
 pub fn mark_current_cpu_online() {
     if let Some(slot) = ONLINE.get(current_cpu_index()) {
         slot.store(true, Ordering::Release);
-        super::tlb::synchronize_online_cpu();
+        crate::arch::x86_64::memory::tlb::synchronize_online_cpu();
     }
 }
 
@@ -166,7 +166,7 @@ pub fn notify_reschedule(cpu: CpuIndex) -> bool {
     let Ok(apic_id) = u32::try_from(hardware_id) else {
         return false;
     };
-    super::interrupt_controller::send_fixed_ipi(
+    crate::arch::x86_64::irq::controller::send_fixed_ipi(
         apic_id,
         hyper::hal::interrupt::InterruptId::new(super::platform::RESCHEDULE_VECTOR),
     )
@@ -189,7 +189,7 @@ pub fn notify_kernel_rpc(cpu: CpuIndex, reasons: u8) -> bool {
     let Ok(apic_id) = u32::try_from(route.load(Ordering::Acquire)) else {
         return false;
     };
-    super::interrupt_controller::send_fixed_ipi(
+    crate::arch::x86_64::irq::controller::send_fixed_ipi(
         apic_id,
         hyper::hal::interrupt::InterruptId::new(super::platform::KERNEL_RPC_VECTOR),
     )

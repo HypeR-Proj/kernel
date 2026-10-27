@@ -8,14 +8,19 @@ use hyper::cpu::CpuIndex;
 use hyper::mm::{FallibleArc, try_box};
 use hyper::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use crate::kernel::accounting::{ResourceAmount, ResourceDomain, ResourceKind, ResourceLimits};
-use crate::kernel::object::{
-    Event, EventError, KernelObject, ObjectWaitError, PreparedSignalWait, SignalWaitError,
-    SignalWaitManyOutcome, SignalWaitOutcome, SignalWaitRequest,
+use crate::sync::Semaphore;
+use {
+    crate::accounting::ResourceAmount, crate::accounting::ResourceDomain,
+    crate::accounting::ResourceKind, crate::accounting::ResourceLimits,
 };
-use crate::kernel::sync::Semaphore;
-use crate::kernel::task::scheduler::{self, CpuMask};
-use crate::kernel::task::{WaitMobility, WaitOutcome};
+use {
+    crate::object::Event, crate::object::EventError, crate::object::KernelObject,
+    crate::object::ObjectWaitError, crate::object::PreparedSignalWait,
+    crate::object::SignalWaitError, crate::object::SignalWaitManyOutcome,
+    crate::object::SignalWaitOutcome, crate::object::SignalWaitRequest,
+};
+use {crate::task::WaitMobility, crate::task::WaitOutcome};
+use {crate::task::scheduler, crate::task::scheduler::CpuMask};
 
 static DONE: Semaphore = Semaphore::new(0);
 static COMPLETION: AtomicU64 = AtomicU64::new(0);
@@ -35,9 +40,9 @@ pub(super) enum Error {
     Resource,
     Quiescence(super::support::QuiescenceError),
     Scheduler(scheduler::Error),
-    Sleep(crate::kernel::task::SleepError),
+    Sleep(crate::task::SleepError),
     StateMismatch(usize),
-    Synchronization(crate::kernel::sync::Error),
+    Synchronization(crate::sync::Error),
 }
 
 impl From<scheduler::Error> for Error {
@@ -46,14 +51,14 @@ impl From<scheduler::Error> for Error {
     }
 }
 
-impl From<crate::kernel::task::SleepError> for Error {
-    fn from(error: crate::kernel::task::SleepError) -> Self {
+impl From<crate::task::SleepError> for Error {
+    fn from(error: crate::task::SleepError) -> Self {
         Self::Sleep(error)
     }
 }
 
-impl From<crate::kernel::sync::Error> for Error {
-    fn from(error: crate::kernel::sync::Error) -> Self {
+impl From<crate::sync::Error> for Error {
+    fn from(error: crate::sync::Error) -> Self {
         Self::Synchronization(error)
     }
 }
@@ -126,7 +131,7 @@ fn exercise_multi_wait_validation(state: &FallibleArc<TestState>) -> Result<(), 
         SignalWaitRequest::new(source, Event::SIGNALED.bits()),
     ];
     if !matches!(
-        crate::kernel::object::wait_many(
+        crate::object::wait_many(
             &invalid,
             &state.domain,
             hyper::abi::native::HYPER_NATIVE_DEADLINE_INFINITE,
@@ -155,7 +160,7 @@ fn exercise_multi_wait_cancellation(state: &FallibleArc<TestState>) -> Result<()
         SignalWaitRequest::new(first, Event::SIGNALED.bits()),
         SignalWaitRequest::new(second, Event::SIGNALED.bits()),
     ];
-    if crate::kernel::object::wait_many(
+    if crate::object::wait_many(
         &requests,
         &state.domain,
         hyper::abi::native::HYPER_NATIVE_DEADLINE_INFINITE,
@@ -178,14 +183,9 @@ fn exercise_multi_wait_wakeup(state: &FallibleArc<TestState>) -> Result<(), Erro
     COMPLETION.store(0, Ordering::Release);
     FAILURE.store(0, Ordering::Release);
     spawn_waiter(state, "object-wait/many", multi_event_waiter)?;
-    if !crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || {
-            Ok::<_, Error>(
-                state.event.waiter_count() == 1 && state.second_event.waiter_count() == 1,
-            )
-        },
-    )? {
+    if !crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+        Ok::<_, Error>(state.event.waiter_count() == 1 && state.second_event.waiter_count() == 1)
+    })? {
         return Err(Error::StateMismatch(33));
     }
     state
@@ -267,7 +267,7 @@ fn start_waiter(state: &FallibleArc<TestState>, name: &str, precursor: usize) ->
 fn spawn_waiter(
     state: &FallibleArc<TestState>,
     name: &str,
-    entry: crate::kernel::task::thread::KernelThreadEntry,
+    entry: crate::task::thread::KernelThreadEntry,
 ) -> Result<(), Error> {
     let owned = try_box(state.clone()).map_err(|_| Error::Resource)?;
     let pointer = Box::into_raw(owned);
@@ -373,7 +373,7 @@ extern "C" fn multi_event_waiter(argument: usize) {
                 SignalWaitRequest::new(first, Event::SIGNALED.bits()),
                 SignalWaitRequest::new(second, Event::SIGNALED.bits()),
             ];
-            crate::kernel::object::wait_many(
+            crate::object::wait_many(
                 &requests,
                 &state.domain,
                 hyper::abi::native::HYPER_NATIVE_DEADLINE_INFINITE,
@@ -413,10 +413,9 @@ fn reset_event(event: &Event) -> Result<(), Error> {
 }
 
 fn wait_for_registration(event: &Event) -> Result<(), Error> {
-    if crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || Ok::<_, Error>(event.waiter_count() == 1),
-    )? {
+    if crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+        Ok::<_, Error>(event.waiter_count() == 1)
+    })? {
         Ok(())
     } else {
         Err(Error::StateMismatch(25))

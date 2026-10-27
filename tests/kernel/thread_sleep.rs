@@ -5,22 +5,25 @@
 
 use hyper::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use crate::kernel::task::{SleepError, sleep_ms, sleep_ns, sleep_s, sleep_until, sleep_us};
+use {
+    crate::task::SleepError, crate::task::sleep_ms, crate::task::sleep_ns, crate::task::sleep_s,
+    crate::task::sleep_until, crate::task::sleep_us,
+};
 
 const TEST_SLEEP_NS: u64 = 2_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Error {
-    Clock(crate::kernel::time::Error),
+    Clock(crate::time::Error),
     Quiescence(super::support::QuiescenceError),
-    Scheduler(crate::kernel::task::scheduler::Error),
+    Scheduler(crate::task::scheduler::Error),
     Sleep(SleepError),
     SleptTooBriefly,
     UnexpectedSleepResult,
 }
 
-impl From<crate::kernel::time::Error> for Error {
-    fn from(error: crate::kernel::time::Error) -> Self {
+impl From<crate::time::Error> for Error {
+    fn from(error: crate::time::Error) -> Self {
         Self::Clock(error)
     }
 }
@@ -37,8 +40,8 @@ impl From<SleepError> for Error {
     }
 }
 
-impl From<crate::kernel::task::scheduler::Error> for Error {
-    fn from(error: crate::kernel::task::scheduler::Error) -> Self {
+impl From<crate::task::scheduler::Error> for Error {
+    fn from(error: crate::task::scheduler::Error) -> Self {
         Self::Scheduler(error)
     }
 }
@@ -65,16 +68,15 @@ pub(super) fn run() -> Result<(), Error> {
     SLEEP_OBSERVATION.complete.store(false, Ordering::Relaxed);
     SLEEP_OBSERVATION.elapsed_ns.store(0, Ordering::Relaxed);
     SLEEP_OBSERVATION.error.store(0, Ordering::Relaxed);
-    let worker = crate::kernel::task::scheduler::kthread_create(
+    let worker = crate::task::scheduler::kthread_create(
         "sleep-test",
         sleep_worker,
         core::ptr::from_ref(&SLEEP_OBSERVATION).expose_provenance(),
     )?;
-    crate::kernel::task::scheduler::thread_ready(worker)?;
-    if !crate::kernel::task::wait_for_test_progress(
-        crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-        || Ok::<_, Error>(SLEEP_OBSERVATION.complete.load(Ordering::Acquire)),
-    )? {
+    crate::task::scheduler::thread_ready(worker)?;
+    if !crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+        Ok::<_, Error>(SLEEP_OBSERVATION.complete.load(Ordering::Acquire))
+    })? {
         return Err(Error::UnexpectedSleepResult);
     }
     if SLEEP_OBSERVATION.error.load(Ordering::Acquire) != 0 {
@@ -84,7 +86,7 @@ pub(super) fn run() -> Result<(), Error> {
         return Err(Error::SleptTooBriefly);
     }
 
-    let expired = crate::kernel::time::monotonic_ticks().wrapping_sub(1);
+    let expired = crate::time::monotonic_ticks().wrapping_sub(1);
     sleep_until(expired)?;
 
     crate::hal::irq::mask_local();
@@ -92,18 +94,18 @@ pub(super) fn run() -> Result<(), Error> {
     crate::hal::irq::enable_local();
     if masked
         != Err(SleepError::Scheduler(
-            crate::kernel::task::scheduler::Error::CannotSleepWithInterruptsMasked,
+            crate::task::scheduler::Error::CannotSleepWithInterruptsMasked,
         ))
     {
         return Err(Error::UnexpectedSleepResult);
     }
 
-    let guard = crate::kernel::task::scheduler::preempt_disable()?;
+    let guard = crate::task::scheduler::preempt_disable()?;
     let preempt_disabled = sleep_ns(TEST_SLEEP_NS);
     drop(guard);
     if preempt_disabled
         != Err(SleepError::Scheduler(
-            crate::kernel::task::scheduler::Error::CannotSleepWithPreemptionDisabled,
+            crate::task::scheduler::Error::CannotSleepWithPreemptionDisabled,
         ))
     {
         return Err(Error::UnexpectedSleepResult);
@@ -130,7 +132,7 @@ extern "C" fn sleep_worker(context: usize) {
     // SAFETY: Only the address of the static SLEEP_OBSERVATION is passed here.
     // Its lifetime dominates the one-shot worker and every failure path.
     let observation = unsafe { &*core::ptr::with_exposed_provenance::<SleepObservation>(context) };
-    let start = match crate::kernel::time::monotonic_nanoseconds() {
+    let start = match crate::time::monotonic_nanoseconds() {
         Ok(start) => start,
         Err(_) => {
             observation.error.store(1, Ordering::Relaxed);
@@ -145,7 +147,7 @@ extern "C" fn sleep_worker(context: usize) {
     } else if sleep_ns(TEST_SLEEP_NS).is_err() {
         observation.error.store(3, Ordering::Relaxed);
     } else {
-        match crate::kernel::time::monotonic_nanoseconds() {
+        match crate::time::monotonic_nanoseconds() {
             Ok(end) => observation
                 .elapsed_ns
                 .store(end.wrapping_sub(start), Ordering::Relaxed),

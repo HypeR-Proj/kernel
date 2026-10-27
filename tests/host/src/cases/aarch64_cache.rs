@@ -3,8 +3,10 @@
 
 //! AArch64 guest instruction-cache alias policy.
 
-use hyper::vm::aarch64::cache::{
-    GuestInstructionCachePolicy, guest_instruction_cache_policy, instruction_publication_contract,
+use {
+    hyper_vm_models::aarch64::cache::GuestInstructionCachePolicy,
+    hyper_vm_models::aarch64::cache::guest_instruction_cache_policy,
+    hyper_vm_models::aarch64::cache::instruction_publication_contract,
 };
 
 #[test]

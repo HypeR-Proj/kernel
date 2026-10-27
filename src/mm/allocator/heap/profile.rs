@@ -5,10 +5,10 @@
 //! allocation records, stack walks, or dynamically allocated bookkeeping.
 
 #[cfg(feature = "heap-profiling")]
-use crate::sync::atomic::{AtomicU64, Ordering};
+use {hyper::sync::atomic::AtomicU64, hyper::sync::atomic::Ordering};
 
 /// Eight slab classes and one large-allocation bucket in each heap pool.
-pub const BUCKETS: usize = 2 * (super::SLAB_CLASS_COUNT + 1);
+pub const BUCKETS: usize = 2 * (crate::mm::allocator::heap::SLAB_CLASS_COUNT + 1);
 
 /// Independently sampled logical counters and lock-consistent backing counts.
 /// In-flight magazine transfers are reserved slots, not live caller objects.
@@ -45,9 +45,14 @@ impl Backing {
 }
 
 #[cfg(feature = "heap-profiling")]
-pub(super) fn bucket(pool: super::HeapPool, class: Option<super::HeapSlabClass>) -> usize {
-    pool as usize * (super::SLAB_CLASS_COUNT + 1)
-        + class.map_or(super::SLAB_CLASS_COUNT, |class| class.index())
+pub(super) fn bucket(
+    pool: crate::mm::allocator::heap::HeapPool,
+    class: Option<crate::mm::allocator::heap::HeapSlabClass>,
+) -> usize {
+    pool as usize * (crate::mm::allocator::heap::SLAB_CLASS_COUNT + 1)
+        + class.map_or(crate::mm::allocator::heap::SLAB_CLASS_COUNT, |class| {
+            class.index()
+        })
 }
 
 #[cfg(feature = "heap-profiling")]

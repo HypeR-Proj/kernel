@@ -3,9 +3,13 @@
 
 //! Runtime symbol lookup, demangling, and malformed-table rejection.
 
-use hyper::debug::kallsyms::{
-    COMPACT_HEADER_SIZE, COMPACT_MAGIC, COMPACT_RECORD_SIZE, COMPACT_VERSION, CompactSymbolTable,
-    Error, SymbolTable,
+use {
+    crate::diagnostics::debug::symbols::COMPACT_HEADER_SIZE,
+    crate::diagnostics::debug::symbols::COMPACT_MAGIC,
+    crate::diagnostics::debug::symbols::COMPACT_RECORD_SIZE,
+    crate::diagnostics::debug::symbols::COMPACT_VERSION,
+    crate::diagnostics::debug::symbols::CompactSymbolTable,
+    crate::diagnostics::debug::symbols::Error, crate::diagnostics::debug::symbols::SymbolTable,
 };
 
 fn symbol(name: u32, info: u8, section: u16, value: u64, size: u64) -> [u8; 24] {
@@ -49,7 +53,7 @@ fn resolves_the_nearest_preceding_runtime_function() {
 
 #[test]
 fn displays_runtime_symbols_with_rust_names_demangled() {
-    let symbol = hyper::debug::kallsyms::Symbol {
+    let symbol = crate::diagnostics::debug::symbols::Symbol {
         name: "_RNvCskwGfYPst2Cb_3foo16example_function",
         address: 0x1000,
         size: 0x40,
@@ -57,7 +61,7 @@ fn displays_runtime_symbols_with_rust_names_demangled() {
     };
     assert_eq!(symbol.to_string(), "foo::example_function+0x18/0x40");
 
-    let foreign = hyper::debug::kallsyms::Symbol {
+    let foreign = crate::diagnostics::debug::symbols::Symbol {
         name: "start_kernel",
         address: 0x2000,
         size: 0x20,

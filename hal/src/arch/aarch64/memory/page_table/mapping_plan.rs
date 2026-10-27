@@ -10,12 +10,12 @@
 
 use hyper::hal::memory::KernelImageLayout;
 use hyper::mm::{BootAllocator, PAGE_SIZE, PhysicalAddress, VirtualAddress};
-use hyper::platform::{PhysicalRange, PlatformInfo};
+use {hyper::mm::ranges::PhysicalRange, hyper_platform::PlatformInfo};
 
 use super::super::layout::{self, HostLayout, RootRegion};
 use super::descriptor::MappingFlags;
 use super::{Error, KERNEL_STACK_PAGES, PageTableBuilder, align_down, align_up};
-use crate::arch::aarch64::address;
+use crate::arch::aarch64::memory::address;
 
 #[derive(Clone, Copy, Debug)]
 pub(in crate::arch::aarch64::memory) struct FinalAddressSpace {

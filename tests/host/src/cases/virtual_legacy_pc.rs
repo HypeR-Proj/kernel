@@ -3,7 +3,10 @@
 
 //! Legacy x86 virtual-device composition and interrupt routing.
 
-use hyper::vm::x86::device::legacy_pc::{InterruptSource, LegacyPcDevices};
+use {
+    hyper_vm_models::x86::device::legacy_pc::InterruptSource,
+    hyper_vm_models::x86::device::legacy_pc::LegacyPcDevices,
+};
 
 #[test]
 fn keeps_uart_divisor_programming_out_of_the_console_stream() {

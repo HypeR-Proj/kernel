@@ -9,15 +9,18 @@
 //! Linux image formats and boot ABI policy deliberately remain outside it.
 
 use hyper::sync::PublishedOnce;
-use hyper::vm::exit::{GuestMemoryFault, MemoryFaultAction};
+use {hyper_vm_models::exit::GuestMemoryFault, hyper_vm_models::exit::MemoryFaultAction};
 
 #[cfg(CONFIG_ARCH_AARCH64)]
 pub(crate) use super::imp::virtual_timer_eoi_pending;
 
 #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
-use hyper::vm::exit::{MmioAccess, MmioAction};
+use {hyper_vm_models::exit::MmioAccess, hyper_vm_models::exit::MmioAction};
 #[cfg(CONFIG_ARCH_X86_64)]
-use hyper::vm::x86::exit::{PendingInterruptAction, PortIoAction, PortIoExit};
+use {
+    hyper_vm_models::x86::exit::PendingInterruptAction, hyper_vm_models::x86::exit::PortIoAction,
+    hyper_vm_models::x86::exit::PortIoExit,
+};
 
 pub use super::imp::{
     VcpuInterruptError, VmInterruptController as InterruptController,

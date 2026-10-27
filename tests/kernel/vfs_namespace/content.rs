@@ -4,10 +4,10 @@
 //! Exercise content ownership through independently opened namespace aliases.
 
 use super::{DirectoryObject, Error, FileObject, FileOpenOptions, ScratchBudget, TestError, check};
-use crate::kernel::accounting::ResourceDomain;
-use crate::kernel::authority::Rights;
+use crate::accounting::ResourceDomain;
+use crate::authority::Rights;
+use crate::fs::primitives::NodeKind;
 use alloc::vec::Vec;
-use hyper::fs::NodeKind;
 
 pub(super) fn run(
     root: &DirectoryObject,

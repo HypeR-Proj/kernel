@@ -9,6 +9,7 @@ publish = false
 
 [dev-dependencies]
 hyper = { package = "hyper-core", path = "../../core" }
+hyper-vm-models = { path = "../../vm-models", default-features = false }
 loom = "0.7.2"
 
 [lints.clippy]

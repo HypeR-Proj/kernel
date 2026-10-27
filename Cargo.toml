@@ -22,25 +22,25 @@ crash-console = ["aarch64"]
 pmu-profiling = ["aarch64"]
 
 [workspace]
-members = ["core", "hal"]
+members = ["core", "hal", "platform", "drivers", "vm-models", "trace"]
 exclude = ["tests/host", "tests/concurrency", "tools/kallsyms", "tools/kconfig"]
-default-members = [".", "core", "hal"]
+default-members = [".", "core", "hal", "platform", "drivers", "vm-models", "trace"]
 resolver = "3"
 
 [features]
-kernel-trace = ["hyper/kernel-trace"]
+kernel-trace = ["hyper-trace/kernel-trace"]
 pmu-profiling = ["hyper-hal/pmu-profiling"]
 default = ["rtc", "runtime-symbols", "crash-console"]
-rtc = ["hyper/rtc"]
-runtime-symbols = ["hyper/runtime-symbols"]
-crash-console = ["hyper/crash-console", "hyper-hal/crash-console"]
-heap-profiling = ["hyper/heap-profiling"]
-kernel-test = ["hyper/kernel-test", "hyper-hal/kernel-test"]
+rtc = ["hyper-drivers/rtc"]
+runtime-symbols = ["dep:rustc-demangle"]
+crash-console = ["hyper/crash-console", "hyper-hal/crash-console", "hyper-drivers/crash-console"]
+heap-profiling = []
+kernel-test = ["hyper-hal/kernel-test", "hyper-drivers/kernel-test"]
 kernel-vgic-tc-test = ["hyper-hal/kernel-vgic-tc-test"]
-kernel-self-test = ["hyper/kernel-self-test", "hyper-hal/kernel-self-test"]
+kernel-self-test = ["hyper-hal/kernel-self-test"]
 kernel-smmuv3-test = ["kernel-self-test"]
-io-dma-revoke-test = ["hyper/io-dma-revoke-test"]
-kernel-stack-audit = ["hyper/kernel-stack-audit", "hyper-hal/kernel-stack-audit"]
+io-dma-revoke-test = ["hyper-drivers/io-dma-revoke-test"]
+kernel-stack-audit = ["hyper-hal/kernel-stack-audit"]
 
 [[bin]]
 name = "hyper"
@@ -52,6 +52,11 @@ bench = false
 hyper-filesystem = { path = "../stdlib/rust/hyper-filesystem" }
 hyper = { package = "hyper-core", path = "core", default-features = false }
 hyper-hal = { path = "hal", default-features = false }
+hyper-platform = { path = "platform", default-features = false }
+hyper-drivers = { path = "drivers", default-features = false }
+hyper-vm-models = { path = "vm-models", default-features = false }
+rustc-demangle = { version = "0.1.28", default-features = false, optional = true }
+hyper-trace = { path = "trace", default-features = false }
 
 [lints.clippy]
 doc_markdown = "deny"

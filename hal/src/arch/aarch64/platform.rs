@@ -1,11 +1,15 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-use hyper::platform::{
-    CpuPowerInfo, GicV2Info, GicV3Info, InterruptControllerInfo, MAX_GIC_REDISTRIBUTOR_REGIONS,
-    PhysicalRange, PlatformInterrupt, PlatformInterruptTrigger, PsciCompatibleVersion, PsciConduit,
-    PsciInfo, PsciInterface, PsciLegacyFunctionIds, RegionList, TimerInfo, TimerKind,
-    fdt::{NodeId, NodeResources, NodeVisitor, Property},
+use {
+    hyper::mm::ranges::PhysicalRange, hyper::mm::ranges::RegionList, hyper_platform::CpuPowerInfo,
+    hyper_platform::GicV2Info, hyper_platform::GicV3Info, hyper_platform::InterruptControllerInfo,
+    hyper_platform::MAX_GIC_REDISTRIBUTOR_REGIONS, hyper_platform::PlatformInterrupt,
+    hyper_platform::PlatformInterruptTrigger, hyper_platform::PsciCompatibleVersion,
+    hyper_platform::PsciConduit, hyper_platform::PsciInfo, hyper_platform::PsciInterface,
+    hyper_platform::PsciLegacyFunctionIds, hyper_platform::TimerInfo, hyper_platform::TimerKind,
+    hyper_platform::fdt::NodeId, hyper_platform::fdt::NodeResources,
+    hyper_platform::fdt::NodeVisitor, hyper_platform::fdt::Property,
 };
 
 const MAX_FDT_DEPTH: usize = 32;

@@ -18,12 +18,17 @@ def graph():
     return {
         'packages': [
             {'name': name, 'id': name, 'targets': [{'kind': [kind]}]}
-            for name, kind in [('hyper', 'bin'), ('hyper-hal', 'lib'), ('hyper-core', 'lib')]
+            for name, kind in [('hyper', 'bin'), ('hyper-hal', 'lib'), ('hyper-core', 'lib'),
+                               ('hyper-trace', 'lib'), ('hyper-platform', 'lib'),
+                               ('hyper-drivers', 'lib'), ('hyper-vm-models', 'lib')]
         ],
         'resolve': {'nodes': [
             {'id': name, 'deps': [{'pkg': dep} for dep in dependencies]}
-            for name, dependencies in [('hyper', ['hyper-hal', 'hyper-core']),
-                                       ('hyper-hal', ['hyper-core']), ('hyper-core', [])]
+            for name, dependencies in [('hyper', ['hyper-hal', 'hyper-core', 'hyper-trace', 'hyper-platform', 'hyper-drivers', 'hyper-vm-models']),
+                                       ('hyper-hal', ['hyper-core', 'hyper-platform', 'hyper-drivers', 'hyper-vm-models']), ('hyper-core', []),
+                                       ('hyper-trace', ['hyper-core']), ('hyper-platform', ['hyper-core']),
+                                       ('hyper-drivers', ['hyper-core', 'hyper-platform']),
+                                       ('hyper-vm-models', ['hyper-core'])]
         ]},
     }
 
@@ -45,11 +50,38 @@ class GraphTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'forbidden reverse'):
             boundary.verify_graph(metadata)
 
+    def test_discovery_cannot_depend_on_drivers(self):
+        metadata = graph()
+        metadata['resolve']['nodes'][4]['deps'].append({'pkg': 'hyper-drivers'})
+        with self.assertRaisesRegex(ValueError, 'forbidden reverse'):
+            boundary.verify_graph(metadata)
+
+    def test_driver_cannot_depend_on_hal(self):
+        metadata = graph()
+        metadata['resolve']['nodes'][5]['deps'].append({'pkg': 'hyper-hal'})
+        with self.assertRaisesRegex(ValueError, 'forbidden reverse'):
+            boundary.verify_graph(metadata)
+
     def test_policy_library_not_allowed(self):
         metadata = graph()
         metadata['packages'][0]['targets'].append({'kind': ['lib']})
         with self.assertRaisesRegex(ValueError, 'policy must not'):
             boundary.verify_graph(metadata)
+
+    def test_core_must_not_depend_on_trace(self):
+        metadata = graph()
+        metadata['resolve']['nodes'][2]['deps'].append({'pkg': 'hyper-trace'})
+        with self.assertRaisesRegex(ValueError, 'forbidden reverse'):
+            boundary.verify_graph(metadata)
+
+    def test_trace_must_not_depend_on_machine_or_policy_even_indirectly(self):
+        for target in ('hyper-hal', 'hyper'):
+            with self.subTest(target=target):
+                metadata = graph()
+                metadata['resolve']['nodes'][3]['deps'].append({'pkg': 'bridge'})
+                metadata['resolve']['nodes'].append({'id': 'bridge', 'deps': [{'pkg': target}]})
+                with self.assertRaisesRegex(ValueError, 'forbidden reverse'):
+                    boundary.verify_graph(metadata)
 
     def test_missing_boundary_edge(self):
         metadata = graph()

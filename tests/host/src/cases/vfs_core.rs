@@ -3,9 +3,15 @@
 
 //! Bounded VFS names, paths, and hierarchical RamFs contracts.
 
-use hyper::fs::ramfs::{DirectoryCookie, Error as RamFsError, RamFs};
-use hyper::fs::{
-    MAX_NAME_BYTES, MAX_PATH_BYTES, Name, NameError, NodeKind, Path, PathComponent, PathError,
+use {
+    crate::fs::primitives::MAX_NAME_BYTES, crate::fs::primitives::MAX_PATH_BYTES,
+    crate::fs::primitives::Name, crate::fs::primitives::NameError, crate::fs::primitives::NodeKind,
+    crate::fs::primitives::Path, crate::fs::primitives::PathComponent,
+    crate::fs::primitives::PathError,
+};
+use {
+    crate::fs::primitives::ramfs::DirectoryCookie,
+    crate::fs::primitives::ramfs::Error as RamFsError, crate::fs::primitives::ramfs::RamFs,
 };
 
 fn append_hex(output: &mut Vec<u8>, value: u32) {

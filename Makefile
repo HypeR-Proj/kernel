@@ -178,7 +178,7 @@ check: prepare-config
 	$(CARGO) clippy --manifest-path $(KALLSYMS_MANIFEST) --target $(HOST_TARGET) -- -D warnings
 
 doc: prepare-config
-	$(KERNEL_CONFIG_ENV) $(CARGO) doc --no-deps --package hyper --package hyper-core --package hyper-hal --package hyper-abi --document-private-items --locked --target $(TARGET) $(KERNEL_CARGO_FEATURES)
+	$(KERNEL_CONFIG_ENV) $(CARGO) doc --no-deps --package hyper --package hyper-core --package hyper-hal --package hyper-trace --package hyper-platform --package hyper-drivers --package hyper-vm-models --package hyper-abi --document-private-items --locked --target $(TARGET) $(KERNEL_CARGO_FEATURES)
 
 test: prepare-config
 	$(KERNEL_CONFIG_ENV) $(CARGO) test --manifest-path $(HOST_TEST_MANIFEST) --target $(HOST_TARGET)

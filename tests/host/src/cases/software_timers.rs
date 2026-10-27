@@ -3,9 +3,11 @@
 
 //! Software-timer ordering, identity, cancellation, and periodic semantics.
 
-use hyper::time::{
-    DeadlineQueue, OwnedDeadlineQueue, PendingTimer, ReservedTimerCallbacks, ReservedTimerNode,
-    TimerEvent, TimerMode, TimerQueueError,
+use {
+    crate::time::queue::DeadlineQueue, crate::time::queue::OwnedDeadlineQueue,
+    crate::time::queue::PendingTimer, crate::time::queue::ReservedTimerCallbacks,
+    crate::time::queue::ReservedTimerNode, crate::time::queue::TimerEvent,
+    crate::time::queue::TimerMode, crate::time::queue::TimerQueueError,
 };
 
 struct ReservedProbe {

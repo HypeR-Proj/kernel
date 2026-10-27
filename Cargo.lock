@@ -7,8 +7,13 @@ name = "hyper"
 version = "0.1.0"
 dependencies = [
  "hyper-core",
+ "hyper-drivers",
  "hyper-filesystem",
  "hyper-hal",
+ "hyper-platform",
+ "hyper-trace",
+ "hyper-vm-models",
+ "rustc-demangle",
 ]
 
 [[package]]
@@ -20,7 +25,14 @@ name = "hyper-core"
 version = "0.1.0"
 dependencies = [
  "hyper-abi",
- "rustc-demangle",
+]
+
+[[package]]
+name = "hyper-drivers"
+version = "0.1.0"
+dependencies = [
+ "hyper-core",
+ "hyper-platform",
 ]
 
 [[package]]
@@ -29,6 +41,30 @@ version = "0.0.0"
 
 [[package]]
 name = "hyper-hal"
+version = "0.1.0"
+dependencies = [
+ "hyper-core",
+ "hyper-drivers",
+ "hyper-platform",
+ "hyper-vm-models",
+]
+
+[[package]]
+name = "hyper-platform"
+version = "0.1.0"
+dependencies = [
+ "hyper-core",
+]
+
+[[package]]
+name = "hyper-trace"
+version = "0.1.0"
+dependencies = [
+ "hyper-core",
+]
+
+[[package]]
+name = "hyper-vm-models"
 version = "0.1.0"
 dependencies = [
  "hyper-core",

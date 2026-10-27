@@ -9,10 +9,19 @@ use hyper::mm::PAGE_SIZE;
 use hyper::sync::InterruptSpinLock;
 
 use super::{Error, IMAGE_BASE, prepare_process, retire_process};
-use crate::kernel::accounting::{ResourceDomain, ResourceKind, ResourceLimits};
-use crate::kernel::process::{MachineAbi, Process, TaskGroup, TerminalReason, atomic_wait};
-use crate::kernel::task::scheduler::{self, CpuMask};
-use crate::kernel::task::{TEST_PROGRESS_TIMEOUT_NS, WaitOutcome, wait_for_test_progress};
+use {
+    crate::accounting::ResourceDomain, crate::accounting::ResourceKind,
+    crate::accounting::ResourceLimits,
+};
+use {
+    crate::process::MachineAbi, crate::process::Process, crate::process::TaskGroup,
+    crate::process::TerminalReason, crate::process::atomic_wait,
+};
+use {
+    crate::task::TEST_PROGRESS_TIMEOUT_NS, crate::task::WaitOutcome,
+    crate::task::wait_for_test_progress,
+};
+use {crate::task::scheduler, crate::task::scheduler::CpuMask};
 
 const ADDRESS: u64 = IMAGE_BASE + PAGE_SIZE * 2;
 const COLLISION: u64 = ADDRESS + 256;
@@ -62,7 +71,7 @@ pub(super) fn run(domain: &ResourceDomain, group: &TaskGroup, program: &[u8]) ->
 /// Completing arbitration must not permit a new wait or exit until every
 /// signal subscription and timeout has retired, in either cleanup order.
 fn exercise_source_cleanup() -> Result<(), Error> {
-    use crate::kernel::task::{WaitMobility, WaitSource, WaitSourceRegistration};
+    use {crate::task::WaitMobility, crate::task::WaitSource, crate::task::WaitSourceRegistration};
     for timer_first in [false, true] {
         let registration =
             scheduler::begin_wait(WaitMobility::Migratable).map_err(|_| Error::Scheduler)?;
@@ -97,7 +106,7 @@ fn exercise_source_cleanup() -> Result<(), Error> {
 }
 
 fn verify_cleanup_blocks_reuse() -> Result<(), Error> {
-    match scheduler::begin_wait(crate::kernel::task::WaitMobility::Migratable) {
+    match scheduler::begin_wait(crate::task::WaitMobility::Migratable) {
         Err(scheduler::Error::InvalidWaitRegistration) => {}
         Err(_) => return Err(Error::Scheduler),
         Ok(registration) => {
@@ -138,7 +147,7 @@ fn exercise(process: &Process) -> Result<(), Error> {
     for _ in 0..16 {
         let cancelled = atomic_wait::wait(process, ADDRESS, 0, u64::MAX, || true)
             .map_err(|_| Error::AtomicWait("prepublication cancellation"))?;
-        let deadline = crate::kernel::time::monotonic_nanoseconds()
+        let deadline = crate::time::monotonic_nanoseconds()
             .map_err(|_| Error::AtomicWait("read clock"))?
             .checked_add(10_000_000)
             .ok_or(Error::AtomicWait("deadline overflow"))?;
@@ -180,7 +189,7 @@ fn exercise(process: &Process) -> Result<(), Error> {
     {
         return Err(Error::AtomicWait("active waiter accounting"));
     }
-    if crate::kernel::cpu::online_cpu_count() > 1 {
+    if crate::cpu::online_cpu_count() > 1 {
         for id in ids.into_iter().flatten() {
             scheduler::set_thread_affinity(
                 id,
@@ -249,9 +258,9 @@ extern "C" fn worker(index: usize) {
     ) {
         FAILED.store(true, Ordering::Release);
     }
-    let expected_cpu = usize::from(crate::kernel::cpu::online_cpu_count() > 1);
+    let expected_cpu = usize::from(crate::cpu::online_cpu_count() > 1);
     if !CANCEL.load(Ordering::Acquire)
-        && crate::kernel::cpu::current_index().map(CpuIndex::get) != Some(expected_cpu)
+        && crate::cpu::current_index().map(CpuIndex::get) != Some(expected_cpu)
     {
         FAILED.store(true, Ordering::Release);
     }

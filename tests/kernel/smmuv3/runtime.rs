@@ -7,13 +7,12 @@ use super::{
     E, Error, Fixture, GUARD, IOVA, LeaseAddress, OTHER_IOVA, PATTERN_A, PATTERN_B, fill, page,
     verify,
 };
-use crate::kernel::device::iommu::runtime;
-use hyper::{
-    drivers::{
-        iommu::smmuv3::{CommandError, Containment, Environment, Permissions},
-        platform::{DriverServices, PlatformDevice},
-    },
-    sync::InterruptSpinLock,
+use crate::device::iommu::runtime;
+use {
+    hyper::sync::InterruptSpinLock, hyper_drivers::iommu::smmuv3::CommandError,
+    hyper_drivers::iommu::smmuv3::Containment, hyper_drivers::iommu::smmuv3::Environment,
+    hyper_drivers::iommu::smmuv3::Permissions, hyper_drivers::platform::DriverServices,
+    hyper_drivers::platform::PlatformDevice,
 };
 
 struct Prepared {
@@ -172,11 +171,11 @@ pub(crate) fn run() -> Result<(), Error> {
 }
 
 fn timeout_test() -> Result<bool, Error> {
-    let physical = crate::kernel::boot::with_boot_state(|state| state.dtb_address);
-    let address = crate::kernel::mm::memory::linear_address(physical).ok_or(Error::Address)?;
-    let mut chosen = hyper::platform::chosen::Discovery::new();
+    let physical = crate::boot::with_boot_state(|state| state.dtb_address);
+    let address = crate::mm::memory::linear_address(physical).ok_or(Error::Address)?;
+    let mut chosen = hyper_platform::chosen::Discovery::new();
     // SAFETY: The boot DTB stays reserved in the permanent linear map.
-    unsafe { hyper::platform::fdt::discover_with(address, &mut chosen) }
+    unsafe { hyper_platform::fdt::discover_with(address, &mut chosen) }
         .map_err(|_| Error::Corrupt)?;
     let chosen = chosen.finish().map_err(|_| Error::Corrupt)?;
     match chosen
@@ -195,7 +194,7 @@ fn wait(mut condition: impl FnMut() -> Result<bool, Error>) -> Result<(), Error>
         if E::now_microseconds().wrapping_sub(start) > 5_000_000 {
             return Err(Error::Failed);
         }
-        crate::kernel::task::scheduler::cond_resched().map_err(|_| Error::Corrupt)?;
+        crate::task::scheduler::cond_resched().map_err(|_| Error::Corrupt)?;
         core::hint::spin_loop();
     }
     Ok(())
@@ -223,8 +222,8 @@ fn inject_illegal_command(registers: usize) -> Result<(), Error> {
     if producer != read32(registers + 0x9c) {
         return Err(Error::Corrupt);
     }
-    let queue = crate::kernel::mm::memory::linear_address(base & 0x0000_ffff_ffff_f000)
-        .ok_or(Error::Address)?;
+    let queue =
+        crate::mm::memory::linear_address(base & 0x0000_ffff_ffff_f000).ok_or(Error::Address)?;
     let command = queue + (producer & ((1 << bits) - 1)) as usize * 16;
     // SAFETY: Controller mutex excludes both software consumers. The queue is
     // empty, retained in the permanent linear map, and these two aligned words

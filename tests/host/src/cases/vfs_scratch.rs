@@ -6,8 +6,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use hyper::fs::file_data::StorageBudget;
-use hyper::fs::scratch::{BudgetedString, BudgetedVec, Error};
+use crate::fs::primitives::file_data::StorageBudget;
+use {
+    crate::fs::primitives::scratch::BudgetedString, crate::fs::primitives::scratch::BudgetedVec,
+    crate::fs::primitives::scratch::Error,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Quota;

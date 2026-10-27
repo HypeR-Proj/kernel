@@ -74,7 +74,11 @@ enum MemoryType {
 }
 
 pub(super) const fn table_index(address: u64, level: usize) -> usize {
-    registers::stage1_table_index(address, level, super::super::super::address::STAGE1_VA_BITS)
+    registers::stage1_table_index(
+        address,
+        level,
+        crate::arch::aarch64::memory::address::STAGE1_VA_BITS,
+    )
 }
 
 pub(super) fn best_mapping_level(

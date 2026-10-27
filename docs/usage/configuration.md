@@ -90,7 +90,7 @@ and board deployment select devices; this symbol never selected a kernel driver.
 `kernel-test` is an independent, default-off permission to compile kernel test
 instrumentation. It does not select a test and, on its own, still boots the
 production Native init path. Every test hook also requires its individual
-selector, including hooks exported by `hyper-core` and `hyper-hal`:
+selector, including hooks exported by `hyper-drivers` and `hyper-hal`:
 
 | Selector | Instrumentation |
 | --- | --- |

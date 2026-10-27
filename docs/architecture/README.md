@@ -13,37 +13,74 @@ implementation.
 
 ## Layer model
 
-Dependencies normally flow downward through these layers:
+The kernel workspace has seven crates. An arrow denotes a Cargo dependency:
 
-1. Kernel entry and initialization policy selects boot order and failure
-   policy.
-2. Kernel services own scheduling, interrupts, timekeeping, memory policy,
-   crash handling, physical-device integration, and installed VM lifecycles.
-3. Reusable VM code describes guest packages, guest ABI data, virtual-device
-   models, interrupt models, and typed exit events without owning global
-   kernel state.
-4. Architecture-neutral mechanisms in `mm`, `sync`, `time`, `log`, `archive`,
-   and similar modules provide reusable implementation building blocks.
-5. Architecture-neutral HAL contracts describe reusable capabilities. The
-   target-selected HAL binds those contracts and narrow kernel-facing
-   operations to exactly one architecture backend; it owns neither kernel
-   policy nor discoverable-device lifecycle.
-6. Architecture, platform, firmware, and physical-driver implementations
-   execute machine operations and access registers, instructions, MMIO, or
-   assembly.
+| Crate | Direct kernel-crate dependencies | Responsibility |
+| --- | --- | --- |
+| `hyper-core` | None | Shared types, collections, synchronization, hardware contracts and foundational memory mechanisms |
+| `hyper-platform` | core | Firmware parsing, resource descriptions and board-specific discovery |
+| `hyper-drivers` | core, platform | Physical device implementations and driver binding mechanisms |
+| `hyper-vm-models` | core | Guest-visible devices, interrupt models and portable virtualization contracts |
+| `hyper-trace` | core | Event definitions, macros and bounded recording |
+| `hyper-hal` | core, platform, drivers, vm-models | Selected architecture implementations and machine capabilities |
+| `hyper` (binary) | All six libraries | Initialization, resource ownership, scheduling and runtime subsystem policy |
 
-The binary package depends on `hyper-hal`, which compiles the selected HAL
-and architecture backend together. Its `arch` and `hal` modules are private;
-only the HAL capability interfaces are exported. Kernel code imports this crate
-as `hal` and cannot access backend modules. The HAL depends on `hyper-core`,
-not on the kernel binary. `hyper-core` packages the existing reusable library
-at `src/lib.rs`, including portable contracts and mechanisms, independently of
-kernel policy. It does not depend on the HAL implementation.
+Core additionally consumes the SDK's dependency-free `hyper-abi` crate. The
+binary consumes `hyper-filesystem` and optional symbol demangling. These are
+external to the seven kernel crates.
 
 ```text
-kernel binary ──→ hyper-hal ──→ hyper-core
-       └─────────────────────→ hyper-core
+kernel binary ──→ HAL ──→ drivers ──→ platform ──→ core
+       │           ├───────────────→ platform
+       │           ├───→ vm-models ─────────────→ core
+       │           └───────────────────────────→ core
+       ├───────────→ trace ─────────────────────→ core
+       └───────────→ core, platform, drivers, vm-models
 ```
+
+Each library owns its source under its own `src/` directory. HAL's `arch` and
+implementation modules remain private; the binary imports its public interface
+as `hal`. Core is imported as `hyper`; other libraries use their explicit crate
+names (`hyper_platform`, `hyper_drivers`, `hyper_vm_models`, `hyper_trace`). Core
+does not re-export these libraries and cannot depend on them.
+
+The binary's modules live directly under `src/`. `diagnostics/` groups crash,
+debug symbols, inspection, logging, PMU profiling and trace control. `fs/` groups
+filesystem primitives, boot archives, VFS ownership and file-cache residency.
+Bootstrap executable validation belongs to `process/formats/`. Runtime timer
+queues belong to `time/queue/`. `mm/allocator/` groups the runtime buddy and heap
+implementations with `policy.rs`, which supplies kernel policy and the global
+allocator instance. Host tests include the allocator mechanisms independently
+of that policy. `vm/serial/` groups virtual serial transport, output registration
+and ring arithmetic; `vm/timer/` groups guest-timer binding and recovery.
+
+Within each HAL architecture, `memory/` owns host translation geometry, KASLR
+and translation mechanisms, while `irq/` owns physical interrupt control.
+`user/` groups Native user execution and address-space machinery on AArch64 and
+RISC-V. `vm/` groups guest execution, virtual interrupts and stage-2 translation;
+the x86 VMX and SVM backends each own their assembly entry file in that directory.
+Assembly moves with its owning subsystem, and `build.rs` names those paths
+explicitly. Cross-subsystem CPU context, register definitions and platform
+discovery remain architecture-level modules. HAL's public capability interface
+and the crate dependency graph are unchanged by this internal grouping.
+
+Core retains address/range types, fallible allocation wrappers, early allocation,
+and portable page-table/translation mechanisms. `PhysicalRange` and `RegionList`
+live in `core/src/mm/ranges.rs`; platform discovery uses these types. The immutable
+`MemoryHandoff` snapshot also belongs to core. Boot allocation produces it, and
+the runtime buddy allocator takes its own memory/reservation state from it.
+This keeps the early allocator independent of both platform discovery and the
+runtime allocator implementation.
+
+Device and virtualization implementations consume core contracts or caller
+supplied operations. They do not call into kernel ownership or depend on HAL's
+concrete implementation. Trace similarly receives an installed machine adapter:
+CPU pinning, clock access, deadlines, authority checks and wire encoding remain
+in `src/diagnostics/trace/`, outside the recorder crate.
+
+The dependency gate in `tests/ci/hal-boundary.py` checks all seven packages and
+traverses indirect edges, including external helper packages, to reject reverse
+or cyclic dependencies. The binary deliberately has no library target.
 
 Cargo dependencies and Rust privacy enforce these access boundaries. They do
 not prove lock ordering, memory ordering, or retirement correctness; those
@@ -105,9 +142,22 @@ or infer a caller's allocation policy.
 
 ## Placement rules
 
-- `kernel` owns host policy, resource publication, initialization order, and
+- Group implementations by subsystem within each crate. Once a category has a
+  directory, keep its implementations and binding helpers there rather than
+  placing related files beside it. For example, firmware TRNG belongs to
+  `drivers/src/random/trng.rs`, and serial-console binding belongs to
+  `drivers/src/serial/console.rs`. A standalone module is appropriate for a
+  distinct responsibility without a natural parent category, such as the shared
+  platform-device contracts in `drivers/src/platform.rs`. This does not merge
+  similarly named modules across crate dependency boundaries.
+- A module with child files keeps its entry point inside the same directory as
+  `mod.rs`; do not split it between `name.rs` and a sibling `name/` directory.
+  Leaf modules may remain single files. For example, the NS16550 driver lives
+  entirely under `drivers/src/serial/ns16550/`, with `mod.rs`, `access.rs` and
+  `platform_binding.rs`.
+- The kernel binary owns host policy, resource publication, initialization order, and
   runtime VM/vCPU ownership.
-- `vm` owns reusable guest-facing formats and models. It must not own a kernel
+- `hyper-vm-models` owns reusable guest-facing formats and models. It must not own a kernel
   scheduler hook, global VM registry, or selected architecture backend.
 - `arch` owns context and exception ABIs, page-table and register encodings,
   instruction execution, CPU-specific behavior, and hardware virtualization
@@ -115,7 +165,7 @@ or infer a caller's allocation policy.
 - `hyper::hal` owns reusable capability contracts. `hyper-hal` supplies the thin,
   one-way machine adapter: it may use its private `arch`, but never `kernel`, and
   must not acquire policy ownership or create an alternate entry path.
-- `drivers` owns discoverable physical devices and firmware protocols. Virtual
+- `hyper-drivers` owns discoverable physical devices and firmware protocols. Virtual
   devices are VM services or reusable VM models, not physical drivers.
 - Early boot code must state which runtime facilities are unavailable. It must
   not silently depend on the permanent heap, scheduler, mappings, or logging.
@@ -242,7 +292,7 @@ the feature before accessing VHE-specific registers. An unsupported CPU stops
 in the pre-MMU `aarch64_unsupported_vhe` loop, observable through a debugger;
 this early path does not assume a platform UART is available.
 
-The checked [AArch64 address layout](../../hal/src/arch/aarch64/address_layout.rs)
+The checked [AArch64 address layout](../../hal/src/arch/aarch64/memory/address_layout.rs)
 defines permanent host windows for each supported `CONFIG_ARM64_VA_BITS`
 value from 42 through 48. Representative bases are:
 

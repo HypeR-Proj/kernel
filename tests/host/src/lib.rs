@@ -21,7 +21,7 @@ mod trace_macros;
 mod table_edit;
 
 #[cfg(test)]
-#[path = "../../../src/kernel/block/transfer.rs"]
+#[path = "../../../src/block/transfer.rs"]
 mod block_transfer;
 #[cfg(test)]
 #[path = "cases/block_transfers.rs"]
@@ -31,11 +31,11 @@ mod block_transfers;
 mod smmuv3;
 
 #[cfg(test)]
-#[path = "../../../src/mm/allocation/refcount.rs"]
+#[path = "../../../core/src/mm/allocation/refcount.rs"]
 mod fallible_refcount;
 
 #[cfg(all(test, target_arch = "aarch64"))]
-#[path = "../../../hal/src/arch/aarch64/exposed_copy.rs"]
+#[path = "../../../hal/src/arch/aarch64/user/copy.rs"]
 mod aarch64_exposed_copy;
 #[cfg(all(test, target_arch = "aarch64"))]
 #[path = "cases/aarch64_exposed_copy.rs"]
@@ -46,14 +46,14 @@ mod aarch64_exposed_copy_tests;
 mod riscv_devices;
 
 #[cfg(test)]
-#[path = "../../../hal/src/arch/riscv64/translation_id_policy.rs"]
+#[path = "../../../hal/src/arch/riscv64/memory/translation_id_policy.rs"]
 mod riscv_translation_id_policy;
 
 #[cfg(test)]
 #[path = "cases/riscv_user_contract.rs"]
 mod riscv_user_contract;
 #[cfg(test)]
-#[path = "../../../hal/src/arch/riscv64/user_contract.rs"]
+#[path = "../../../hal/src/arch/riscv64/user/contract.rs"]
 mod riscv_user_contract_model;
 
 #[cfg(test)]
@@ -61,22 +61,22 @@ mod riscv_user_contract_model;
 mod sharded_lock;
 
 #[cfg(test)]
-#[path = "../../../hal/src/arch/aarch64/address_layout.rs"]
+#[path = "../../../hal/src/arch/aarch64/memory/address_layout.rs"]
 mod aarch64_address_layout_model;
 #[cfg(test)]
-#[path = "../../../hal/src/arch/aarch64/guest_cpu_contract.rs"]
+#[path = "../../../hal/src/arch/aarch64/vm/cpu_contract.rs"]
 mod aarch64_guest_cpu_contract_model;
 #[cfg(test)]
-#[path = "../../../hal/src/arch/aarch64/user_contract.rs"]
+#[path = "../../../hal/src/arch/aarch64/user/contract.rs"]
 mod aarch64_user_contract_model;
 #[cfg(test)]
-#[path = "../../../src/kernel/io_cache/worker/request_state.rs"]
+#[path = "../../../src/fs/cache/worker/request_state.rs"]
 mod cache_reclaim_requests;
 #[cfg(test)]
-#[path = "../../../src/kernel/task/external_execution.rs"]
+#[path = "../../../src/task/external_execution.rs"]
 mod external_execution_model;
 #[cfg(test)]
-#[path = "../../../src/kernel/io_cache/mod.rs"]
+#[path = "../../../src/fs/cache/mod.rs"]
 mod file_data_cache;
 #[cfg(test)]
 #[path = "cases/filesystem_cache.rs"]
@@ -85,25 +85,25 @@ mod filesystem_cache_cases;
 #[path = "../../../hal/src/arch/aarch64/registers.rs"]
 mod registers;
 #[cfg(test)]
-#[path = "../../../src/kernel/vfs/read_contract.rs"]
+#[path = "../../../src/fs/vfs/read_contract.rs"]
 mod vfs_read_contract;
 #[cfg(test)]
-#[path = "../../../src/kernel/vfs/resolve_state.rs"]
+#[path = "../../../src/fs/vfs/resolve_state.rs"]
 mod vfs_resolve_state;
 #[cfg(test)]
-#[path = "../../../src/kernel/vfs/rights_contract.rs"]
+#[path = "../../../src/fs/vfs/rights_contract.rs"]
 mod vfs_rights_contract;
 #[cfg(test)]
-#[path = "../../../src/kernel/vm/address_space_state.rs"]
+#[path = "../../../src/vm/address_space_state.rs"]
 mod vm_address_space_state_model;
 #[cfg(test)]
-#[path = "../../../src/kernel/vm/endpoint_state.rs"]
+#[path = "../../../src/vm/endpoint_state.rs"]
 mod vm_endpoint_state_model;
 #[cfg(test)]
-#[path = "../../../src/kernel/vm/endpoint_wait.rs"]
+#[path = "../../../src/vm/endpoint_wait.rs"]
 mod vm_endpoint_wait_model;
 #[cfg(test)]
-#[path = "../../../src/kernel/vm/residency_state.rs"]
+#[path = "../../../src/vm/residency_state.rs"]
 mod vm_residency_state_model;
 
 #[cfg(test)]
@@ -156,7 +156,7 @@ mod cache_publication;
 #[path = "cases/capability_core.rs"]
 mod capability_core;
 #[cfg(test)]
-#[path = "../../../src/kernel/ipc/capability_wire.rs"]
+#[path = "../../../src/ipc/capability_wire.rs"]
 mod capability_wire;
 #[cfg(test)]
 #[path = "cases/cpio.rs"]
@@ -216,7 +216,7 @@ mod native_abi;
 #[path = "cases/ns16550.rs"]
 mod ns16550;
 #[cfg(test)]
-#[path = "cases/pci.rs"]
+#[path = "cases/pci/mod.rs"]
 mod pci;
 #[cfg(test)]
 #[path = "cases/physical_ranges.rs"]
@@ -238,7 +238,7 @@ mod psci;
 mod resource_domain;
 #[cfg(test)]
 #[path = "cases/runtime_allocators.rs"]
-mod runtime_allocators;
+mod runtime_allocator_tests;
 #[cfg(test)]
 #[path = "cases/sbsa_uart.rs"]
 mod sbsa_uart;
@@ -246,17 +246,17 @@ mod sbsa_uart;
 #[path = "cases/scheduler_policy.rs"]
 mod scheduler_policy;
 #[cfg(test)]
-#[path = "../../../src/kernel/task/policy.rs"]
+#[path = "../../../src/task/policy.rs"]
 mod scheduler_policy_model;
 
 #[cfg(test)]
-#[path = "../../../src/kernel/vm/timer_recovery.rs"]
+#[path = "../../../src/vm/timer/recovery.rs"]
 mod guest_timer_recovery;
 #[cfg(test)]
 #[path = "cases/scheduler_algorithms.rs"]
 mod scheduler_algorithms;
 #[cfg(test)]
-#[path = "../../../src/kernel/time/deadline_slot.rs"]
+#[path = "../../../src/time/deadline_slot.rs"]
 mod scheduler_deadline_slot;
 #[cfg(test)]
 #[path = "cases/scheduler_requests.rs"]
@@ -351,7 +351,7 @@ mod riscv_isa_contract;
 mod gicv2;
 
 #[cfg(test)]
-#[path = "../../../hal/src/arch/aarch64/bootstrap_map.rs"]
+#[path = "../../../hal/src/arch/aarch64/memory/bootstrap_map.rs"]
 mod bootstrap_map;
 #[cfg(test)]
 #[path = "cases/bootstrap_map.rs"]
@@ -362,49 +362,47 @@ mod bootstrap_map_tests;
 mod guest_io;
 
 #[cfg(test)]
-#[path = "../../../src/kernel/block/wire.rs"]
+#[path = "../../../src/block/wire.rs"]
 mod native_block_wire;
 
 #[cfg(test)]
-#[path = "../../../src/kernel/vm/memory/extent_index.rs"]
+#[path = "../../../src/vm/memory/extent_index.rs"]
 mod guest_extent_index;
 
 #[cfg(test)]
-#[path = "../../../src/kernel/vm/memory/grant_state.rs"]
+#[path = "../../../src/vm/memory/grant_state.rs"]
 mod guest_grant_state;
 
 #[cfg(test)]
-#[path = "../../../src/kernel/vm/retirement_observation.rs"]
+#[path = "../../../src/vm/retirement_observation.rs"]
 mod vm_retirement_observation;
 
 #[cfg(test)]
-#[path = "../../../src/kernel/task/scheduler/switch_handoff.rs"]
+#[path = "../../../src/task/scheduler/switch_handoff.rs"]
 mod scheduler_switch_handoff;
 
 #[cfg(test)]
-#[path = "../../../hal/src/arch/aarch64/translation_identifiers.rs"]
+#[path = "../../../hal/src/arch/aarch64/memory/translation_identifiers.rs"]
 mod aarch64_translation_identifiers;
 
 #[cfg(test)]
-#[path = "../../../src/mm/translation_epoch.rs"]
+#[path = "../../../core/src/mm/translation_epoch.rs"]
 mod translation_epoch_model;
 
 #[cfg(test)]
-#[path = "../../../hal/src/arch/aarch64/vgic/common.rs"]
+#[path = "../../../hal/src/arch/aarch64/vm/vgic/common.rs"]
 mod vgic_common;
 
 #[cfg(test)]
-#[path = "../../../hal/src/arch/aarch64/vgic/bank.rs"]
+#[path = "../../../hal/src/arch/aarch64/vm/vgic/bank.rs"]
 mod vgic_bank;
 
 #[cfg(test)]
-use hyper::{collections, debug, mm};
-#[cfg(test)]
-#[path = "../../../src/collections/persistent_avl.rs"]
+#[path = "../../../core/src/collections/persistent_avl.rs"]
 mod persistent_avl;
 
 #[cfg(test)]
-#[path = "../../../src/collections/indexed_heap.rs"]
+#[path = "../../../core/src/collections/indexed_heap.rs"]
 mod indexed_heap;
 
 #[cfg(test)]
@@ -418,7 +416,96 @@ mod random;
 #[cfg(test)]
 #[path = "cases/scheduling_authority.rs"]
 mod scheduling_authority;
+
 #[cfg(test)]
-mod kernel {
-    pub(crate) use crate::scheduling_authority::authority;
+#[path = "../../../src/mm/allocator/buddy.rs"]
+pub mod runtime_buddy;
+#[cfg(test)]
+#[path = "../../../src/mm/allocator/heap/mod.rs"]
+pub mod runtime_heap;
+#[cfg(test)]
+pub mod runtime_allocators {
+    pub use crate::runtime_buddy::{BuddyAllocator, BuddyError, BuddyStats, MAX_ORDER};
+    pub use crate::runtime_heap as heap;
+    pub use hyper::mm::boot::MemoryHandoff;
+}
+#[cfg(test)]
+pub mod mm {
+    pub use crate::runtime_allocators as allocator;
+    pub use hyper::mm::*;
+}
+
+#[cfg(test)]
+#[path = "../../../src/fs/primitives/mod.rs"]
+pub mod filesystem_primitives;
+
+#[cfg(test)]
+#[path = "../../../src/fs/archive/mod.rs"]
+pub mod filesystem_archive;
+
+#[cfg(test)]
+#[path = "../../../src/diagnostics/log/storage/mod.rs"]
+pub mod log_storage;
+
+#[cfg(test)]
+#[path = "../../../src/time/queue/mod.rs"]
+pub mod time_queue;
+
+#[cfg(test)]
+#[path = "../../../src/process/formats/mod.rs"]
+pub mod executable_formats;
+
+#[cfg(test)]
+#[path = "../../../src/diagnostics/debug/symbols.rs"]
+pub mod debug_symbols;
+
+#[cfg(test)]
+pub mod fs {
+    pub use crate::filesystem_archive as archive;
+    pub use crate::filesystem_primitives as primitives;
+}
+
+#[cfg(test)]
+pub mod log {
+    pub use crate::log_storage as storage;
+}
+
+#[cfg(test)]
+pub mod time {
+    pub use crate::time_queue as queue;
+}
+
+#[cfg(test)]
+pub mod process {
+    pub use crate::executable_formats as formats;
+}
+
+#[cfg(test)]
+pub mod debug {
+    pub use crate::debug_symbols as symbols;
+    pub use hyper::debug::*;
+}
+
+#[cfg(test)]
+pub(crate) use scheduling_authority::authority;
+
+#[cfg(test)]
+pub mod diagnostics {
+    pub use crate::{debug, log};
+}
+
+#[cfg(test)]
+pub(crate) use capability_core::kernel::{accounting, object};
+
+// Pure architecture models are included from their production modules above.
+#[cfg(test)]
+pub(crate) mod arch {
+    pub(crate) mod aarch64 {
+        pub(crate) use crate::registers;
+        pub(crate) mod vm {
+            pub(crate) mod vgic {
+                pub(crate) use crate::registers;
+            }
+        }
+    }
 }

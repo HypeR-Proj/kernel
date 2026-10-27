@@ -7,13 +7,18 @@
 //! --example timer_queue`. Allocation and destruction are outside measured
 //! intervals, matching the runtime queue lock boundary.
 
-use hyper::time::{OwnedDeadlineQueue, PendingTimer, TimerEvent, TimerMode};
+extern crate alloc;
+#[path = "../../../src/time/queue/mod.rs"]
+#[allow(dead_code, unused_imports)]
+mod queue;
+
 use std::hint::black_box;
 use std::time::{Duration, Instant};
+use {queue::OwnedDeadlineQueue, queue::PendingTimer, queue::TimerEvent, queue::TimerMode};
 
 fn callback(_: TimerEvent, _: usize) {}
 
-fn main() -> Result<(), hyper::time::TimerQueueError> {
+fn main() -> Result<(), queue::TimerQueueError> {
     println!("timers,operations,insert_ns,reset_ns,cancel_ns");
     for count in [1_usize, 32, 256, 4096] {
         let batches = (16_384 / count).max(4);

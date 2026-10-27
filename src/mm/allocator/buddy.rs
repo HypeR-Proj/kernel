@@ -3,36 +3,16 @@
 
 //! Intrusive physical-page buddy allocator.
 
-use crate::platform::{MAX_MEMORY_REGIONS, PhysicalRange, RegionList};
+use hyper::mm::boot::{MAX_MEMORY_REGIONS, MemoryHandoff};
+use hyper::mm::ranges::PhysicalRange;
+use hyper::mm::ranges::RegionList;
 
-use crate::mm::boot::MAX_BOOT_RESERVATIONS;
-use crate::mm::{PAGE_SIZE, PhysicalAddress};
+use hyper::mm::PAGE_SIZE;
+use hyper::mm::PhysicalAddress;
+use hyper::mm::boot::MAX_BOOT_RESERVATIONS;
 
 pub const MAX_ORDER: usize = 18;
 const NONE: u64 = u64::MAX;
-
-#[derive(Clone, Copy)]
-pub struct MemoryHandoff {
-    memory: RegionList<MAX_MEMORY_REGIONS>,
-    reserved: RegionList<MAX_BOOT_RESERVATIONS>,
-}
-
-impl MemoryHandoff {
-    pub(crate) const fn new(
-        memory: RegionList<MAX_MEMORY_REGIONS>,
-        reserved: RegionList<MAX_BOOT_RESERVATIONS>,
-    ) -> Self {
-        Self { memory, reserved }
-    }
-
-    pub fn memory(&self) -> &[PhysicalRange] {
-        self.memory.as_slice()
-    }
-
-    pub fn reserved(&self) -> &[PhysicalRange] {
-        self.reserved.as_slice()
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BuddyError {
@@ -74,7 +54,8 @@ impl BuddyStats {
 pub struct BuddyAllocator {
     free_roots: [u64; MAX_ORDER + 1],
     free_blocks: [usize; MAX_ORDER + 1],
-    handoff: MemoryHandoff,
+    memory: RegionList<MAX_MEMORY_REGIONS>,
+    reserved: RegionList<MAX_BOOT_RESERVATIONS>,
     direct_map_base: u64,
     managed_pages: usize,
     free_pages: usize,
@@ -101,13 +82,13 @@ impl BuddyAllocator {
         if range.size() == 0
             || (range.start() | range.end()) & (PAGE_SIZE - 1) != 0
             || !self
-                .handoff
-                .memory()
+                .memory
+                .as_slice()
                 .iter()
                 .any(|memory| memory.start() <= range.start() && range.end() <= memory.end())
             || !self
-                .handoff
-                .reserved()
+                .reserved
+                .as_slice()
                 .iter()
                 .any(|reserved| reserved.start() <= range.start() && range.end() <= reserved.end())
         {
@@ -124,7 +105,7 @@ impl BuddyAllocator {
             .checked_add(pages)
             .ok_or(BuddyError::AddressOverflow)?;
         let mut reserved = RegionList::new();
-        for &old in self.handoff.reserved() {
+        for &old in self.reserved.as_slice() {
             if !old.overlaps(range) {
                 reserved
                     .insert(old)
@@ -143,7 +124,7 @@ impl BuddyAllocator {
                     .map_err(|_| BuddyError::InvalidReservation)?;
             }
         }
-        self.handoff.reserved = reserved;
+        self.reserved = reserved;
         self.managed_pages = managed;
         self.add_interval(range.start(), range.end())?;
         Ok(pages)
@@ -159,10 +140,12 @@ impl BuddyAllocator {
         handoff: &MemoryHandoff,
         direct_map_base: u64,
     ) -> Result<Self, BuddyError> {
+        let (memory, reserved) = handoff.into_regions();
         let mut allocator = Self {
             free_roots: [NONE; MAX_ORDER + 1],
             free_blocks: [0; MAX_ORDER + 1],
-            handoff: *handoff,
+            memory,
+            reserved,
             direct_map_base,
             managed_pages: 0,
             free_pages: 0,
@@ -273,13 +256,13 @@ impl BuddyAllocator {
             .ok_or(BuddyError::Unaddressable)?;
         if physical & (PAGE_SIZE - 1) != 0
             || !self
-                .handoff
-                .memory()
+                .memory
+                .as_slice()
                 .iter()
                 .any(|range| range.start() <= physical && end <= range.end())
             || self
-                .handoff
-                .reserved()
+                .reserved
+                .as_slice()
                 .iter()
                 .any(|range| physical < range.end() && range.start() < end)
         {

@@ -3,7 +3,7 @@
 
 //! Physical-range validation, merging, and fixed-capacity behavior.
 
-use hyper::platform::{PhysicalRange, RegionList};
+use {hyper::mm::ranges::PhysicalRange, hyper::mm::ranges::RegionList};
 
 #[test]
 fn rejects_empty_and_overflowing_ranges() {

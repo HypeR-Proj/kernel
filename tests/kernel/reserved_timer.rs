@@ -3,7 +3,7 @@
 
 //! Exact cancellation and owner retention for movable reserved timer arms.
 
-use crate::kernel::time::IrqCallout;
+use crate::time::IrqCallout;
 use hyper::mm::FallibleArc;
 use hyper::sync::atomic::{AtomicUsize, Ordering};
 
@@ -25,8 +25,7 @@ pub(super) fn run() -> Result<(), Error> {
         .map_err(|_| Error::Allocation)?;
     // Cancellation returns the same reserved node for the next generation.
     for _ in 0..16 {
-        let deadline =
-            crate::kernel::time::deadline_after(10_000_000_000).map_err(|_| Error::Timer)?;
+        let deadline = crate::time::deadline_after(10_000_000_000).map_err(|_| Error::Timer)?;
         let arm = IrqCallout::arm_owned(reservation.clone(), deadline, notify, 0)
             .map_err(|_| Error::Timer)?;
         arm.retire().map_err(|_| Error::Timer)?;
@@ -35,17 +34,13 @@ pub(super) fn run() -> Result<(), Error> {
         return Err(Error::CallbackCount);
     }
     for expected in 1..=8 {
-        let deadline = crate::kernel::time::deadline_after(100_000).map_err(|_| Error::Timer)?;
+        let deadline = crate::time::deadline_after(100_000).map_err(|_| Error::Timer)?;
         let arm = IrqCallout::arm_owned(reservation.clone(), deadline, notify, 0)
             .map_err(|_| Error::Timer)?;
-        let progress = crate::kernel::task::wait_for_test_progress(
-            crate::kernel::task::TEST_PROGRESS_TIMEOUT_NS,
-            || {
-                Ok::<_, crate::kernel::task::SleepError>(
-                    CALLBACKS.load(Ordering::Acquire) >= expected,
-                )
-            },
-        );
+        let progress =
+            crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+                Ok::<_, crate::task::SleepError>(CALLBACKS.load(Ordering::Acquire) >= expected)
+            });
         // Retire even if progress fails: the callback owner never escapes a
         // failed assertion, and a completed callback is joined before rearm.
         arm.retire().map_err(|_| Error::Timer)?;
@@ -56,7 +51,7 @@ pub(super) fn run() -> Result<(), Error> {
             return Err(Error::CallbackCount);
         }
     }
-    let deadline = crate::kernel::time::deadline_after(10_000_000_000).map_err(|_| Error::Timer)?;
+    let deadline = crate::time::deadline_after(10_000_000_000).map_err(|_| Error::Timer)?;
     let arm = IrqCallout::arm_owned(reservation, deadline, notify, 0).map_err(|_| Error::Timer)?;
     // Only the armed token owns the allocation now; it remains stable through cancellation.
     arm.retire().map_err(|_| Error::Timer)?;
