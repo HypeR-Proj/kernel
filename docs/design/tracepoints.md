@@ -145,6 +145,14 @@ sequence. Use explicit correlation identities for causal relationships. The expo
 preserves loss information rather than inventing durations across gaps. Live
 thread-name lookups are best effort and stay outside hot-path events.
 
+Scheduler lifecycle observations distinguish a Terminated `sched_switch` from
+`sched_reap`. The latter carries the scheduler ThreadId and canonical Thread KOID
+(copied before destruction) after the reaper has destroyed detached execution
+resources, completed registry retirement and released
+the retirement owner. It does not claim that all externally retained Thread
+object handles have been closed. Consumers can end the thread's execution
+lifetime at this observation without inferring reclamation from a missing name.
+
 ## IPC commit and wait correlation
 
 ByteChannel pairs reserve one boot-local even observation identity and its

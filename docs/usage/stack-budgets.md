@@ -55,6 +55,11 @@ owners for the later delivery phase cannot occupy stack below sender input
 admission's usercopy/COW and allocator calls. No message capacity or transfer
 semantics change at this boundary.
 
+Path resolution separates state construction, relative-ancestry reconstruction,
+and component lookup. Preparation temporaries retire before backend lookup RPC;
+image checks bound each phase and its live sum with the traversal coordinator.
+This preserves space for IRQ-tail scheduling on an interrupted VFS syscall.
+
 `sh tests/ci/run.sh native-stack-16k` builds a production image with 16 KiB
 kernel thread stacks and runs Native acceptance on one and four CPUs. This is
 an independent CI job requiring init/root handoff, interactive shell commands,

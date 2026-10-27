@@ -97,6 +97,12 @@ def check(disassembly, *, self_test=False):
         # Path lookup already retains traversal/RPC state. Decode metadata
         # into the existing cache; never construct a full name-bearing reply.
         'vfs6remote9transport15decode_response': 512,
+        # Keep construction and relative-ancestry temporaries out of ordinary
+        # backend lookup waits, which may nest IRQ-tail placement repair.
+        'vfs7resolve4walk': 1024,
+        'vfs7resolve12prepare_walk': 1280,
+        'vfs7resolve13restore_start': 1664,
+        'vfs7resolve15walk_components': 1152,
         # Build the receive registration before output admission. Otherwise
         # its construction temporaries remain below COW/allocator/scheduler.
         '30sys_capability_channel_receive.*15ProcessServices': 4096,
@@ -125,6 +131,14 @@ def check(disassembly, *, self_test=False):
             raise ValueError(f'{name}: entry frame {size} exceeds contract 1..{budget}')
         measured[name] = size
         print(f'{name}: entry frame {size} bytes (budget {budget})')
+
+    # Moving scratch into a callee must shrink the live chain, not just its
+    # caller. Relative reconstruction and component lookup are disjoint phases.
+    for phase, budget in (('12prepare_walk', 2560), ('13restore_start', 2560),
+                          ('15walk_components', 2048)):
+        live = measured['vfs7resolve4walk'] + measured['vfs7resolve' + phase]
+        if live > budget:
+            raise ValueError(f'VFS {phase}: live frames {live} exceed {budget}')
 
     # Merely outlining output preparation can shrink the caller while growing
     # the live path: both frames remain below COW. Bound their sum as well.

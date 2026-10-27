@@ -43,6 +43,10 @@ SYMBOLS = (
     '17KernelPageBackend13DomainAccountE18prepare_user_write',
     '18NativeAddressSpace28prepare_private_write_change',
     'vfs6remote9transport15decode_response',
+    'vfs7resolve4walk',
+    'vfs7resolve12prepare_walk',
+    'vfs7resolve13restore_start',
+    'vfs7resolve15walk_components',
     '30sys_capability_channel_receive15ProcessServices',
     '25PreparedCapabilityReceive7try_new',
     '31sys_capability_channel_try_send15ProcessServices',
@@ -107,6 +111,23 @@ class ProcessStackTests(unittest.TestCase):
                                           'sub sp, sp, #0x800\nbl 0x20000\nret')
         with self.assertRaisesRegex(ValueError, 'entry frame 2144 exceeds'):
             self.check()
+
+    def test_vfs_lookup_cannot_retain_all_preparation_scratch(self):
+        symbol = 'vfs7resolve4walk'
+        self.functions[symbol] = function(symbol, 'sub sp, sp, #2528\nret')
+        with self.assertRaisesRegex(ValueError, 'entry frame 2528 exceeds'):
+            self.check()
+
+    def test_vfs_outlining_cannot_hide_live_frame_growth(self):
+        for phase, frame in (('15walk_components', 1152), ('13restore_start', 1664)):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.functions['vfs7resolve4walk'] = function(
+                    'vfs7resolve4walk', 'sub sp, sp, #960\nret')
+                self.functions['vfs7resolve' + phase] = function(
+                    'vfs7resolve' + phase, f'sub sp, sp, #{frame}\nret')
+                with self.assertRaisesRegex(ValueError, 'VFS .*live frames'):
+                    self.check()
 
     def test_unrecognized_frame_cannot_silently_pass(self):
         symbol = '15PreparedProcess7try_new'
