@@ -64,3 +64,85 @@ fn bulk_read_rejects_overflow_and_invalid_backend_lengths() {
         Err(BatchError::Contract(Error::InvalidBackendResult))
     );
 }
+
+#[test]
+fn buffered_reply_scatters_one_512k_payload_across_128_pages() {
+    use crate::vfs_read_contract::scatter_copy;
+    let source: Vec<u8> = (0..512 * 1024).map(|index| (index % 251) as u8).collect();
+    let mut pages = vec![vec![0; 4096]; 128];
+    let mut targets: Vec<_> = pages.iter_mut().map(Vec::as_mut_slice).collect();
+    let mut next = 0;
+    assert_eq!(
+        scatter_copy::<()>(&mut targets, 0, source.len(), |offset, output| {
+            assert_eq!(offset, next);
+            output.copy_from_slice(&source[offset..offset + output.len()]);
+            next += output.len();
+            Ok(())
+        }),
+        Ok(())
+    );
+    assert_eq!(next, source.len());
+    assert!(pages.iter().flatten().copied().eq(source));
+}
+
+#[test]
+fn buffered_scatter_preserves_planned_prefix_and_short_reply_tail() {
+    use crate::vfs_read_contract::scatter_copy;
+    let mut first = [0xa5; 7];
+    let mut middle = [0xa5; 11];
+    let mut last = [0xa5; 3];
+    let mut empty = [];
+    let source = [0x37; 13];
+    assert_eq!(
+        scatter_copy::<()>(
+            &mut [&mut empty, &mut first, &mut middle, &mut last],
+            5,
+            source.len(),
+            |offset, output| {
+                output.copy_from_slice(&source[offset..offset + output.len()]);
+                Ok(())
+            },
+        ),
+        Ok(())
+    );
+    assert_eq!(&first[..5], &[0xa5; 5]);
+    assert_eq!(&first[5..], &[0x37; 2]);
+    assert_eq!(middle, [0x37; 11]);
+    assert_eq!(last, [0xa5; 3]);
+}
+
+#[test]
+fn buffered_scatter_rejects_bounds_before_copy_and_propagates_copy_fault() {
+    use crate::vfs_read_contract::{BatchError, scatter_copy};
+    let mut first = [0xa5; 4];
+    let mut last = [0xa5; 4];
+    for (skip, length) in [(9, 0), (7, 2), (usize::MAX, 1)] {
+        assert_eq!(
+            scatter_copy::<()>(&mut [&mut first, &mut last], skip, length, |_, _| {
+                panic!("invalid range reached the source")
+            }),
+            Err(BatchError::Contract(Error::InvalidBackendResult))
+        );
+        assert_eq!(first, [0xa5; 4]);
+        assert_eq!(last, [0xa5; 4]);
+    }
+    assert_eq!(
+        scatter_copy(&mut [&mut first, &mut last], 0, 8, |offset, output| {
+            if offset == 0 {
+                output.fill(0x37);
+                Ok(())
+            } else {
+                Err("copy fault")
+            }
+        }),
+        Err(BatchError::Transfer("copy fault"))
+    );
+    assert_eq!(first, [0x37; 4]);
+    assert_eq!(last, [0xa5; 4]);
+    assert_eq!(
+        scatter_copy::<()>(&mut [&mut first, &mut last], 8, 0, |_, _| {
+            panic!("empty range accessed the source")
+        }),
+        Ok(())
+    );
+}

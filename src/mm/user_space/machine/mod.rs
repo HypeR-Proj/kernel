@@ -14,8 +14,8 @@ use super::kernel_adapter::DomainCharge;
 use super::{
     Access, AddressError, AddressSpaceError as LogicalError, DomainAccount, KernelPageBackend,
     KernelPageError, MappingChange, MemoryAccount, MemoryCharge, Permissions,
-    PreparedMappingChange, PreparedUserWrite, UserAddress, UserAddressSpace, UserSlice, VmoError,
-    WritableVmo,
+    PreparedMappingChange, PreparedUserRead, PreparedUserWrite, UserAddress, UserAddressSpace,
+    UserSlice, VmoError, WritableVmo,
 };
 use crate::mm::page_block::PageBlock;
 use {
@@ -35,6 +35,7 @@ type LogicalAddressSpace = UserAddressSpace<KernelPageBackend, DomainAccount>;
 pub(crate) type NativeCrashMemory = super::CrashMemory<KernelPageBackend, DomainAccount>;
 type LogicalPrepared<'a> = PreparedMappingChange<'a, KernelPageBackend, DomainAccount>;
 type LogicalUserWrite = PreparedUserWrite<KernelPageBackend, DomainAccount>;
+type LogicalUserRead = PreparedUserRead<KernelPageBackend, DomainAccount>;
 type StateLock = InterruptSpinLock<MachineState, crate::hal::irq::LocalMask>;
 type LogicalAddressSpaceError = LogicalError<KernelPageError, ResourceError>;
 
@@ -528,6 +529,18 @@ impl NativeAddressSpace {
         }
     }
 
+    pub(crate) fn prepare_user_read(&self, source: UserSlice) -> Result<NativeUserRead, Error> {
+        let plan = match self.logical.prepare_user_read(source) {
+            Ok(plan) => plan,
+            Err(LogicalError::BackingNotResident) => {
+                self.populate_file_range(source)?;
+                self.logical.prepare_user_read(source)?
+            }
+            Err(error) => return Err(Error::Logical(error)),
+        };
+        Ok(NativeUserRead { plan })
+    }
+
     pub(crate) fn atomic_wait_key(
         &self,
         address: UserAddress,
@@ -807,6 +820,49 @@ impl NativeAddressSpace {
     }
 }
 
+/// A resident read plan; retaining it cannot trigger filesystem calls.
+pub(crate) struct NativeUserRead {
+    plan: LogicalUserRead,
+}
+
+impl NativeUserRead {
+    pub(crate) fn len(&self) -> u64 {
+        self.plan.len()
+    }
+
+    pub(crate) fn copy_to_slice(&self, source_offset: u64, output: &mut [u8]) -> Result<(), Error> {
+        self.plan
+            .copy_to_slice(source_offset, output)
+            .map_err(Error::Logical)
+    }
+
+    pub(crate) fn copy_to_vmo(
+        &self,
+        destination: &super::WritableVmo<KernelPageBackend, DomainAccount>,
+        source_offset: u64,
+        destination_offset: u64,
+        length: usize,
+    ) -> Result<(), Error> {
+        self.plan
+            .copy_to_vmo(destination, source_offset, destination_offset, length)
+            .map_err(Error::Logical)
+    }
+
+    /// The destination lease identifies the exact externally writable RPC
+    /// backing; private staging windows continue to use `copy_to_vmo`.
+    pub(crate) fn copy_to_exposed_vmo(
+        &self,
+        destination: &super::WritableMappingLease<KernelPageBackend, DomainAccount>,
+        source_offset: u64,
+        destination_offset: u64,
+        length: usize,
+    ) -> Result<(), Error> {
+        self.plan
+            .copy_to_exposed_vmo(destination, source_offset, destination_offset, length)
+            .map_err(Error::Logical)
+    }
+}
+
 /// Owned guard which prevents output mappings from changing before commit.
 pub(crate) struct UserWriteReservation {
     owner: FallibleArc<NativeAddressSpace>,
@@ -814,6 +870,23 @@ pub(crate) struct UserWriteReservation {
 }
 
 impl UserWriteReservation {
+    /// Copies discontiguous initialized source pages without a concatenation
+    /// buffer. The exact combined length is checked before modifying userspace.
+    pub(crate) fn copy_parts_from<'a>(
+        &self,
+        parts: impl Iterator<Item = &'a [u8]> + Clone,
+    ) -> Result<(), Error> {
+        let Some(plan) = self.plan.as_ref() else {
+            crate::diagnostics::crash::fatal(format_args!(
+                "HypeR: completed user-write reservation reused"
+            ));
+        };
+        self.owner
+            .logical
+            .write_user_reservation_parts(plan, parts)?;
+        Ok(())
+    }
+
     pub(crate) fn copy_from(&self, source: &[u8]) -> Result<(), Error> {
         let Some(plan) = self.plan.as_ref() else {
             crate::diagnostics::crash::fatal(format_args!(

@@ -85,30 +85,32 @@ pub(crate) fn assert_kernel_pan() -> Result<(), UserMachineContractError> {
     Ok(())
 }
 
-/// Copies bytes from machine-visible normal memory into private kernel memory.
+/// Copies resident Normal memory whose source or destination may be machine-visible.
 ///
 /// # Safety
 ///
 /// Both ranges must be valid for `length`, resident, non-faulting, and
-/// non-overlapping. The source may be concurrently accessed by another PE.
+/// non-overlapping, with a writable destination. Either range may be concurrently
+/// accessed by another PE; protocol synchronization remains with the caller.
 /// If an asynchronous machine failure interrupts the loop, earlier bytes may
 /// already have been copied.
 pub(crate) unsafe fn copy_from_exposed(source: *const u8, destination: *mut u8, length: usize) {
-    // SAFETY: This is the same resident Normal-memory contract in the input
-    // direction; protocol synchronization remains with the mapping owner.
+    // SAFETY: The caller supplies the resident Normal-memory contract. Neither
+    // range is converted to a Rust byte reference by the implementation.
     unsafe { crate::arch::aarch64::user::copy::copy(source, destination, length) };
 }
 
-/// Copies bytes from private kernel memory into machine-visible normal memory.
+/// Copies resident Normal memory to a potentially machine-visible destination.
 ///
 /// # Safety
 ///
 /// Both ranges must be valid for `length`, resident, non-faulting, and
-/// non-overlapping. The destination may be concurrently accessed by another
-/// PE. Earlier bytes are observable if the operation is interrupted.
+/// non-overlapping, with a writable destination. Either range may be concurrently
+/// accessed by another PE; protocol synchronization remains with the caller.
+/// Earlier bytes are observable if the operation is interrupted.
 pub(crate) unsafe fn copy_to_exposed(source: *const u8, destination: *mut u8, length: usize) {
     // SAFETY: The caller supplies the same resident Normal-memory contract,
-    // with the externally visible range on the destination side.
+    // including when both ranges have external machine aliases.
     unsafe { crate::arch::aarch64::user::copy::copy(source, destination, length) };
 }
 

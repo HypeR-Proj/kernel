@@ -52,6 +52,7 @@ SYMBOLS = (
     '31sys_capability_channel_try_send15ProcessServices',
     '22PreparedCapabilitySend14copy_from_user',
     '26send_prepared_capabilities',
+    '9Transport12read_scatter',
 )
 
 
@@ -141,6 +142,12 @@ class ProcessStackTests(unittest.TestCase):
                                           'sub sp, sp, #0xc30\n'
                                           'str xzr, [sp]\nbl 0x20000\nret')
         with self.assertRaisesRegex(ValueError, 'local_selection: entry frame 3216 exceeds'):
+            self.check()
+
+    def test_extent_plan_cannot_return_to_nested_read_stack(self):
+        symbol = '9Transport12read_scatter'
+        self.functions[symbol] = function(symbol, 'sub sp, sp, #2288\nret')
+        with self.assertRaisesRegex(ValueError, 'read_scatter: entry frame 2288 exceeds'):
             self.check()
 
     def test_worker_creation_cannot_retain_register_image_scratch(self):

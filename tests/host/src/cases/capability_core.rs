@@ -53,6 +53,7 @@ fn process_builder_storage_policy_is_explicit_and_bounds_graph_authority() {
         ObjectKind::VMO,
         ObjectKind::GUEST_MEMORY,
         ObjectKind::NATIVE_BLOCK,
+        ObjectKind::BLOCK_QUEUE,
         ObjectKind::CONSOLE,
         ObjectKind::DIRECTORY,
         ObjectKind::FILE,

@@ -411,6 +411,7 @@ pub(super) fn parse_object_kind(raw: u32) -> Result<crate::object::ObjectKind, H
     use crate::object::ObjectKind;
 
     match raw {
+        hyper::abi::native::HYPER_NATIVE_OBJECT_BLOCK_QUEUE => Ok(ObjectKind::BLOCK_QUEUE),
         HYPER_NATIVE_OBJECT_EVENT => Ok(ObjectKind::EVENT),
         HYPER_NATIVE_OBJECT_BYTE_CHANNEL => Ok(ObjectKind::BYTE_CHANNEL),
         HYPER_NATIVE_OBJECT_CAPABILITY_CHANNEL => Ok(ObjectKind::CAPABILITY_CHANNEL),

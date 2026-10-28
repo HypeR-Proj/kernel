@@ -273,6 +273,35 @@ impl PageBackend for KernelPageBackend {
         Ok(())
     }
 
+    fn copy_exposed(
+        &self,
+        source: &Self::Page,
+        source_offset: usize,
+        destination: &mut Self::Page,
+        destination_offset: usize,
+        length: usize,
+    ) -> Result<(), Self::Error> {
+        let source_address = page_address(source, source_offset, length)?;
+        if matches!(destination.storage, PageStorage::Cached(_))
+            || source.physical() == destination.physical()
+        {
+            return Err(KernelPageError::Range);
+        }
+        let destination_address = page_address(destination, destination_offset, length)?;
+        // SAFETY: Both checked ranges belong to distinct retained page owners
+        // in the permanent linear map. Owner locks serialize kernel accesses;
+        // machine aliases remain external memory, never Rust byte references.
+        // The HAL copy handles concurrent machine observations without faults.
+        unsafe {
+            crate::hal::user::copy_from_exposed(
+                source_address.cast_const(),
+                destination_address,
+                length,
+            )
+        }
+        .map_err(|_| KernelPageError::Unsupported)
+    }
+
     fn read_exposed(
         &self,
         page: &Self::Page,

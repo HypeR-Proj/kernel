@@ -22,6 +22,31 @@ pub(crate) struct FilePage<Owner = ()> {
 }
 
 impl<Owner> FilePage<Owner> {
+    pub(crate) fn try_empty(length: usize, owner: Owner) -> Result<Self, CacheError> {
+        Ok(Self {
+            bytes: super::storage::PageBytes::try_zeroed(length)?,
+            owner,
+            instructions_published: super::CacheLock::new(false),
+        })
+    }
+
+    pub(crate) fn prepare_fill(&mut self, length: usize, owner: Owner) -> Refill {
+        self.instructions_published
+            .with(|published| *published = false);
+        self.bytes.prepare_fill(length);
+        self.owner = owner;
+        Refill::Ready
+    }
+
+    /// Only exclusive unpublished pages can expose writable payload bytes.
+    pub(crate) fn bytes_mut(&mut self) -> &mut [u8] {
+        self.bytes.as_mut_slice()
+    }
+
+    pub(super) fn truncate(&mut self, length: usize) {
+        self.bytes.truncate(length);
+    }
+
     #[cfg(not(test))]
     pub(crate) fn owner(&self) -> &Owner {
         &self.owner

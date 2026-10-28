@@ -12,8 +12,10 @@ use hyper::sync::InterruptSpinLock;
 
 use super::contract::{MemoryAccount, MemoryCharge, PageBackend};
 
+mod direct_copy;
 mod file_source;
 mod private_view;
+pub(super) use direct_copy::PinnedReadRange;
 use file_source::FileBacking;
 pub(crate) use file_source::FilePageSource;
 pub(super) use private_view::{PinnedPrivateRange, PrivateView, PrivateViewBuilder};
@@ -280,6 +282,26 @@ impl<Backend: PageBackend, Account: MemoryAccount> Clone
     }
 }
 
+impl<Backend: PageBackend, Account: MemoryAccount> WritableMappingLease<Backend, Account> {
+    #[cfg(any(test, all(feature = "kernel-test", feature = "kernel-self-test")))]
+    pub(crate) fn write_exposed(
+        &self,
+        offset: u64,
+        source: &[u8],
+    ) -> VmoResult<Backend, Account, ()> {
+        self.exposed_copy_target().write_exposed(offset, source)
+    }
+
+    /// Selects the exact backing whose externally writable lifetime this lease
+    /// retains. Copies through it use external-memory primitives; the lease
+    /// excludes snapshots and exclusive hardware ownership, not peer writes.
+    pub(super) fn exposed_copy_target(&self) -> WritableVmo<Backend, Account> {
+        WritableVmo {
+            inner: self.inner.vmo.clone(),
+        }
+    }
+}
+
 impl<Backend: PageBackend, Account: MemoryAccount> WritableVmo<Backend, Account> {
     /// Imports already-zeroed, already-accounted owned pages before publication.
     /// This constructor charges VMO/page metadata; the supplied page owners
@@ -481,6 +503,15 @@ impl<Backend: PageBackend, Account: MemoryAccount> WritableVmo<Backend, Account>
 
     pub(crate) fn same_storage(&self, other: &Self) -> bool {
         core::ptr::eq(&*self.inner, &*other.inner)
+    }
+
+    /// Admits a resident kernel-owned write before any page is changed. The
+    /// owner must use exposed copies because read-only machine aliases can
+    /// remain, but snapshots and guest/writable aliases must be excluded.
+    pub(super) fn begin_kernel_write(
+        &self,
+    ) -> VmoResult<Backend, Account, KernelAccessGuard<'_, Backend, Account>> {
+        KernelAccessGuard::acquire(&self.inner)
     }
 
     /// Counts retained backing without populating pages or cloning page owners.
@@ -1046,7 +1077,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> MappingObject<Backend, Accoun
     }
 }
 
-struct KernelAccessGuard<'a, Backend: PageBackend, Account: MemoryAccount> {
+pub(super) struct KernelAccessGuard<'a, Backend: PageBackend, Account: MemoryAccount> {
     inner: &'a VmoInner<Backend, Account>,
 }
 

@@ -131,6 +131,7 @@ impl ObjectKind {
     pub(crate) const GUEST_INTERRUPT: Self = Self(GUEST_INTERRUPT_OBJECT_KIND);
     pub(crate) const GUEST_MAPPING: Self = Self(GUEST_MAPPING_OBJECT_KIND);
     pub(crate) const NATIVE_BLOCK: Self = Self(NATIVE_BLOCK_OBJECT_KIND);
+    pub(crate) const BLOCK_QUEUE: Self = Self(hyper::abi::native::HYPER_NATIVE_OBJECT_BLOCK_QUEUE);
     pub(crate) const GUEST_NOTIFICATION: Self = Self(GUEST_NOTIFICATION_OBJECT_KIND);
     pub(crate) const GUEST_MEMORY: Self = Self(GUEST_MEMORY_OBJECT_KIND);
     pub(crate) const WAIT_SET: Self = Self(WAIT_SET_OBJECT_KIND);
@@ -231,6 +232,7 @@ impl ObjectKind {
             | GUEST_MAILBOX_OBJECT_KIND
             | GUEST_INTERRUPT_OBJECT_KIND
             | GUEST_MAPPING_OBJECT_KIND
+            | hyper::abi::native::HYPER_NATIVE_OBJECT_BLOCK_QUEUE
             | NATIVE_BLOCK_OBJECT_KIND
             | GUEST_NOTIFICATION_OBJECT_KIND
             | GUEST_MEMORY_OBJECT_KIND

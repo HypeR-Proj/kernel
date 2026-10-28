@@ -206,6 +206,7 @@ mod completion_tests {
 
 /// A completion already observed wins; readiness alone never extends a command.
 /// Called before every wait, including waits woken by spurious interrupts.
+#[cfg(test)]
 pub(crate) fn command_pending(complete: bool, now: u64, deadline: u64) -> Result<bool, ()> {
     if complete {
         Ok(false)

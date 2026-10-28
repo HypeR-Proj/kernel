@@ -60,6 +60,12 @@ and component lookup. Preparation temporaries retire before backend lookup RPC;
 image checks bound each phase and its live sum with the traversal coordinator.
 This preserves space for IRQ-tail scheduling on an interrupted VFS syscall.
 
+Block-backed filesystem transports allocate their 1040-byte extent-plan scratch
+once under the mount sponsor and reuse it under the volume mutex. The metadata
+copy remains private to the kernel; it is released with the transport. Keeping
+it off the stack avoids carrying it below nested file-page faults and block
+completion waits. The optimized image check bounds this read frame as well.
+
 `sh tests/ci/run.sh native-stack-16k` builds a production image with 16 KiB
 kernel thread stacks and runs Native acceptance on one and four CPUs. This is
 an independent CI job requiring init/root handoff, interactive shell commands,

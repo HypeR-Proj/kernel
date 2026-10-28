@@ -181,24 +181,41 @@ pub(crate) fn read_file_at(
     if capacity == 0 {
         return Ok((0, file_size));
     }
-    // Small reads use stack scratch. Optional page-cache retention and
-    // user-memory preparation have their own allocation contracts. Bulk
-    // scratch is bounded independently of the ABI request limit and is
-    // charged to the caller, never placed on the kernel stack.
+    // Aligned cached reads retain page owners, then copy directly into the
+    // reserved user range after releasing the content gate. Scratch remains a
+    // bounded fallback for RAM files, unaligned ranges and cache pressure.
     let mut small = [0_u8; SMALL_TRANSFER_BYTES];
     let mut large = ScratchVec::new(ScratchBudget::new(&process.resource_domain()));
-    let bytes = if capacity <= small.len() {
-        &mut small[..capacity]
-    } else {
-        super::scratch::resize_bytes(&mut large, capacity.min(BULK_TRANSFER_BYTES))
-            .map_err(VfsError::from)?;
-        &mut large[..]
-    };
     let completed = super::read_contract::read_batches(
         offset,
         capacity,
-        bytes.len(),
+        BULK_TRANSFER_BYTES,
         |file_offset, completed, length| -> Result<usize, ServiceError> {
+            let base = output
+                .base()
+                .checked_add(completed as u64)
+                .ok_or(ServiceError::InvalidInput)?;
+            if length >= hyper::mm::PAGE_SIZE as usize
+                && let Some(pages) = file.object().read_pages(file_offset, length)?
+            {
+                if pages.length == 0 {
+                    return Ok(0);
+                }
+                let destination = UserSlice::new(base, pages.length as u64)
+                    .map_err(|error| ProcessError::UserMemory(error.into()))?;
+                let write = process.reserve_user_write(destination)?;
+                write
+                    .copy_parts_from(pages.pages())
+                    .map_err(ProcessError::UserMemory)?;
+                write.complete();
+                return Ok(pages.length);
+            }
+            let bytes = if length <= small.len() {
+                &mut small[..length]
+            } else {
+                super::scratch::resize_bytes(&mut large, length).map_err(VfsError::from)?;
+                &mut large[..length]
+            };
             let actual = file.object().read(file_offset, &mut bytes[..length])?;
             if actual == 0 {
                 return Ok(0);
@@ -206,10 +223,6 @@ pub(crate) fn read_file_at(
             let source = bytes
                 .get(..actual)
                 .filter(|_| actual <= length)
-                .ok_or(ServiceError::InvalidInput)?;
-            let base = output
-                .base()
-                .checked_add(completed as u64)
                 .ok_or(ServiceError::InvalidInput)?;
             let destination = UserSlice::new(base, actual as u64)
                 .map_err(|error| ProcessError::UserMemory(error.into()))?;
@@ -330,21 +343,17 @@ pub(crate) fn write_file_at(
     if size > MAX_READ_BYTES {
         return Err(ServiceError::InvalidInput);
     }
-    // Copy the entire accepted batch before entering the backend: user faults
-    // must not occur while holding its file lock, including atomic append.
+    // Resolve all source faults before acquiring content/transport locks. A
+    // retained read plan pins only this syscall's source pages, not a writable
+    // alias in the filesystem or I/O VM. Publication follows the boundary copy.
     let size = size.min(BULK_TRANSFER_BYTES);
-    let mut small = [0_u8; SMALL_TRANSFER_BYTES];
-    let mut large = ScratchVec::new(ScratchBudget::new(&process.resource_domain()));
-    let bytes = if size <= small.len() {
-        &mut small[..size]
-    } else {
-        super::scratch::resize_bytes(&mut large, size).map_err(VfsError::from)?;
-        &mut large[..]
-    };
     let source =
         UserSlice::new(input.base(), size as u64).map_err(|_| ServiceError::InvalidInput)?;
-    process.copy_from_user(source, bytes)?;
-    let (actual, end) = file.object().write(offset, bytes)?;
+    let prepared = process.prepare_user_read(source)?;
+    let (actual, end) = file.object().write_source(
+        offset,
+        &super::write_source::WriteSource::User(&prepared, &process.resource_domain()),
+    )?;
     Ok((actual as u64, end))
 }
 
@@ -664,6 +673,7 @@ pub(crate) fn mount_remote(
     process: &Process,
     channel: HandleValue,
     buffer: HandleValue,
+    queue: Option<HandleValue>,
     directory: &InvocationReceiver,
     path: UserSlice,
     read_only: bool,
@@ -672,11 +682,15 @@ pub(crate) fn mount_remote(
     let directory = directory
         .resolve::<DirectoryObject>(Rights::WRITE.union(Rights::EXECUTE))
         .map_err(crate::process::ProcessError::from)?;
-    let device = super::remote::Transport::prepare(process, channel, buffer, read_only)
+    let device = super::remote::Transport::prepare(process, channel, buffer, queue, read_only)
         .map_err(|error| ServiceError::FileSystem(VfsError::Backend(error)))?;
+    let publication = device.publication();
     directory
         .object()
         .mount_remote(&path, device, &process.resource_domain())?;
+    if let Some(publication) = publication {
+        publication.publish();
+    }
     Ok(())
 }
 

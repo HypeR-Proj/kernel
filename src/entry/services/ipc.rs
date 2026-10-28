@@ -44,14 +44,27 @@ impl IpcServices for ProcessServices<'_> {
         bytes: Option<UserSlice>,
     ) -> Result<(), ByteChannelServiceError> {
         let result = crate::ipc::byte_channel_write(self.process, endpoint, bytes);
-        crate::tracepoint!(
-            Ipc,
-            "byte_send",
-            thread = self.thread.scheduler_id().map_or(0, |id| id.get()),
-            channel = endpoint.info().koid.get(),
-            bytes = bytes.map_or(0, |b| b.length()),
-            success = u64::from(result.is_ok())
-        );
+        // Empty polling is visible in syscall tracing. It is not a message
+        // transfer and can otherwise overwhelm IPC capture before a reply.
+        #[cfg(feature = "kernel-trace")]
+        if let Some(ticket) = hyper_trace::enabled(hyper_trace::Category::Ipc)
+            && !matches!(
+                &result,
+                Err(ByteChannelServiceError::Channel(
+                    crate::ipc::ByteChannelError::WouldBlock
+                ))
+            )
+        {
+            crate::tracepoint!(
+                ticket = ticket,
+                Ipc,
+                "byte_send",
+                thread = self.thread.scheduler_id().map_or(0, |id| id.get()),
+                channel = endpoint.info().koid.get(),
+                bytes = bytes.map_or(0, |b| b.length()),
+                success = u64::from(result.is_ok())
+            );
+        }
         result
     }
 
@@ -61,20 +74,33 @@ impl IpcServices for ProcessServices<'_> {
         bytes: Option<UserSlice>,
     ) -> Result<ByteChannelReadOutcome, ByteChannelServiceError> {
         let result = crate::ipc::byte_channel_read(self.process, endpoint, bytes);
-        crate::tracepoint!(
-            Ipc,
-            "byte_receive",
-            thread = self.thread.scheduler_id().map_or(0, |id| id.get()),
-            channel = endpoint.info().koid.get(),
-            bytes = match &result {
-                Ok(ByteChannelReadOutcome::Received { bytes }) => *bytes,
-                _ => 0,
-            },
-            success = u64::from(matches!(
+        // Empty polling is visible in syscall tracing. It is not a message
+        // transfer and can otherwise overwhelm IPC capture before a reply.
+        #[cfg(feature = "kernel-trace")]
+        if let Some(ticket) = hyper_trace::enabled(hyper_trace::Category::Ipc)
+            && !matches!(
                 &result,
-                Ok(ByteChannelReadOutcome::Received { .. })
-            ))
-        );
+                Err(ByteChannelServiceError::Channel(
+                    crate::ipc::ByteChannelError::WouldBlock
+                ))
+            )
+        {
+            crate::tracepoint!(
+                ticket = ticket,
+                Ipc,
+                "byte_receive",
+                thread = self.thread.scheduler_id().map_or(0, |id| id.get()),
+                channel = endpoint.info().koid.get(),
+                bytes = match &result {
+                    Ok(ByteChannelReadOutcome::Received { bytes }) => *bytes,
+                    _ => 0,
+                },
+                success = u64::from(matches!(
+                    &result,
+                    Ok(ByteChannelReadOutcome::Received { .. })
+                ))
+            );
+        }
         result
     }
 

@@ -716,9 +716,11 @@ pub fn syscall_fp_resident_for_test(
 /// # Safety
 ///
 /// The ranges must be resident, valid for `length`, and non-overlapping. The
-/// operation is non-faulting by construction of the retained page mapping.
-/// Both ranges are Normal memory, never MMIO. This provides neither an atomic
-/// snapshot nor a publication barrier; the owner synchronizes its protocol.
+/// destination must be writable. The operation is non-faulting by construction
+/// of the retained page mappings. Both ranges are Normal memory, never MMIO;
+/// either or both may have concurrent external machine aliases. This provides
+/// neither an atomic snapshot nor a publication barrier. The owner establishes
+/// required coherency and synchronizes its protocol independently.
 pub unsafe fn copy_from_exposed(
     source: *const u8,
     destination: *mut u8,

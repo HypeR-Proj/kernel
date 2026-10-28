@@ -67,12 +67,12 @@ the feature-enabled compile/test gate is therefore required.
 The machine adapter is `crate::diagnostics::trace`; portable storage lives in `hyper_trace`.
 Control/read operations belong in ordinary thread context. The internal recorder
 also supports kernel self-tests. Production userspace uses CpuInspector methods
-260 (start, SET_ATTRIBUTES), 261 (stop, SET_ATTRIBUTES), and 262 (read,
-INSPECT_DETAILS). Ordinary applications do not receive these rights; the formal
+260 (start, SET_ATTRIBUTES), 261 (stop, SET_ATTRIBUTES), 262 (read,
+INSPECT_DETAILS), and 263 (clear, SET_ATTRIBUTES). Ordinary applications do not receive these rights; the formal
 shell delegates its profiling authority only to `/bin/perf`.
 
 Start accepts categories, a 256-bit online-CPU mask (zero means all), a 1–300000 ms
-deadline and 64–4096 retained records per CPU. One ordinary callout closes admission
+deadline and 64–16384 retained records per CPU. One ordinary callout closes admission
 at expiry, then retries joining any short in-flight producer. No periodic tick or
 remote IPI is required. Killing the collector does not leave recording enabled.
 A privileged caller can stop/read another capture; generation tokens reject stale
@@ -97,10 +97,10 @@ let batch = trace::read(capture, cpu, cursor, &mut records)?;
 ```
 
 Start rejects an empty filter and a capture not yet successfully stopped. It
-allocates nothing and replaces the previous capture, using a new non-repeating
-generation. Exhaustion is reported rather than wrapping capture identity. Rings
-reset lazily on their first record of that generation; old contents are never
-returned as new records. Repeated stop and non-destructive reads are supported.
+prepares fresh storage before replacing the previous capture, using a new
+non-repeating generation. Exhaustion is reported rather than wrapping capture
+identity. New rings start empty; old contents are never returned as new records.
+Repeated stop and non-destructive reads are supported until clear or replacement.
 
 Changing filters can leave an already admitted event in flight. Once stop has
 acquired control it closes admission, then tries each CPU ring to join writers.
@@ -113,18 +113,28 @@ writers are short software operations, with no remote hardware state to disarm.
 
 ## Storage, concurrency and loss
 
-Instrumented builds reserve 4096 records per configured CPU, with 56 bytes per
-record on the supported 64-bit targets: 224 KiB per CPU plus a small aligned
-control header. The buffers are static, not on thread/IRQ stacks. They stay
-reserved while the instrumented image runs; builds without the feature have no
-recorder buffers. The capture capacity selects a smaller overwrite window; it
-does not release the compiled reservation. Capacity changes only at start, never
-while producers use a capture. Each CPU header is cache-line aligned.
+Instrumented builds initially contain only small per-CPU control headers. Start
+allocates the requested capacity for selected CPUs in ordinary thread context,
+before taking control/ring locks. The default and maximum are 16384 records per
+CPU, with 56 bytes per record on supported 64-bit targets: 896 KiB per selected
+CPU. Payload buffers never live on thread/IRQ stacks. Each CPU header is
+cache-line aligned; unselected CPUs have empty buffers.
+
+Publication tries all ring locks before swapping any ownership and opening
+admission. A bounded stack array of lock references keeps this transaction free
+of allocation; payload storage remains on the heap. Failure leaves the previous
+capture intact; replaced buffers are freed after releasing control locks. Stop joins writers but retains the buffers.
+Clear accepts only a stopped generation, detaches its buffers under the same
+locks, then frees them outside the locks and invalidates the generation. Empty
+retirement slots are reserved at start, so clear needs no new allocation and can
+release a capture even under memory pressure. The generation counter is not
+reset. Read/control attempts using a cleared generation fail, and the next start allocates fresh storage. Builds without the feature have
+no recorder buffers.
 
 The machine adapter masks local interrupts through CPU selection, timestamping
 and append, restoring the caller's exact prior mask. Rings use the existing
-`SpinLock` exclusively through `try_with`; neither producer, control nor reader
-waits for a lock. An interrupted/recursive producer or a competing reader can
+`SpinLock` exclusively through `try_with` and `try_with_each`; neither producer,
+control nor reader waits for a lock. An interrupted/recursive producer or a competing reader can
 cause loss, but never makes the producer spin on an interrupted owner. There is
 no global writer counter or cross-CPU producer lock. Record append and batch copy
 are protected by the same acquire/release lock, preventing torn records.
@@ -199,6 +209,32 @@ core commit records do. The exporter uses complete observed boundaries and
 suppresses causal flows when any CPU stream is absent, lossy or truncated.
 Zero-duration complete slices with flow IDs bind arrows without inventing an
 enclosing syscall or nonzero execution time.
+
+The syscall-level byte-channel observations skip `WOULD_BLOCK`: an empty
+poll publishes or receives no message. Successful transfers and other outcomes
+remain observed, while the `syscall` category retains polling-call outcomes.
+This keeps busy reply polling from displacing committed IPC and I/O events.
+
+## Asynchronous block I/O
+
+The block pump owns physical `block_submit` / `block_complete` / `block_abort`
+observations. `block_command` adds the fixed transport slot and SCSI opcode.
+Logical `block_queued` / `block_ready` / `block_release` follow committed device
+sequence IDs rather than reusable queue tickets. `block_origin` observes the
+admitting Thread under the existing admission lock. `block_link` explicitly
+relates each contributed fragment to its physical command tag: merging and
+splitting never imply a one-to-one request/command relationship.
+
+The device lock orders admission before dispatch; completion and slot release
+are recorded under their existing queue locks before publishing wakeups or
+returned credits. No new object lookup, payload copy or allocation is performed
+for tracing. A request retains one trace-only device ID when compiled in; all
+new fields and the fragment traversal disappear when the feature is off. The
+fragment traversal also skips runtime-disabled I/O tracing, and one admission
+ticket prevents its records entering a replacement capture. Retained completions
+hold queue credits until reap/discard; this interval does not describe lingering
+request metadata references held by concurrent waiters. Exported aborts close
+logical observation only and do not prove backend DMA retirement.
 
 ## Validation
 

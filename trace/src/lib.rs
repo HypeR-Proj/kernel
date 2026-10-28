@@ -1,10 +1,13 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-//! Bounded, allocation-free event recording. Machine policy supplies CPU pinning
+//! Bounded event recording with storage allocated before capture admission.
+//! Producers never allocate. Machine policy supplies CPU pinning
 //! and timestamps; this mechanism never consults the scheduler or a clock.
 
 #![no_std]
+
+extern crate alloc;
 
 #[cfg(feature = "kernel-trace")]
 mod global;
@@ -12,10 +15,10 @@ mod macros;
 mod recorder;
 #[cfg(feature = "kernel-trace")]
 pub use global::{
-    CAPACITY, MachineEmitter, emit, enabled, install, read, record_at, set_filter, start,
-    start_with_capacity, stop,
+    CAPACITY, MachineEmitter, clear, detach, emit, enabled, install, prepare, read, record_at,
+    set_filter, start, start_with_capacity, stop,
 };
-pub use recorder::{Batch, Error, Recorder, Session, Ticket};
+pub use recorder::{Batch, Error, PreparedCapture, Recorder, RetiredCapture, Session, Ticket};
 
 /// Independently selectable event groups. Values are filter bits, not priorities.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -19,9 +19,10 @@ use hyper::abi::native;
 /// VM and vCPU control objects remain excluded. Guest-memory grants may be
 /// delegated to an I/O runtime: they retain backing pages, not a VM lifecycle
 /// edge, and preserve the hardware-write lease until their last mapping retires.
-/// A `NativeBlock` may move into an isolated filesystem worker. It retains its
-/// own backing and in-flight request leases; staging grants no VM control and
-/// retiring the last active owner disconnects the volume before DMA retirement.
+/// A `NativeBlock` or derived `BlockQueue` may move into an isolated filesystem
+/// worker. Both retain backing and in-flight request leases; staging grants no
+/// VM control. A queue keeps its original resource sponsor and bounded credits,
+/// and its final active owner closes admission before DMA retirement.
 /// `VirtualSerial` is created by
 /// its owning runtime and is not a startup transport object. Nested
 /// `ProcessBuilder` authority is always forbidden.
@@ -41,6 +42,7 @@ impl BuilderStorable {
             || kind == native::HYPER_NATIVE_OBJECT_VMO
             || kind == native::HYPER_NATIVE_OBJECT_GUEST_MEMORY
             || kind == native::HYPER_NATIVE_OBJECT_NATIVE_BLOCK
+            || kind == native::HYPER_NATIVE_OBJECT_BLOCK_QUEUE
             || kind == native::HYPER_NATIVE_OBJECT_DEVICE_ASSIGNMENT_AUTHORITY
             || kind == native::HYPER_NATIVE_OBJECT_PHYSICAL_DEVICE
             || kind == native::HYPER_NATIVE_OBJECT_CONSOLE

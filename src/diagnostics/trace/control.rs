@@ -72,6 +72,19 @@ pub(crate) fn start(bytes: &[u8; 56]) -> Result<u64> {
             return Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT);
         }
     }
+    // Allocation and initialization may be large. Keep both outside IRQ-masked
+    // control locks; a racing start is rechecked before publication below.
+    CONTROL.with(|capture| {
+        if capture.running {
+            Err(HYPER_NATIVE_STATUS_BUSY)
+        } else {
+            Ok(())
+        }
+    })?;
+    let mut prepared = trace::prepare(capacity as usize, |cpu| {
+        cpus[cpu / 64] & (1 << (cpu % 64)) != 0
+    })
+    .map_err(status)?;
     CONTROL.with(|capture| {
         if capture.running {
             return Err(HYPER_NATIVE_STATUS_BUSY);
@@ -91,10 +104,7 @@ pub(crate) fn start(bytes: &[u8; 56]) -> Result<u64> {
         for (dst, mask) in CPUS.iter().zip(cpus) {
             dst.store(mask, Ordering::Relaxed);
         }
-        let session = match trace::start_with_capacity(
-            Filter::from_bits(categories as u8),
-            capacity as usize,
-        ) {
+        let session = match prepared.start(Filter::from_bits(categories as u8)) {
             Ok(session) => session,
             Err(error) => {
                 let _ = timer.cancel();
@@ -131,6 +141,26 @@ pub(crate) fn stop(generation: u64) -> Result<()> {
         }
         result
     })
+}
+
+pub(crate) fn clear(generation: u64) -> Result<()> {
+    let retired = CONTROL.with(|capture| {
+        let session = session(capture, generation)?;
+        if capture.running {
+            return Err(HYPER_NATIVE_STATUS_BUSY);
+        }
+        let retired = trace::detach(session).map_err(status)?;
+        capture.session = None;
+        capture.started = 0;
+        capture.deadline = 0;
+        capture.categories = 0;
+        capture.capacity = 0;
+        capture.cpus = [0; 4];
+        Ok(retired)
+    })?;
+    // Reclaim only after CONTROL has been released; no allocation is needed.
+    drop(retired);
+    Ok(())
 }
 fn expire(_: &(), timer: CalloutRef<'_>, _: TimerEvent) {
     CONTROL.with(|capture| {
@@ -263,6 +293,7 @@ fn status(error: trace::Error) -> HyperNativeStatus {
         trace::Error::Busy => HYPER_NATIVE_STATUS_BUSY,
         trace::Error::Unavailable => HYPER_NATIVE_STATUS_NOT_SUPPORTED,
         trace::Error::Exhausted => HYPER_NATIVE_STATUS_RESOURCE_LIMIT,
+        trace::Error::Allocation => HYPER_NATIVE_STATUS_NO_MEMORY,
         trace::Error::InvalidSession | trace::Error::NotRecording => HYPER_NATIVE_STATUS_BAD_STATE,
         _ => HYPER_NATIVE_STATUS_INVALID_ARGUMENT,
     }

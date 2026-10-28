@@ -33,6 +33,7 @@ mod maintenance;
 mod memory;
 mod read;
 pub(crate) mod read_ahead;
+mod read_pages;
 mod state;
 mod storage;
 
@@ -43,12 +44,15 @@ use budget::{Budget, OwnedPage};
 pub(crate) use key::{
     CacheKey, ContentRevision, FileIdentity, FilePageIndex, FilesystemGeneration, NodeIdentity,
 };
-pub(crate) use load::{LoadReservation, Refill};
+pub(crate) use load::{LoadReservation, PendingPage, Refill};
 #[cfg(not(test))]
 pub(crate) use maintenance::AdmissionPause;
 pub(crate) use maintenance::{CacheUsage, Maintenance, ReclaimCursor, ReclaimScan};
 pub(crate) use read::read_observed;
 pub(crate) use read::{FilePage, ReadError, read};
+#[cfg(not(test))]
+pub(crate) use read_pages::PageRead;
+pub(crate) use read_pages::read_pages;
 
 /// Initial live-payload allowance: loaders, resident pages, and evicted pins.
 /// Each `FilePage` contains at most one page of bytes; payload headers and the

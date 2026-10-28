@@ -1168,6 +1168,31 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
         Ok(())
     }
 
+    /// Resolves and retains every source page before a caller acquires I/O
+    /// serialization locks. A successful plan never faults on later copies.
+    pub(crate) fn prepare_user_read(
+        &self,
+        source: UserSlice,
+    ) -> SpaceResult<Backend, Account, PreparedUserRead<Backend, Account>> {
+        let mut plan = self.prepare_copy(source, Access::Read)?;
+        for segment in plan.segments.iter_mut() {
+            let CopyBacking::Mapping(object) = &segment.object else {
+                return Err(AddressSpaceError::InvalidRange);
+            };
+            let length =
+                usize::try_from(segment.length).map_err(|_| AddressSpaceError::SizeOverflow)?;
+            let pages = object.pin_read_range(segment.object_offset, length, &self.account)?;
+            segment.object = CopyBacking::Read(pages);
+            // Physical owners suffice for a read. Retaining a writable VMO
+            // lease here would unnecessarily keep its entire sparse page set.
+            segment._write_lease = None;
+        }
+        Ok(PreparedUserRead {
+            plan,
+            length: source.length(),
+        })
+    }
+
     pub(crate) fn copy_to_user(
         &self,
         destination: UserSlice,
@@ -1289,6 +1314,17 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
         reservation.plan.copy_prefix_from(source)
     }
 
+    pub(super) fn write_user_reservation_parts<'a>(
+        &self,
+        reservation: &PreparedUserWrite<Backend, Account>,
+        parts: impl Iterator<Item = &'a [u8]> + Clone,
+    ) -> SpaceResult<Backend, Account, ()> {
+        if reservation.address_space != self.id || reservation.completed {
+            return Err(AddressSpaceError::InvalidAddressSpace);
+        }
+        reservation.plan.copy_parts_from(parts)
+    }
+
     pub(super) fn release_user_write(&self, mut reservation: PreparedUserWrite<Backend, Account>) {
         if reservation.address_space != self.id || reservation.completed {
             address_space_invariant_violation();
@@ -1343,6 +1379,15 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
         source: &[u8],
     ) -> Result<(), AddressSpaceError<Backend::Error, Account::Error>> {
         self.write_user_reservation_prefix(reservation, source)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn write_user_reservation_parts_for_test<'a>(
+        &self,
+        reservation: &PreparedUserWrite<Backend, Account>,
+        parts: impl Iterator<Item = &'a [u8]> + Clone,
+    ) -> SpaceResult<Backend, Account, ()> {
+        self.write_user_reservation_parts(reservation, parts)
     }
 
     #[cfg(test)]
@@ -1833,6 +1878,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> CommittedMappingChange<Backen
 enum CopyBacking<B: PageBackend, A: MemoryAccount> {
     Mapping(MappingObject<B, A>),
     Private(super::vmo::PinnedPrivateRange<B, A>),
+    Read(super::vmo::PinnedReadRange<B, A>),
 }
 
 impl<B: PageBackend, A: MemoryAccount> CopyBacking<B, A> {
@@ -1844,12 +1890,14 @@ impl<B: PageBackend, A: MemoryAccount> CopyBacking<B, A> {
         match self {
             Self::Mapping(object) => object.read_exposed(offset, bytes),
             Self::Private(pages) => pages.read_exposed(offset, bytes),
+            Self::Read(pages) => pages.read_exposed(offset, bytes),
         }
     }
     fn write_exposed(&self, offset: u64, bytes: &[u8]) -> Result<(), VmoError<B::Error, A::Error>> {
         match self {
             Self::Mapping(object) => object.write_exposed(offset, bytes),
             Self::Private(pages) => pages.write_exposed(offset, bytes),
+            Self::Read(_) => Err(VmoError::InvalidRange),
         }
     }
 }
@@ -1913,6 +1961,39 @@ impl<Backend: PageBackend, Account: MemoryAccount> CopyPlan<Backend, Account> {
         Ok(())
     }
 
+    fn copy_parts_from<'a>(
+        &self,
+        mut parts: impl Iterator<Item = &'a [u8]> + Clone,
+    ) -> SpaceResult<Backend, Account, ()> {
+        let capacity = self.segments.iter().try_fold(0u64, |sum, segment| {
+            sum.checked_add(segment.length)
+                .ok_or(AddressSpaceError::SizeOverflow)
+        })?;
+        let length = parts.clone().try_fold(0u64, |sum, bytes| {
+            sum.checked_add(bytes.len() as u64)
+                .ok_or(AddressSpaceError::SizeOverflow)
+        })?;
+        if length != capacity {
+            return Err(AddressSpaceError::SizeMismatch);
+        }
+        let mut source = &[][..];
+        for segment in self.segments.iter() {
+            let mut copied = 0;
+            while copied < segment.length {
+                while source.is_empty() {
+                    source = parts.next().ok_or(AddressSpaceError::SizeMismatch)?;
+                }
+                let count = source.len().min((segment.length - copied) as usize);
+                segment
+                    .object
+                    .write_exposed(segment.object_offset + copied, &source[..count])?;
+                source = &source[count..];
+                copied += count as u64;
+            }
+        }
+        Ok(())
+    }
+
     /// Copies only the initialized prefix while retaining the complete pinned
     /// mapping plan. Capability receive uses this to leave unused output
     /// capacity byte-for-byte unchanged.
@@ -1950,6 +2031,128 @@ impl<Backend: PageBackend, Account: MemoryAccount> CopyPlan<Backend, Account> {
             copied = end;
         }
         if copied != source.len() {
+            return Err(AddressSpaceError::SizeMismatch);
+        }
+        Ok(())
+    }
+}
+
+/// Resident source owners independent of subsequent user mapping changes.
+pub(crate) struct PreparedUserRead<Backend: PageBackend, Account: MemoryAccount> {
+    plan: CopyPlan<Backend, Account>,
+    length: u64,
+}
+
+impl<B: PageBackend, A: MemoryAccount> PreparedUserRead<B, A> {
+    pub(crate) fn len(&self) -> u64 {
+        self.length
+    }
+
+    pub(crate) fn copy_to_slice(
+        &self,
+        source_offset: u64,
+        output: &mut [u8],
+    ) -> SpaceResult<B, A, ()> {
+        let end = source_offset
+            .checked_add(output.len() as u64)
+            .ok_or(AddressSpaceError::SizeOverflow)?;
+        if end > self.length {
+            return Err(AddressSpaceError::InvalidRange);
+        }
+        let mut start = 0;
+        let mut copied = 0;
+        for segment in self.plan.segments.iter() {
+            let next = start + segment.length;
+            let low = source_offset.max(start);
+            let high = end.min(next);
+            if low < high {
+                let length =
+                    usize::try_from(high - low).map_err(|_| AddressSpaceError::SizeOverflow)?;
+                segment.object.read_exposed(
+                    segment.object_offset + low - start,
+                    &mut output[copied..copied + length],
+                )?;
+                copied += length;
+            }
+            start = next;
+        }
+        if copied != output.len() {
+            return Err(AddressSpaceError::SizeMismatch);
+        }
+        Ok(())
+    }
+
+    /// Copies a subrange through resident page owners. The user can still
+    /// mutate its bytes; this is an ordinary read, not an atomic snapshot.
+    pub(crate) fn copy_to_vmo(
+        &self,
+        destination: &WritableVmo<B, A>,
+        source_offset: u64,
+        destination_offset: u64,
+        length: usize,
+    ) -> SpaceResult<B, A, ()> {
+        let _access = destination.begin_kernel_write()?;
+        self.copy_to_resident_vmo(destination, source_offset, destination_offset, length)
+    }
+
+    /// Copies into the externally writable backing selected by this lease.
+    /// The lease excludes snapshots and hardware ownership throughout the
+    /// copy. A protocol must establish when peer readers may consume the bytes;
+    /// this operation neither creates Rust aliases nor promises atomic contents.
+    pub(crate) fn copy_to_exposed_vmo(
+        &self,
+        destination: &WritableMappingLease<B, A>,
+        source_offset: u64,
+        destination_offset: u64,
+        length: usize,
+    ) -> SpaceResult<B, A, ()> {
+        self.copy_to_resident_vmo(
+            &destination.exposed_copy_target(),
+            source_offset,
+            destination_offset,
+            length,
+        )
+    }
+
+    fn copy_to_resident_vmo(
+        &self,
+        destination: &WritableVmo<B, A>,
+        source_offset: u64,
+        destination_offset: u64,
+        length: usize,
+    ) -> SpaceResult<B, A, ()> {
+        let end = source_offset
+            .checked_add(length as u64)
+            .ok_or(AddressSpaceError::SizeOverflow)?;
+        let destination_end = destination_offset
+            .checked_add(length as u64)
+            .ok_or(AddressSpaceError::SizeOverflow)?;
+        if end > self.length || destination_end > destination.size() {
+            return Err(AddressSpaceError::InvalidRange);
+        }
+        let mut start = 0;
+        let mut copied = 0;
+        for segment in self.plan.segments.iter() {
+            let next = start + segment.length;
+            let low = source_offset.max(start);
+            let high = end.min(next);
+            if low < high {
+                let CopyBacking::Read(pages) = &segment.object else {
+                    return Err(AddressSpaceError::InvalidRange);
+                };
+                let count =
+                    usize::try_from(high - low).map_err(|_| AddressSpaceError::SizeOverflow)?;
+                pages.copy_into(
+                    low - start,
+                    destination,
+                    destination_offset + copied as u64,
+                    count,
+                )?;
+                copied += count;
+            }
+            start = next;
+        }
+        if copied != length {
             return Err(AddressSpaceError::SizeMismatch);
         }
         Ok(())

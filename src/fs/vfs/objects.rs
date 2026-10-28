@@ -894,7 +894,16 @@ impl FileObject {
         })
     }
 
+    #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
     pub(crate) fn write(&self, offset: Option<u64>, input: &[u8]) -> Result<(usize, u64), Error> {
+        self.write_source(offset, &super::write_source::WriteSource::Bytes(input))
+    }
+
+    pub(super) fn write_source(
+        &self,
+        offset: Option<u64>,
+        input: &super::write_source::WriteSource<'_>,
+    ) -> Result<(usize, u64), Error> {
         self.location
             .mount()
             .filesystem()
@@ -936,6 +945,39 @@ impl FileObject {
             }
         }
         Ok(bytes)
+    }
+
+    pub(crate) fn read_pages(
+        &self,
+        offset: u64,
+        length: usize,
+    ) -> Result<Option<super::file_record::ReadPages>, Error> {
+        let filesystem = self.location.mount().filesystem_owner();
+        let Some((pages, observation)) = filesystem
+            .read_file_pages(self.location.node(), &self.cache, offset, length)
+            .map_err(Error::from)?
+        else {
+            return Ok(None);
+        };
+        let range = self.read_ahead.with(|reader| {
+            reader.observe(
+                observation.identity,
+                observation.length,
+                offset,
+                pages.length,
+                observation.had_miss,
+            )
+        });
+        if let Some(range) = range {
+            super::read_ahead::submit(
+                filesystem,
+                self.location.node(),
+                &self.cache,
+                observation.identity,
+                range,
+            );
+        }
+        Ok(Some(pages))
     }
 
     pub(crate) fn executable_snapshot(

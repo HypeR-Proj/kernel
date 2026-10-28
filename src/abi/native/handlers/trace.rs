@@ -48,6 +48,14 @@ pub(in crate::abi::native) fn sys_cpu_inspector_trace_stop(
     NativeAction::Return(status::status_only(services.trace_stop(receiver, args[0])))
 }
 #[inline(never)]
+pub(in crate::abi::native) fn sys_cpu_inspector_trace_clear(
+    services: &impl SystemInspectServices,
+    receiver: &InvocationReceiver,
+    args: &Arguments,
+) -> NativeAction {
+    NativeAction::Return(status::status_only(services.trace_clear(receiver, args[0])))
+}
+#[inline(never)]
 pub(in crate::abi::native) fn sys_cpu_inspector_trace_read(
     services: &impl SystemInspectServices,
     receiver: &InvocationReceiver,

@@ -697,3 +697,264 @@ fn empty_eof_overflow_and_zero_backend_reads_never_publish_a_page() {
     );
     assert_eq!(cache.snapshot().live_payloads, 0);
 }
+
+#[test]
+fn owned_scatter_read_publishes_the_filled_allocations_and_warm_reads_do_no_io() {
+    use crate::file_data_cache::read_pages;
+    let cache = crate::require_ok(FileDataCache::try_new(128));
+    let file = identity(2, 7, 1);
+    let mut calls = 0;
+    let mut addresses = Vec::new();
+    let result = crate::require_some(crate::require_ok(read_pages(
+        &cache,
+        file,
+        &(),
+        BATCH as u64,
+        0,
+        BATCH,
+        |offset, pages| {
+            calls += 1;
+            let mut at = offset;
+            for page in pages {
+                addresses.push(page.as_ptr() as usize);
+                for byte in page.iter_mut() {
+                    *byte = pattern(at);
+                    at += 1;
+                }
+            }
+            Ok::<usize, ()>((at - offset) as usize)
+        },
+    )));
+    assert_eq!(calls, 1);
+    assert_eq!(result.length, BATCH);
+    assert!(result.had_miss);
+    assert_eq!(
+        result
+            .pages()
+            .map(|page| page.as_ptr() as usize)
+            .collect::<Vec<_>>(),
+        addresses
+    );
+    assert!(
+        result
+            .pages()
+            .flatten()
+            .enumerate()
+            .all(|(at, &byte)| byte == pattern(at as u64))
+    );
+    let warm = crate::require_some(crate::require_ok(read_pages(
+        &cache,
+        file,
+        &(),
+        BATCH as u64,
+        0,
+        BATCH,
+        |_, _| Err::<usize, _>("unexpected I/O"),
+    )));
+    assert!(!warm.had_miss);
+    assert_eq!(
+        warm.pages()
+            .map(|page| page.as_ptr() as usize)
+            .collect::<Vec<_>>(),
+        addresses
+    );
+    drop(result);
+    drop(warm);
+    assert_eq!(cache.reclaim_batch(64) + cache.reclaim_batch(64), 128);
+    assert_eq!(cache.snapshot().live_payloads, 0);
+}
+
+#[test]
+fn owned_short_read_never_publishes_a_partial_file_page() {
+    use crate::file_data_cache::read_pages;
+    let cache = crate::require_ok(FileDataCache::try_new(3));
+    let file = identity(3, 1, 1);
+    let result = crate::require_some(crate::require_ok(read_pages(
+        &cache,
+        file,
+        &(),
+        (3 * PAGE) as u64,
+        0,
+        3 * PAGE,
+        |_, pages| {
+            pages[0].fill(0x31);
+            pages[1][..17].fill(0x32);
+            Ok::<usize, ()>(PAGE + 17)
+        },
+    )));
+    assert_eq!(result.length, PAGE + 17);
+    assert_eq!(
+        result.pages().map(<[u8]>::len).collect::<Vec<_>>(),
+        vec![PAGE, 17]
+    );
+    assert_eq!(cache.snapshot().clean, 1);
+    assert_eq!(cache.snapshot().loading, 0);
+    assert_eq!(cache.snapshot().live_payloads, 2);
+    assert!(crate::require_ok(cache.lookup(CacheKey::new(file, FilePageIndex::new(1)))).is_none());
+    drop(result);
+    assert_eq!(cache.snapshot().live_payloads, 1);
+}
+
+#[test]
+fn owned_read_backend_failure_destroys_unpublished_data_and_all_admission() {
+    use crate::file_data_cache::read_pages;
+    let cache = crate::require_ok(FileDataCache::try_new(2));
+    let result = read_pages(
+        &cache,
+        identity(3, 2, 1),
+        &(),
+        (2 * PAGE) as u64,
+        0,
+        2 * PAGE,
+        |_, pages| {
+            pages[0].fill(0x7f);
+            Err::<usize, _>("completion failed")
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(ReadError::Backend("completion failed"))
+    ));
+    assert_eq!(cache.snapshot().clean, 0);
+    assert_eq!(cache.snapshot().loading, 0);
+    assert_eq!(cache.snapshot().live_payloads, 0);
+}
+
+#[test]
+fn owned_read_pressure_rolls_back_before_fallback_without_backend_io() {
+    use crate::file_data_cache::read_pages;
+    let cache = crate::require_ok(FileDataCache::try_new(1));
+    let result = crate::require_ok(read_pages(
+        &cache,
+        identity(3, 3, 1),
+        &(),
+        (2 * PAGE) as u64,
+        0,
+        2 * PAGE,
+        |_, _| Err::<usize, _>("unexpected I/O"),
+    ));
+    assert!(result.is_none());
+    assert_eq!(cache.snapshot().loading, 0);
+    assert_eq!(cache.snapshot().live_payloads, 0);
+}
+
+#[test]
+fn owned_read_publication_failure_preserves_private_result_until_last_pin() {
+    use crate::file_data_cache::read_pages;
+    let cache = crate::require_ok(FileDataCache::try_new(1));
+    cache.fail_next_publication_for_test();
+    let result = crate::require_some(crate::require_ok(read_pages(
+        &cache,
+        identity(3, 4, 1),
+        &(),
+        17,
+        0,
+        17,
+        |_, pages| {
+            pages[0].fill(0x45);
+            Ok::<usize, ()>(17)
+        },
+    )));
+    assert_eq!(result.length, 17);
+    assert!(result.pages().flatten().all(|&byte| byte == 0x45));
+    assert_eq!(cache.snapshot().clean, 0);
+    assert_eq!(cache.snapshot().live_payloads, 1);
+    drop(result);
+    assert_eq!(cache.snapshot().live_payloads, 0);
+}
+
+#[test]
+fn exclusive_fill_is_hidden_until_publication_and_abort_drops_its_owner() {
+    let cache = crate::require_ok(FileDataCache::try_new(1));
+    let key = CacheKey::new(identity(3, 5, 1), FilePageIndex::new(0));
+    let load = match crate::require_ok(cache.access(key)) {
+        CacheAccess::Load(load) => load,
+        _ => panic!("missing load reservation"),
+    };
+    let mut pending = crate::require_ok(load.prepare_fill(
+        || FilePage::try_empty(PAGE, ()),
+        |page| page.prepare_fill(PAGE, ()),
+    ));
+    pending.value_mut().bytes_mut().fill(0x63);
+    assert!(crate::require_ok(cache.lookup(key)).is_none());
+    assert!(matches!(
+        crate::require_ok(cache.access(key)),
+        CacheAccess::LoadInProgress
+    ));
+    let published = crate::require_ok(pending.publish());
+    assert!(published.value().bytes().iter().all(|&byte| byte == 0x63));
+    drop(published);
+    let replacement = match crate::require_ok(
+        cache.access(CacheKey::new(identity(3, 6, 1), FilePageIndex::new(0))),
+    ) {
+        CacheAccess::Load(load) => load,
+        _ => panic!("missing replacement reservation"),
+    };
+    let pending = crate::require_ok(replacement.prepare_fill(
+        || FilePage::try_empty(17, ()),
+        |page| page.prepare_fill(17, ()),
+    ));
+    drop(pending);
+    assert_eq!(cache.snapshot().loading, 0);
+    assert_eq!(cache.snapshot().live_payloads, 0);
+}
+
+#[test]
+fn owned_mixed_runs_preserve_offsets_and_failed_later_fill_is_never_published() {
+    use crate::file_data_cache::read_pages;
+    let cache = crate::require_ok(FileDataCache::try_new(4));
+    let file = identity(4, 1, 1);
+    let mut source = MemoryFile::new(4 * PAGE);
+    let mut middle = vec![0; PAGE];
+    read_memory(&cache, file, &mut source, 2 * PAGE as u64, &mut middle);
+    let mut calls = Vec::new();
+    let failed = read_pages(
+        &cache,
+        file,
+        &(),
+        (4 * PAGE) as u64,
+        0,
+        4 * PAGE,
+        |offset, parts| {
+            calls.push((offset, parts.iter().map(|p| p.len()).sum::<usize>()));
+            if offset == 3 * PAGE as u64 {
+                return Err("late failure");
+            }
+            for part in parts {
+                part.fill(0x11);
+            }
+            Ok(2 * PAGE)
+        },
+    );
+    assert!(matches!(failed, Err(ReadError::Backend("late failure"))));
+    assert_eq!(calls, vec![(0, 2 * PAGE), (3 * PAGE as u64, PAGE)]);
+    assert_eq!(cache.snapshot().clean, 1);
+    assert_eq!(cache.snapshot().live_payloads, 1);
+    assert_eq!(cache.snapshot().loading, 0);
+    let result = crate::require_some(crate::require_ok(read_pages(
+        &cache,
+        file,
+        &(),
+        (4 * PAGE) as u64,
+        0,
+        4 * PAGE,
+        |offset, parts| {
+            let mut at = offset;
+            for part in parts {
+                for byte in part.iter_mut() {
+                    *byte = pattern(at);
+                    at += 1;
+                }
+            }
+            Ok::<usize, ()>((at - offset) as usize)
+        },
+    )));
+    assert_eq!(result.length, 4 * PAGE);
+    assert!(
+        result
+            .pages()
+            .flatten()
+            .enumerate()
+            .all(|(at, &byte)| byte == pattern(at as u64))
+    );
+}

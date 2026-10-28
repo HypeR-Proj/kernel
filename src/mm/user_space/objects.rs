@@ -105,6 +105,20 @@ impl GuestMemoryBacking {
             .map_err(MemoryObjectError::Vmo)
     }
 
+    /// Copies Native-owned request pages into the dedicated guest exchange
+    /// storage without exposing either side as a Rust byte slice.
+    pub(crate) fn copy_from_native(
+        &self,
+        source: &NativeWritableVmo,
+        source_offset: u64,
+        destination_offset: u64,
+        length: usize,
+    ) -> Result<(), MemoryObjectError> {
+        self.storage
+            .copy_from_exposed_vmo(source, source_offset, destination_offset, length)
+            .map_err(MemoryObjectError::Vmo)
+    }
+
     pub(crate) fn page_is_resident(&self, offset: u64) -> Result<bool, MemoryObjectError> {
         self.storage
             .page_is_resident(offset)
@@ -145,6 +159,7 @@ impl From<VmoError<KernelPageError, ResourceError>> for MemoryObjectError {
 enum VmoStorage {
     Snapshot(NativeSnapshotVmo),
     Writable(NativeWritableVmo),
+    ReadOnly(NativeWritableVmo),
     Executable(NativeExecutableVmo),
 }
 
@@ -215,6 +230,26 @@ impl VmoObject {
         })
     }
 
+    /// Publishes only observation of Native-owned mutable storage. Unlike an
+    /// attenuated writable handle, this object cannot ever support WRITE or
+    /// guest hardware ownership, even if a publisher requests broader rights.
+    pub(crate) fn from_read_only_native(
+        storage: NativeWritableVmo,
+        sponsor: &ResourceDomain,
+    ) -> Result<Self, MemoryObjectError> {
+        Ok(Self {
+            storage: VmoStorage::ReadOnly(storage),
+            _object_charge: reserve_object_charge::<Self>(sponsor)?,
+        })
+    }
+
+    pub(crate) fn read_only_clone(&self) -> Option<NativeWritableVmo> {
+        match &self.storage {
+            VmoStorage::ReadOnly(storage) => Some(storage.clone()),
+            _ => None,
+        }
+    }
+
     pub(crate) fn from_executable(
         storage: NativeExecutableVmo,
         sponsor: &ResourceDomain,
@@ -240,13 +275,13 @@ impl VmoObject {
         match &self.storage {
             VmoStorage::Snapshot(storage) => Some(storage.clone()),
             VmoStorage::Executable(storage) => Some(storage.snapshot()),
-            VmoStorage::Writable(_) => None,
+            VmoStorage::Writable(_) | VmoStorage::ReadOnly(_) => None,
         }
     }
 
     pub(crate) fn try_snapshot(&self, sponsor: &ResourceDomain) -> Result<Self, MemoryObjectError> {
         let snapshot = match &self.storage {
-            VmoStorage::Writable(storage) => {
+            VmoStorage::Writable(storage) | VmoStorage::ReadOnly(storage) => {
                 storage.try_snapshot(DomainAccount::new(sponsor.clone()))?
             }
             VmoStorage::Snapshot(storage) => storage.clone(),
@@ -258,7 +293,7 @@ impl VmoObject {
     pub(crate) fn writable(&self) -> Option<&NativeWritableVmo> {
         match &self.storage {
             VmoStorage::Writable(storage) => Some(storage),
-            VmoStorage::Executable(_) | VmoStorage::Snapshot(_) => None,
+            VmoStorage::Executable(_) | VmoStorage::Snapshot(_) | VmoStorage::ReadOnly(_) => None,
         }
     }
 
@@ -268,7 +303,7 @@ impl VmoObject {
 
     pub(crate) fn executable(&self) -> Option<&NativeExecutableVmo> {
         match &self.storage {
-            VmoStorage::Writable(_) | VmoStorage::Snapshot(_) => None,
+            VmoStorage::Writable(_) | VmoStorage::Snapshot(_) | VmoStorage::ReadOnly(_) => None,
             VmoStorage::Executable(storage) => Some(storage),
         }
     }
@@ -279,7 +314,7 @@ impl VmoObject {
 
     pub(crate) fn size(&self) -> u64 {
         match &self.storage {
-            VmoStorage::Writable(storage) => storage.size(),
+            VmoStorage::Writable(storage) | VmoStorage::ReadOnly(storage) => storage.size(),
             VmoStorage::Snapshot(storage) => storage.size(),
             VmoStorage::Executable(storage) => storage.size(),
         }
@@ -292,6 +327,7 @@ impl VmoObject {
     ) -> Result<(), MemoryObjectError> {
         match &self.storage {
             VmoStorage::Writable(storage) => storage.read(offset, destination)?,
+            VmoStorage::ReadOnly(storage) => storage.read_exposed(offset, destination)?,
             VmoStorage::Snapshot(storage) => storage.read(offset, destination)?,
             VmoStorage::Executable(storage) => storage.read(offset, destination)?,
         }
@@ -347,7 +383,7 @@ impl KernelObject for VmoObject {
             .union(Rights::MAP);
         match &self.storage {
             VmoStorage::Writable(_) => common.union(Rights::WRITE),
-            VmoStorage::Snapshot(_) => common,
+            VmoStorage::Snapshot(_) | VmoStorage::ReadOnly(_) => common,
             VmoStorage::Executable(_) => common.union(Rights::EXECUTE),
         }
     }

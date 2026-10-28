@@ -112,6 +112,9 @@ def check(disassembly, *, self_test=False):
         '31sys_capability_channel_try_send.*15ProcessServices': 768,
         '22PreparedCapabilitySend14copy_from_user': 1024,
         '26send_prepared_capabilities': 4096,
+        # File-page faults can reach block waits below loader/usercopy frames.
+        # Keep the 1040-byte extent plan in charged per-mount scratch.
+        '9Transport12read_scatter': 1536,
     }
     functions = re.split(r'^\s*[0-9a-f]+ <([^\n]+)>:\s*$', disassembly,
                          flags=re.MULTILINE)

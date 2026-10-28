@@ -74,6 +74,16 @@ impl SystemInspectServices for ProcessServices<'_> {
             .map_err(|_| hyper::abi::native::HYPER_NATIVE_STATUS_ACCESS_DENIED)?;
         crate::diagnostics::trace::capture_stop(generation)
     }
+    fn trace_clear(
+        &self,
+        receiver: &InvocationReceiver,
+        generation: u64,
+    ) -> crate::diagnostics::trace::Result<()> {
+        receiver
+            .resolve::<CpuInspector>(Rights::SET_ATTRIBUTES)
+            .map_err(|_| hyper::abi::native::HYPER_NATIVE_STATUS_ACCESS_DENIED)?;
+        crate::diagnostics::trace::capture_clear(generation)
+    }
     fn trace_read(
         &self,
         receiver: &InvocationReceiver,

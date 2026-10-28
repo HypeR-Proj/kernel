@@ -42,6 +42,34 @@ pub(crate) struct LoadReservation<'cache, Page> {
     active: bool,
 }
 
+/// Exclusive admitted storage which can be filled by a scatter I/O operation.
+/// No cache reader or mapping can observe its contents before `publish`.
+/// Dropping it aborts the load and releases the payload before its quota.
+pub(crate) struct PendingPage<'cache, Page> {
+    page: UniqueFallibleArc<OwnedPage<Page>>,
+    reservation: LoadReservation<'cache, Page>,
+}
+
+impl<Page> PendingPage<'_, Page> {
+    pub(crate) fn value_mut(&mut self) -> &mut Page {
+        &mut self.page.value
+    }
+
+    pub(crate) fn publish(self) -> Result<CachedPage<Page>, CacheError> {
+        self.reservation.publish(self.page.into_shared())
+    }
+
+    /// Publication is optional for demand reads: an invalidated cache token
+    /// must not destroy successfully read bytes before they reach the caller.
+    pub(crate) fn finish(self, retain: bool) -> CachedPage<Page> {
+        let shared = self.page.into_shared();
+        if retain {
+            let _ = self.reservation.publish(shared.clone());
+        }
+        CachedPage { inner: shared }
+    }
+}
+
 impl<'cache, Page> LoadReservation<'cache, Page> {
     pub(super) fn new(
         cache: &'cache FileDataCache<Page>,
@@ -84,6 +112,51 @@ impl<'cache, Page> LoadReservation<'cache, Page> {
                 }
             },
         };
+        self.publish(shared)
+    }
+
+    /// Reserve exclusive storage without publishing it. The factory and reuse
+    /// callback run outside the cache lock; the returned owner may sleep while
+    /// the backend fills it. The generation token is checked at publication.
+    pub(crate) fn prepare_fill(
+        mut self,
+        create: impl FnOnce() -> Result<Page, CacheError>,
+        refill: impl FnOnce(&mut Page) -> Refill,
+    ) -> Result<PendingPage<'cache, Page>, CacheError> {
+        let Some(storage) = self.storage.take() else {
+            cache_invariant_violation();
+        };
+        let page = match storage {
+            FillStorage::Fresh(permit) => match self.create(permit, create)?.try_into_unique() {
+                Ok(page) => page,
+                Err(_) => cache_invariant_violation(),
+            },
+            FillStorage::Reused(mut page) => match refill(&mut page.value) {
+                Refill::Ready => {
+                    #[cfg(test)]
+                    self.cache.payload_reuses.fetch_add(1, Ordering::Relaxed);
+                    page
+                }
+                Refill::Recreate => {
+                    let (old, permit) = page.into_inner().into_parts();
+                    drop(old);
+                    match self.create(permit, create)?.try_into_unique() {
+                        Ok(page) => page,
+                        Err(_) => cache_invariant_violation(),
+                    }
+                }
+            },
+        };
+        Ok(PendingPage {
+            page,
+            reservation: self,
+        })
+    }
+
+    fn publish(
+        mut self,
+        shared: FallibleArc<OwnedPage<Page>>,
+    ) -> Result<CachedPage<Page>, CacheError> {
         #[cfg(test)]
         if self.cache.fail_publication.swap(false, Ordering::Relaxed) {
             return Err(CacheError::Allocation);

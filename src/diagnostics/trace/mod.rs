@@ -18,12 +18,17 @@ pub(crate) use rpc::annotate as annotate_rpc;
 #[cfg(feature = "kernel-trace")]
 pub use runtime::initialize;
 #[cfg(feature = "kernel-trace")]
-pub use {hyper_trace::read, hyper_trace::set_filter, hyper_trace::start, hyper_trace::stop};
+pub use {
+    hyper_trace::clear, hyper_trace::read, hyper_trace::set_filter, hyper_trace::start,
+    hyper_trace::stop,
+};
 
 #[cfg(feature = "kernel-trace")]
 mod control;
 #[cfg(feature = "kernel-trace")]
-pub(crate) use control::{query, start as capture_start, stop as capture_stop};
+pub(crate) use control::{
+    clear as capture_clear, query, start as capture_start, stop as capture_stop,
+};
 pub(crate) type Result<T> = core::result::Result<T, hyper::abi::native::HyperNativeStatus>;
 #[cfg(not(feature = "kernel-trace"))]
 pub(crate) fn capture_start(_: &[u8; 56]) -> Result<u64> {
@@ -31,6 +36,10 @@ pub(crate) fn capture_start(_: &[u8; 56]) -> Result<u64> {
 }
 #[cfg(not(feature = "kernel-trace"))]
 pub(crate) fn capture_stop(_: u64) -> Result<()> {
+    Err(hyper::abi::native::HYPER_NATIVE_STATUS_NOT_SUPPORTED)
+}
+#[cfg(not(feature = "kernel-trace"))]
+pub(crate) fn capture_clear(_: u64) -> Result<()> {
     Err(hyper::abi::native::HYPER_NATIVE_STATUS_NOT_SUPPORTED)
 }
 #[cfg(not(feature = "kernel-trace"))]

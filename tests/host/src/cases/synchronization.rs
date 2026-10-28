@@ -423,3 +423,30 @@ fn one_shot_publication_drops_the_retained_value_with_its_owner() {
     }
     assert_eq!(drops.load(Ordering::Relaxed), 1);
 }
+
+#[test]
+fn spin_lock_batch_is_all_or_nothing_and_releases_a_contended_prefix() {
+    use hyper::sync::SpinLock;
+    let first = SpinLock::new(1);
+    let second = SpinLock::new(2);
+    second.with(|_| {
+        assert!(!SpinLock::try_with_each(&[&first, &second], |_| panic!(
+            "partial mutation"
+        )));
+        assert_eq!(first.try_with(|value| *value), Some(1));
+    });
+    assert!(!SpinLock::try_with_each(&[&first, &first], |_| panic!(
+        "duplicate mutation"
+    )));
+    assert!(SpinLock::try_with_each(&[&first, &second], |value| {
+        *value += 10
+    }));
+    assert_eq!(first.try_with(|value| *value), Some(11));
+    assert_eq!(second.try_with(|value| *value), Some(12));
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        SpinLock::try_with_each(&[&first, &second], |_| panic!("callback failure"));
+    }));
+    assert!(panic.is_err());
+    assert_eq!(first.try_with(|value| *value), Some(11));
+    assert_eq!(second.try_with(|value| *value), Some(12));
+}

@@ -371,6 +371,38 @@ impl RemoteFs {
                 .map_err(map)
         }
     }
+    pub(super) fn read_scatter(
+        &self,
+        node: &Node,
+        offset: u64,
+        output: &mut [&mut [u8]],
+    ) -> Result<usize, Error> {
+        let mut state = self.state.lock().map_err(Error::Lock)?;
+        let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES)?;
+        let path = state.path(node)?;
+        state
+            .volume
+            .read_scatter(&path, offset, output)
+            .map_err(map)
+    }
+
+    pub(super) fn try_read_scatter(
+        &self,
+        record: &FileRecord,
+        offset: u64,
+        output: &mut [&mut [u8]],
+    ) -> Result<Option<usize>, Error> {
+        let Some(mut state) = self.state.try_lock().map_err(Error::Lock)? else {
+            return Ok(None);
+        };
+        let State {
+            volume, records, ..
+        } = &mut *state;
+        volume
+            .read_scatter(records.path(record.id())?, offset, output)
+            .map(Some)
+            .map_err(map)
+    }
     /// Background read admission never queues behind an active filesystem RPC.
     pub(super) fn try_read(
         &self,
@@ -398,7 +430,7 @@ impl RemoteFs {
         &self,
         node: &Node,
         offset: Option<u64>,
-        input: &[u8],
+        input: &super::write_source::WriteSource<'_>,
     ) -> Result<(usize, u64), Error> {
         let mut state = self.state.lock().map_err(Error::Lock)?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES)?;

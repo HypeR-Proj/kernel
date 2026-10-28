@@ -258,6 +258,22 @@ pub(crate) trait PageBackend: Clone {
         length: usize,
     ) -> Result<(), Self::Error>;
 
+    /// Copies between distinct resident pages that may have machine aliases.
+    ///
+    /// The caller holds both page-owner locks. Unlike `copy_owned`, neither
+    /// side may be borrowed as a Rust byte slice: a machine may concurrently
+    /// read or write it. The backend must use its non-faulting exposed-memory
+    /// primitive, validate both ranges and reject overlapping physical pages.
+    /// Failure can leave a partially written destination.
+    fn copy_exposed(
+        &self,
+        source: &Self::Page,
+        source_offset: usize,
+        destination: &mut Self::Page,
+        destination_offset: usize,
+        length: usize,
+    ) -> Result<(), Self::Error>;
+
     /// Copies from memory that may be concurrently visible to a machine.
     ///
     /// Production implementations use an architecture-audited external-memory

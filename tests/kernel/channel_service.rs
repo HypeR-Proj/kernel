@@ -38,6 +38,9 @@ use {
     crate::process::ProcessPhase, crate::process::TaskGroup, crate::process::TerminalReason,
 };
 
+#[path = "mapping_authority.rs"]
+mod mapping_authority;
+
 const IMAGE_BASE: u64 = 0x80_0000;
 const SCRATCH_BASE: u64 = IMAGE_BASE + PAGE_SIZE * 2;
 const TEST_CODE: [u8; 4] = [0x00, 0x00, 0x20, 0xd4];
@@ -252,6 +255,9 @@ fn verify_memory_authority_attenuation(
         false,
     )
     .map_err(|_| Error::State(84))?;
+    // A Native address space publishes its canonical root object only once.
+    // Reuse that authority for the mapping probes before closing its handles.
+    mapping_authority::verify(process, domain, &process.resolve_invocation(root)?)?;
     for handle in [lock_only, allowed_child, child, ordinary, root] {
         process.close_handle(handle)?;
     }
@@ -889,8 +895,8 @@ fn verify_read(
 fn create_process(domain: &ResourceDomain, group: &TaskGroup) -> Result<Process, Error> {
     let code_range = scratch_image(0, PAGE_SIZE)?;
     let stack_range = scratch_image(PAGE_SIZE * 2, PAGE_SIZE)?;
-    // Two empty pages are reserved for child-VMAR capability attenuation probes.
-    let image_range = scratch_image(0, PAGE_SIZE * 5)?;
+    // Child-VMAR and VMO mapping probes need independently owned empty ranges.
+    let image_range = scratch_image(0, PAGE_SIZE * 8)?;
     let address_space = prepare_native_entry_self_test(
         domain.clone(),
         image_range,

@@ -157,3 +157,5 @@ pub(crate) fn root_directory(
 pub(crate) fn ramfs_capacity_bytes() -> u64 {
     ramfs::capacity_bytes()
 }
+
+mod write_source;

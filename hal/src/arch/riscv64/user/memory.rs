@@ -377,8 +377,10 @@ pub(crate) unsafe fn service_local_request(request: LocalRequest) -> Result<(), 
 /// Copies externally mutable, resident memory without Rust reference aliasing.
 ///
 /// # Safety
-/// Ranges must remain resident, valid for length, and nonoverlapping. Kernel
-/// aliases, rather than user VAs, must be passed while SUM remains clear.
+/// Ranges must remain resident Normal memory, valid for length, and nonoverlapping;
+/// the destination must be writable. Either range may have concurrent external
+/// machine aliases. Kernel aliases, rather than user VAs, must be passed while
+/// SUM remains clear. Protocol publication and coherency remain caller-owned.
 pub(crate) unsafe fn copy_from_exposed(source: *const u8, destination: *mut u8, length: usize) {
     // SAFETY: Caller retains both ranges. The assembly memory clobber and byte
     // accesses admit concurrent userspace modification without a Rust borrow.
@@ -391,7 +393,7 @@ pub(crate) unsafe fn copy_from_exposed(source: *const u8, destination: *mut u8, 
         length = inout(reg) length => _, byte = out(reg) _, options(nostack))
     };
 }
-/// Copies private bytes to externally mutable memory.
+/// Copies to externally mutable memory; the source may also be machine-visible.
 ///
 /// # Safety
 /// The same residency, linear-alias, and nonoverlap contract as the read copy.

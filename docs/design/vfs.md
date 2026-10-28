@@ -237,7 +237,14 @@ immutable bytes. Refill, allocation and destruction occur outside the cache
 lock; pressure prevents recycled pages from admitting new cache contents too.
 
 The backend-neutral reader preserves consecutive miss ranges up to the native
-512 KiB batch, using the caller's existing scratch storage. It issues no read
+512 KiB batch. Page-aligned remote reads reserve exclusive private fill pages
+and let the backend fill consecutive misses directly through scatter slices.
+These pages become immutable before publication; immutable hits and completed
+fills remain pinned until the later userspace copy finishes. The remote adapter
+validates worker-supplied physical extent plans and copies from the dedicated
+I/O VM exchange pool directly into these destinations. No cache page is mapped
+writable into the worker or made device-visible. Unaligned requests and cache
+admission pressure retain the bounded scratch fallback. It issues no read
 outside the requested range. Only fully returned pages, or a page-start-to-EOF
 tail validated against the known length, are eligible for retention. Partial
 cold reads need not populate the cache; partial warm reads can use complete
@@ -348,8 +355,8 @@ backends use the same revision and mutation protocol; a clean read cache does
 not require dirty-page writeback. The backend seam
 in `instance.rs` separates node leases, owned metadata, data operations and
 temporary loader reads from path policy. The generic userspace adapter owns canonical path identities and ordered
-request lifetime/cancellation there; block transport stays below the Native
-filesystem worker. [Filesystem services](../../../docs/design/storage/filesystem-services.md)
+request lifetime/cancellation there. Workers own media parsing and write layout;
+the kernel executes validated read plans through the mount-bound block queue. [Filesystem services](../../../docs/design/storage/filesystem-services.md)
 describes the bounded shared-buffer protocol, failure retirement and sequential
 readahead. FAT parsing runs in `/svc/fs-fat`, selected on demand by the
 `/svc/fs-backend` manager. The trusted Linux I/O VM remains the physical block
@@ -369,10 +376,12 @@ storage. Shared writable mappings and persistent writeback remain absent.
 
 File transfer requests accept up to 2 MiB; this limit is independent of the
 64 KiB VMO transfer limit. Reads process the request through the existing
-File/backend interface in at most 512 KiB batches. Larger reads use fallible
-scratch storage charged to the calling process; reads up to 1 KiB retain a
-small stack buffer. Only the current batch's user destination is prepared and
-pinned, after the backend has released its locks. Syscalls run in scheduled,
+File/backend interface in at most 512 KiB batches. Eligible page-aligned remote
+reads retain immutable cache-page owners and copy those pages directly to the
+caller, including newly filled cold pages. RAM files, unaligned ranges and cache
+admission pressure use fallible scratch storage charged to the caller; small
+fallback reads up to 1 KiB retain a stack buffer. Only the current batch's user
+destination is prepared and pinned, after the backend has released its locks. Syscalls run in scheduled,
 interruptible kernel context.
 
 Reads stop at the observed EOF, a short backend read, or an error. An error
@@ -381,10 +390,15 @@ prefix is returned. Callers must still handle short reads. The operation is
 not an atomic snapshot across concurrent file mutations. Scratch storage is
 released on return and is not a file-data cache. Writes accept the same request
 limit and accept at most 512 KiB per call, returning a short count for larger
-requests. Large writes use the same charged, fallible scratch storage; small
-writes retain the 1 KiB stack buffer. The accepted input is copied before taking
-the backend lock, then submitted in one backend call so append offset selection
-and that batch's write remain serialized. Callers must handle short writes.
+requests. The kernel resolves and pins the accepted user input before taking
+filesystem locks. Remote writes copy it directly into the mount's kernel-owned
+read-only source window while holding the transaction lock; no writable user
+alias exists to that window. The worker can submit source ranges only under the
+active operation token. RAM files and other copied paths retain bounded scratch
+storage. Input preparation is not a snapshot against concurrent application
+writes: the stable accepted bytes are those copied into kernel storage. Append
+offset selection and the backend write remain serialized. Callers must handle
+short writes.
 This does not introduce a writeback cache or change `file_sync` semantics.
 
 Machine-visible buffers use the HAL's non-faulting external-memory copy

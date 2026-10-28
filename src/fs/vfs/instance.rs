@@ -412,6 +412,49 @@ impl FilesystemInstance {
         self.read_file_locked(node, cache, offset, destination, &mut content)
     }
 
+    /// Retain only immutable page pins across the later user-memory copy. Cold
+    /// remote reads fill cache pages directly while the content gate excludes
+    /// mutation; providers never acquire writable access to these pages.
+    pub(super) fn read_file_pages(
+        &self,
+        node: &NodeLease,
+        cache: &FileDataCache<CachePage>,
+        offset: u64,
+        requested: usize,
+    ) -> Result<Option<(super::file_record::ReadPages, ReadObservation)>, Error> {
+        let Backend::Remote(fs) = &self.backend else {
+            return Ok(None);
+        };
+        let mut content = node.content().lock()?;
+        self.read_status()?;
+        let length =
+            content.length(|| self.attributes(node).map(|attributes| attributes.size()))?;
+        let identity = FileIdentity::new(
+            self.cache_generation(),
+            NodeIdentity::new(NonZeroU64::new(node.get()).ok_or(Error::NotRegularFile)?),
+            content.revision(),
+        );
+        let Some(pages) = io_cache::read_pages(
+            cache,
+            identity,
+            &node.remote()?.record,
+            length,
+            offset,
+            requested,
+            |at, output| fs.read_scatter(node.remote()?, at, output),
+        )
+        .map_err(read_error)?
+        else {
+            return Ok(None);
+        };
+        let observation = ReadObservation {
+            identity,
+            length,
+            had_miss: pages.had_miss,
+        };
+        Ok(Some((pages, observation)))
+    }
+
     /// Acquires immutable canonical storage while content protection excludes
     /// mutation. A cache-admission failure permits an independently charged
     /// private page; lack of optional cache capacity must not block ELF loading.
@@ -448,25 +491,26 @@ impl FilesystemInstance {
                     return cache.lookup_mapping(key).map_err(|_| Error::Allocation);
                 }
                 CacheAccess::Load(reservation) => {
-                    let mut bytes = alloc::vec::Vec::new();
-                    bytes
-                        .try_reserve_exact(hyper::mm::PAGE_SIZE as usize)
-                        .map_err(|_| Error::Allocation)?;
-                    bytes.resize(hyper::mm::PAGE_SIZE as usize, 0);
-                    let mut done = 0;
-                    while done < bytes.len() {
-                        let actual =
-                            self.read_backend_at(node, offset + done as u64, &mut bytes[done..])?;
-                        if actual == 0 || actual > bytes.len() - done {
-                            return Err(Error::InvalidInput);
-                        }
-                        done += actual;
-                    }
+                    let Backend::Remote(fs) = &self.backend else {
+                        return Ok(None);
+                    };
                     let record = &node.remote()?.record;
-                    let _ = reservation.fill_and_publish(
-                        || CachePage::try_copy(&bytes, record.clone()),
-                        |page| page.refill(&bytes, record.clone()),
-                    );
+                    let length = hyper::mm::PAGE_SIZE as usize;
+                    let mut pending = reservation
+                        .prepare_fill(
+                            || CachePage::try_empty(length, record.clone()),
+                            |page| page.prepare_fill(length, record.clone()),
+                        )
+                        .map_err(|_| Error::Allocation)?;
+                    let actual = fs.read_scatter(
+                        node.remote()?,
+                        offset,
+                        &mut [pending.value_mut().bytes_mut()],
+                    )?;
+                    if actual != length {
+                        return Err(Error::InvalidBackendResult);
+                    }
+                    let _ = pending.publish();
                     return cache.lookup_mapping(key).map_err(|_| Error::Allocation);
                 }
                 CacheAccess::LoadInProgress => {
@@ -583,6 +627,20 @@ impl FilesystemInstance {
             return Ok(());
         };
         self.read_status()?;
+        if io_cache::read_pages(
+            cache,
+            identity,
+            record,
+            length,
+            offset,
+            destination.len(),
+            |at, output| fs.try_read_scatter(record, at, output)?.ok_or(Error::Busy),
+        )
+        .map_err(read_error)?
+        .is_some()
+        {
+            return Ok(());
+        }
         io_cache::read(
             cache,
             identity,
@@ -702,12 +760,24 @@ impl FilesystemInstance {
         &self,
         node: &NodeLease,
         offset: Option<u64>,
-        input: &[u8],
+        input: &super::write_source::WriteSource<'_>,
     ) -> Result<(usize, u64), Error> {
         let mut content = node.content().lock()?;
         content.begin_mutation()?;
         match &self.backend {
-            Backend::RamFs(fs) => fs.write(node.ramfs()?, offset, input),
+            Backend::RamFs(fs) => match input {
+                #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+                super::write_source::WriteSource::Bytes(bytes) => {
+                    fs.write(node.ramfs()?, offset, bytes)
+                }
+                super::write_source::WriteSource::User(_, domain) => {
+                    let mut bytes =
+                        super::scratch::ScratchVec::new(super::scratch::ScratchBudget::new(domain));
+                    super::scratch::resize_bytes(&mut bytes, input.len())?;
+                    input.copy_to(&mut bytes)?;
+                    fs.write(node.ramfs()?, offset, &bytes)
+                }
+            },
             Backend::Remote(fs) => fs.write(node.remote()?, offset, input),
         }
     }

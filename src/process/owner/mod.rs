@@ -50,8 +50,9 @@ use {
 };
 use {
     crate::mm::user_space::MachineError, crate::mm::user_space::MemoryObjectError,
-    crate::mm::user_space::NativeAddressSpace, crate::mm::user_space::UserSlice,
-    crate::mm::user_space::UserWriteReservation, crate::mm::user_space::VmarObject,
+    crate::mm::user_space::NativeAddressSpace, crate::mm::user_space::NativeUserRead,
+    crate::mm::user_space::UserSlice, crate::mm::user_space::UserWriteReservation,
+    crate::mm::user_space::VmarObject,
 };
 use {
     crate::object::KernelService, crate::object::Koid, crate::object::ObjectCreationError,
@@ -1229,6 +1230,15 @@ impl Process {
         // Retrying only overwrites our private buffer, without a user-visible
         // side effect; the ordinary retry boundary still checks cancellation.
         self.retry_user_memory(|address_space| address_space.copy_from_user(source, destination))
+    }
+
+    /// Resolves file faults before I/O locks and retains only the selected
+    /// physical owners. The subsequent copy cannot fault back into a filesystem.
+    pub(crate) fn prepare_user_read(
+        &self,
+        source: UserSlice,
+    ) -> Result<NativeUserRead, ProcessError> {
+        self.retry_user_memory(|address_space| address_space.prepare_user_read(source))
     }
 
     /// Pins one exact output range across a capability publication transaction.

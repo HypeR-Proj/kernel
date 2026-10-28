@@ -22,6 +22,67 @@ pub(super) struct PageBytes {
 }
 
 impl PageBytes {
+    pub(super) fn try_zeroed(length: usize) -> Result<Self, CacheError> {
+        if length > PAGE_BYTES {
+            return Err(CacheError::InvalidCapacity);
+        }
+        let mut storage = Self::try_copy(&[])?;
+        storage.prepare_fill(length);
+        Ok(storage)
+    }
+
+    /// Initialize newly exposed bytes before lending a mutable slice to I/O.
+    /// Existing bytes need not be cleared: publication requires a complete
+    /// successful fill, and a failed load destroys this exclusive owner.
+    pub(super) fn prepare_fill(&mut self, length: usize) {
+        if length > PAGE_BYTES {
+            super::cache_invariant_violation();
+        }
+        #[cfg(not(test))]
+        {
+            if length > self.length {
+                // SAFETY: This exclusive owner retains a full physical page;
+                // the newly initialized suffix lies within that allocation.
+                unsafe {
+                    core::ptr::with_exposed_provenance_mut::<u8>(self.address)
+                        .add(self.length)
+                        .write_bytes(0, length - self.length);
+                }
+            }
+            self.length = length;
+        }
+        #[cfg(test)]
+        self.bytes.resize(length, 0);
+    }
+
+    pub(super) fn as_mut_slice(&mut self) -> &mut [u8] {
+        #[cfg(not(test))]
+        {
+            // SAFETY: prepare_fill initialized this prefix; exclusive ownership
+            // excludes cache readers and all user or device mapping aliases.
+            unsafe {
+                core::slice::from_raw_parts_mut(
+                    core::ptr::with_exposed_provenance_mut::<u8>(self.address),
+                    self.length,
+                )
+            }
+        }
+        #[cfg(test)]
+        &mut self.bytes
+    }
+
+    pub(super) fn truncate(&mut self, length: usize) {
+        if length > self.as_slice().len() {
+            super::cache_invariant_violation();
+        }
+        #[cfg(not(test))]
+        {
+            self.length = length;
+        }
+        #[cfg(test)]
+        self.bytes.truncate(length);
+    }
+
     pub(super) fn try_copy(bytes: &[u8]) -> Result<Self, CacheError> {
         Self::try_copy_parts(&[bytes])
     }

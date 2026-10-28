@@ -66,6 +66,7 @@ pub(super) fn dispatch_operation(
         operation,
         abi::NativeOperation::CpuInspectorTraceStart
             | abi::NativeOperation::CpuInspectorTraceStop
+            | abi::NativeOperation::CpuInspectorTraceClear
             | abi::NativeOperation::CpuInspectorTraceRead
             | abi::NativeOperation::ByteChannelTraceRpc
     );
@@ -453,6 +454,30 @@ pub(super) fn dispatch_operation(
         abi::NativeOperation::NativeBlockTransfer => {
             handlers::sys_native_block_transfer(services, receiver, arguments)
         }
+        abi::NativeOperation::BlockQueueCreate => {
+            handlers::sys_block_queue_create(services, receiver, arguments)
+        }
+        abi::NativeOperation::BlockQueueSubmit => {
+            handlers::sys_block_queue_submit(services, receiver, arguments)
+        }
+        abi::NativeOperation::BlockQueueCreateWindow => {
+            handlers::sys_block_queue_create_window(services, receiver, arguments)
+        }
+        abi::NativeOperation::BlockQueueSubmitWindow => {
+            handlers::sys_block_queue_submit_window(services, receiver, arguments)
+        }
+        abi::NativeOperation::BlockQueueWait => {
+            handlers::sys_block_queue_wait(services, receiver, arguments)
+        }
+        abi::NativeOperation::BlockQueueWaitSpace => {
+            handlers::sys_block_queue_wait_space(services, receiver, arguments)
+        }
+        abi::NativeOperation::BlockQueueReap => {
+            handlers::sys_block_queue_reap(services, receiver, arguments)
+        }
+        abi::NativeOperation::BlockQueueInfo => {
+            handlers::sys_block_queue_info(services, receiver, arguments)
+        }
         abi::NativeOperation::FilesystemMountRamfs => {
             handlers::sys_filesystem_mount_ramfs(services, receiver, arguments)
         }
@@ -625,6 +650,9 @@ pub(super) fn dispatch_operation(
         }
         abi::NativeOperation::CpuInspectorTraceStop => {
             handlers::sys_cpu_inspector_trace_stop(services, receiver, arguments)
+        }
+        abi::NativeOperation::CpuInspectorTraceClear => {
+            handlers::sys_cpu_inspector_trace_clear(services, receiver, arguments)
         }
         abi::NativeOperation::CpuInspectorTraceRead => {
             handlers::sys_cpu_inspector_trace_read(services, receiver, arguments)

@@ -1100,6 +1100,60 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
         }
     }
     impl crate::abi::native::GuestIoServices for RejectingServices {
+        fn create_block_queue(
+            &self,
+            _: &InvocationReceiver,
+            _: u32,
+            _: u64,
+            _: u32,
+        ) -> Result<HandleValue, crate::block::service::TransferError> {
+            self.calls.set(self.calls.get().saturating_add(1));
+            Err(crate::block::service::TransferError::Status(
+                HYPER_NATIVE_STATUS_NOT_SUPPORTED,
+            ))
+        }
+        fn submit_block_queue(
+            &self,
+            _: &InvocationReceiver,
+            _: u32,
+            _: u32,
+            _: Option<UserSlice>,
+        ) -> Result<u64, crate::block::service::TransferError> {
+            self.calls.set(self.calls.get().saturating_add(1));
+            Err(crate::block::service::TransferError::Status(
+                HYPER_NATIVE_STATUS_NOT_SUPPORTED,
+            ))
+        }
+        fn wait_block_queue(
+            &self,
+            _: &InvocationReceiver,
+            ticket: u64,
+            _: u64,
+        ) -> Result<(u64, i64), crate::block::service::TransferError> {
+            self.calls.set(self.calls.get().saturating_add(1));
+            Ok((ticket, hyper::abi::native::HYPER_NATIVE_STATUS_IO_ERROR))
+        }
+        fn wait_block_queue_space(
+            &self,
+            _: &InvocationReceiver,
+            _: u64,
+            _: u64,
+        ) -> Result<(), crate::block::service::TransferError> {
+            self.calls.set(self.calls.get().saturating_add(1));
+            Ok(())
+        }
+        fn reap_block_queue(
+            &self,
+            _: &InvocationReceiver,
+            _: u64,
+            _: Option<UserSlice>,
+        ) -> Result<(i64, usize), crate::block::service::TransferError> {
+            self.calls.set(self.calls.get().saturating_add(1));
+            Err(crate::block::service::TransferError::Status(
+                HYPER_NATIVE_STATUS_NOT_SUPPORTED,
+            ))
+        }
+
         fn create_guest_mailbox(
             &self,
             _: &InvocationReceiver,
@@ -1598,6 +1652,81 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
     let services = RejectingServices {
         calls: Cell::new(0),
     };
+    // Malformed queue controls cannot allocate, publish, wait or consume a completion.
+    {
+        use hyper::abi::native::*;
+        let queue_services = RejectingServices {
+            calls: Cell::new(0),
+        };
+        for (operation, args) in [
+            (NativeOperation::BlockQueueCreate, [0, 512, 1, 0, 0, 0]),
+            (NativeOperation::BlockQueueCreate, [1, 511, 1, 0, 0, 0]),
+            (NativeOperation::BlockQueueCreate, [1, 512, 5, 0, 0, 0]),
+            (NativeOperation::BlockQueueCreate, [1, 512, 1, 1, 0, 0]),
+            (NativeOperation::BlockQueueSubmit, [3, 1, 0x1000, 16, 0, 0]),
+            (
+                NativeOperation::BlockQueueSubmit,
+                [0, 17, 0x1000, 272, 0, 0],
+            ),
+            (NativeOperation::BlockQueueSubmit, [2, 0, 0x1000, 0, 0, 0]),
+            (
+                NativeOperation::BlockQueueSubmit,
+                [0, 1, 0x1000, HYPER_NATIVE_BLOCK_QUEUE_FRAME_BYTES + 1, 0, 0],
+            ),
+            (NativeOperation::BlockQueueWait, [1, 0, 1, 0, 0, 0]),
+            (NativeOperation::BlockQueueWaitSpace, [1, 0, 0, 0, 0, 0]),
+            (NativeOperation::BlockQueueWaitSpace, [512, 0, 1, 0, 0, 0]),
+            (
+                NativeOperation::BlockQueueWaitSpace,
+                [HYPER_NATIVE_BLOCK_QUEUE_TRANSFER_BYTES + 512, 0, 0, 0, 0, 0],
+            ),
+            (NativeOperation::BlockQueueReap, [0, 0, 0, 0, 0, 0]),
+            (
+                NativeOperation::BlockQueueReap,
+                [
+                    1,
+                    0x1000,
+                    HYPER_NATIVE_BLOCK_QUEUE_TRANSFER_BYTES + 1,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+        ] {
+            let result = harness.returning(&queue_services, invoke(operation, args))?;
+            if result.status() != HYPER_NATIVE_STATUS_INVALID_ARGUMENT
+                || queue_services.calls.get() != 0
+            {
+                return Err(SelfTestError::ChannelValidation);
+            }
+        }
+        let result = harness.returning(
+            &queue_services,
+            invoke(NativeOperation::BlockQueueWait, [31, 0, 0, 0, 0, 0]),
+        )?;
+        if result.status() != HYPER_NATIVE_STATUS_OK
+            || result.values() != &[31, HYPER_NATIVE_STATUS_IO_ERROR as u64]
+            || queue_services.calls.get() != 1
+        {
+            return Err(SelfTestError::ChannelValidation);
+        }
+        let result = harness.returning(
+            &queue_services,
+            invoke(NativeOperation::BlockQueueWaitSpace, [0, 0, 0, 0, 0, 0]),
+        )?;
+        if result.status() != HYPER_NATIVE_STATUS_OK
+            || result.values() != &[0, 0]
+            || queue_services.calls.get() != 2
+        {
+            return Err(SelfTestError::ChannelValidation);
+        }
+        if super::wire::parse_object_kind(HYPER_NATIVE_OBJECT_BLOCK_QUEUE)
+            != Ok(crate::object::ObjectKind::BLOCK_QUEUE)
+        {
+            return Err(SelfTestError::RecordEncoding);
+        }
+    }
+
     // Diagnostic reads validate selectors and bounded records before invoking
     // privileged services. Valid requests still require inspector authority.
     {

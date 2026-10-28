@@ -183,6 +183,7 @@ fn stop_joins_an_admitted_writer_and_cannot_recycle_early() {
     entered.wait();
     let stop = r.stop(session);
     let restart = r.start(Filter::ALL);
+    let clear = r.clear(session);
     let disabled = r.enabled(Category::Scheduler).is_none();
     let mut out = [None; 4];
     let busy_read = matches!(r.read(session, 1, 0, &mut out), Err(Error::Busy));
@@ -190,6 +191,7 @@ fn stop_joins_an_admitted_writer_and_cannot_recycle_early() {
     crate::require_ok(writer.join());
     assert_eq!(stop, Err(Error::Busy));
     assert_eq!(restart, Err(Error::Busy));
+    assert_eq!(clear, Err(Error::Busy));
     assert!(disabled && busy_read);
     crate::require_ok(r.stop(session));
     assert_eq!(crate::require_ok(r.read(session, 1, 0, &mut out)).count, 1);
@@ -314,4 +316,96 @@ fn runtime_capacity_wraps_and_can_grow_only_between_captures() {
     let batch = crate::require_ok(r.read(second, 0, 0, &mut out));
     assert_eq!((batch.count, batch.next, batch.overwritten), (7, 7, 0));
     crate::require_ok(r.stop(second));
+}
+
+#[test]
+fn storage_is_prepared_only_for_selected_cpus_and_clear_retires_generation() {
+    // The configured maximum no longer embeds payload storage in the recorder.
+    assert_eq!(
+        core::mem::size_of::<Recorder<2, 4>>(),
+        core::mem::size_of::<Recorder<2, 16384>>()
+    );
+    let r = Recorder::<2, 8>::new();
+    let mut prepared = crate::require_ok(r.prepare(3, |cpu| cpu == 1));
+    let first = crate::require_ok(prepared.start(Filter::ALL));
+    drop(prepared);
+    let stale = crate::require_some(r.enabled(Category::Scheduler));
+    r.record(
+        stale,
+        0,
+        &SITE,
+        || panic!("unselected CPU clock"),
+        || panic!("unselected CPU payload"),
+    );
+    for value in 0..5 {
+        emit(&r, 1, value);
+    }
+    assert_eq!(r.clear(first), Err(Error::Busy));
+    crate::require_ok(r.stop(first));
+    let mut out = [None; 8];
+    assert_eq!(crate::require_ok(r.read(first, 0, 0, &mut out)).count, 0);
+    let a = crate::require_ok(r.read(first, 1, 0, &mut out));
+    let b = crate::require_ok(r.read(first, 1, 0, &mut out));
+    assert_eq!((a.count, a.overwritten), (3, 2));
+    assert_eq!((a.count, a.next), (b.count, b.next));
+    let retired = crate::require_ok(r.detach(first));
+    drop(retired);
+    assert!(matches!(
+        r.read(first, 1, 0, &mut out),
+        Err(Error::InvalidSession)
+    ));
+    assert_eq!(r.stop(first), Err(Error::InvalidSession));
+    assert_eq!(r.clear(first), Err(Error::InvalidSession));
+    let second = crate::require_ok(r.prepare(2, |cpu| cpu == 0)).start(Filter::ALL);
+    let second = crate::require_ok(second);
+    assert!(second.generation() > first.generation());
+    r.record(
+        stale,
+        0,
+        &SITE,
+        || panic!("cleared clock"),
+        || panic!("cleared payload"),
+    );
+    emit(&r, 0, 42);
+    crate::require_ok(r.stop(second));
+    assert_eq!(crate::require_ok(r.read(second, 0, 0, &mut out)).count, 1);
+    assert_eq!(crate::require_some(out[0]).values[0], 42);
+    crate::require_ok(r.clear(second));
+}
+
+#[test]
+fn failed_prepared_start_preserves_old_capture_and_can_retry() {
+    let r = Recorder::<1, 8>::new();
+    let first = crate::require_ok(r.start_with_capacity(Filter::ALL, 2));
+    emit(&r, 0, 19);
+    let mut prepared = crate::require_ok(r.prepare(8, |_| true));
+    assert_eq!(prepared.start(Filter::ALL), Err(Error::Busy));
+    crate::require_ok(r.stop(first));
+    assert_eq!(prepared.start(Filter::NONE), Err(Error::InvalidFilter));
+    let mut out = [None; 8];
+    assert_eq!(crate::require_ok(r.read(first, 0, 0, &mut out)).count, 1);
+    assert_eq!(crate::require_some(out[0]).values[0], 19);
+    let next = crate::require_ok(prepared.start(Filter::ALL));
+    drop(prepared);
+    assert_eq!(crate::require_ok(r.read(next, 0, 0, &mut out)).count, 0);
+    crate::require_ok(r.stop(next));
+    crate::require_ok(r.clear(next));
+}
+
+#[test]
+fn failed_storage_allocation_preserves_retained_records() {
+    let r = Recorder::<1, { usize::MAX }>::new();
+    let first = crate::require_ok(r.start_with_capacity(Filter::ALL, 2));
+    emit(&r, 0, 7);
+    crate::require_ok(r.stop(first));
+    // A deterministic layout overflow exercises the fallible allocation path
+    // without requesting host memory or depending on an OOM killer.
+    assert!(matches!(
+        r.prepare(usize::MAX, |_| true),
+        Err(Error::Allocation)
+    ));
+    let mut out = [None; 2];
+    assert_eq!(crate::require_ok(r.read(first, 0, 0, &mut out)).count, 1);
+    assert_eq!(crate::require_some(out[0]).values[0], 7);
+    crate::require_ok(r.clear(first));
 }

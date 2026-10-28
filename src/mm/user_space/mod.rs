@@ -35,7 +35,8 @@ pub(crate) use vmo::{ExclusiveHardwareWriteLease, WritableMappingLease};
 
 pub(crate) use address_space::{
     AddressSpaceError, CrashMapping, CrashMappingKind, CrashMemory, CrashReadError, MappingChange,
-    MappingToken, PreparedMappingChange, PreparedUserWrite, UserAddressSpace, Vmar,
+    MappingToken, PreparedMappingChange, PreparedUserRead, PreparedUserWrite, UserAddressSpace,
+    Vmar,
 };
 #[cfg(not(test))]
 pub(crate) use authority::ExecutableAuthority;
@@ -69,7 +70,8 @@ pub(crate) use machine::run_dormant_self_test;
 #[cfg(not(test))]
 pub(crate) use machine::{
     ActiveNativeAddressSpace, Error as MachineError, NativeAddressSpace, NativeCrashMemory,
-    NativeImageSegment, NativePinnedAtomicWord, StoppedNativeRun, UserWriteReservation,
+    NativeImageSegment, NativePinnedAtomicWord, NativeUserRead, StoppedNativeRun,
+    UserWriteReservation,
 };
 #[cfg(not(test))]
 pub(crate) use objects::{GuestMemoryBacking, MemoryObjectError, VmarObject, VmoObject};

@@ -77,5 +77,6 @@ fn macro_erases_or_lazily_evaluates_arguments_and_describes_itself() {
         let second = crate::require_some(out[1]);
         assert!(second.site.fields.is_empty());
         assert_eq!(second.values, [0; 4]);
+        crate::require_ok(trace::clear(session));
     }
 }

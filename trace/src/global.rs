@@ -4,7 +4,10 @@
 //! Machine-independent global capture. Only the enabled path calls the immutable
 //! machine adapter; the disabled fast path is a single category/generation load.
 
-use super::{Batch, Category, Error, Filter, Record, Recorder, Session, Site, Ticket};
+use super::{
+    Batch, Category, Error, Filter, PreparedCapture, Record, Recorder, RetiredCapture, Session,
+    Site, Ticket,
+};
 use hyper_core::sync::PublishedOnce;
 
 /// The adapter pins execution and obtains the CPU/clock before calling `record_at`.
@@ -12,9 +15,22 @@ use hyper_core::sync::PublishedOnce;
 /// once. The adapter must not retain them or call `emit` recursively.
 pub type MachineEmitter = fn(Ticket, &'static Site, &mut dyn FnMut() -> [u64; 4]);
 
-pub const CAPACITY: usize = 4096;
+pub const CAPACITY: usize = 16384;
 static RECORDER: Recorder<{ hyper_core::cpu::MAX_CPUS }, CAPACITY> = Recorder::new();
 static MACHINE: PublishedOnce<MachineEmitter> = PublishedOnce::new();
+
+pub fn prepare(
+    capacity: usize,
+    selected: impl Fn(usize) -> bool,
+) -> Result<PreparedCapture<'static, { hyper_core::cpu::MAX_CPUS }, CAPACITY>, Error> {
+    if MACHINE.get().is_none() {
+        return Err(Error::Unavailable);
+    }
+    RECORDER.prepare(capacity, selected)
+}
+pub fn detach(session: Session) -> Result<RetiredCapture, Error> {
+    RECORDER.detach(session)
+}
 
 /// Publish the sole machine adapter before allowing capture. Replacing the
 /// adapter is rejected; this changes data once, never executable instructions.
@@ -38,6 +54,9 @@ pub fn start_with_capacity(filter: Filter, capacity: usize) -> Result<Session, E
 }
 pub fn stop(session: Session) -> Result<(), Error> {
     RECORDER.stop(session)
+}
+pub fn clear(session: Session) -> Result<(), Error> {
+    RECORDER.clear(session)
 }
 pub fn set_filter(session: Session, filter: Filter) -> Result<(), Error> {
     RECORDER.set_filter(session, filter)

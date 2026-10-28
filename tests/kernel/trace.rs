@@ -146,6 +146,7 @@ fn verify_ipc() -> Result<(), &'static str> {
     {
         return Err("stale RPC context recorded");
     }
+    trace::clear(replacement).map_err(|_| "trace IPC clear")?;
     Ok(())
 }
 

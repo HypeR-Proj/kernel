@@ -51,3 +51,36 @@ pub(crate) fn read_batches<E>(
     }
     Ok(completed)
 }
+
+/// Visit one contiguous destination subrange without concatenating payloads or
+/// allocating pointer metadata. Each callback receives its source-buffer offset
+/// and an exclusive destination slice; all bounds are checked before any copy.
+pub(crate) fn scatter_copy<E>(
+    output: &mut [&mut [u8]],
+    mut skip: usize,
+    length: usize,
+    mut copy: impl FnMut(usize, &mut [u8]) -> Result<(), E>,
+) -> Result<(), BatchError<E>> {
+    let total = output
+        .iter()
+        .try_fold(0usize, |total, part| total.checked_add(part.len()))
+        .ok_or(BatchError::Contract(Error::ArithmeticOverflow))?;
+    if skip.checked_add(length).is_none_or(|end| end > total) {
+        return Err(BatchError::Contract(Error::InvalidBackendResult));
+    }
+    let mut copied = 0;
+    for part in output {
+        if copied == length {
+            break;
+        }
+        if skip >= part.len() {
+            skip -= part.len();
+            continue;
+        }
+        let count = (length - copied).min(part.len() - skip);
+        copy(copied, &mut part[skip..skip + count]).map_err(BatchError::Transfer)?;
+        copied += count;
+        skip = 0;
+    }
+    Ok(())
+}

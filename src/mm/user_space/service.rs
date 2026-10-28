@@ -431,19 +431,29 @@ pub(crate) fn map_vmo(
         required = required.union(Rights::EXECUTE);
     }
     let vmo = process.resolve_handle::<VmoObject>(vmo, required)?;
-    let maximum = if vmo.object().writable().is_some() {
-        Permissions::read_write()
-    } else if vmo.object().executable().is_some() {
-        Permissions::read_execute()
-    } else {
-        Permissions::read_only()
-    };
+    // VMAR protection changes do not resolve the source handle again. Preserve
+    // its authority as the mapping's ceiling, including after handle closure
+    // and mapping splits; the VMO's storage type alone is not an authority grant.
+    let rights = vmo.rights();
+    let mut maximum = Permissions::NONE;
+    if rights.contains(Rights::READ) {
+        maximum = Permissions::read_only();
+        if vmo.object().writable().is_some() && rights.contains(Rights::WRITE) {
+            maximum = Permissions::read_write();
+        } else if vmo.object().executable().is_some() && rights.contains(Rights::EXECUTE) {
+            maximum = Permissions::read_execute();
+        }
+    }
     if !permissions.is_subset_of(maximum) {
         return Err(ServiceError::InvalidInput);
     }
     let logical = vmar.object().address_space().logical();
     retry_mapping_transaction(process, || {
-        let prepared = if let Some(storage) = vmo.object().writable_clone() {
+        let prepared = if let Some(storage) = vmo
+            .object()
+            .writable_clone()
+            .or_else(|| vmo.object().read_only_clone())
+        {
             storage
                 .populate(object_offset, range.length())
                 .map_err(|failure| MemoryObjectError::Vmo(failure.cause))?;
@@ -476,7 +486,7 @@ pub(crate) fn map_vmo(
                     storage,
                     object_offset,
                     permissions,
-                    Permissions::read_only(),
+                    maximum,
                 )
                 .map_err(MachineError::Logical)?
         } else {

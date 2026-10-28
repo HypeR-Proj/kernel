@@ -395,10 +395,90 @@ pub(crate) trait GuestIoServices: UserMemoryServices {
             hyper::abi::native::HYPER_NATIVE_STATUS_NOT_SUPPORTED,
         ))
     }
+    fn create_block_queue(
+        &self,
+        _receiver: &InvocationReceiver,
+        _capacity: u32,
+        _byte_limit: u64,
+        _inflight_limit: u32,
+    ) -> Result<HandleValue, crate::block::service::TransferError> {
+        Err(crate::block::service::TransferError::Status(
+            hyper::abi::native::HYPER_NATIVE_STATUS_NOT_SUPPORTED,
+        ))
+    }
+    fn submit_block_queue(
+        &self,
+        _receiver: &InvocationReceiver,
+        _operation: u32,
+        _count: u32,
+        _frame: Option<UserSlice>,
+    ) -> Result<u64, crate::block::service::TransferError> {
+        Err(crate::block::service::TransferError::Status(
+            hyper::abi::native::HYPER_NATIVE_STATUS_NOT_SUPPORTED,
+        ))
+    }
+    fn create_block_queue_window(
+        &self,
+        _receiver: &InvocationReceiver,
+    ) -> Result<HandleValue, crate::block::service::TransferError> {
+        Err(crate::block::service::TransferError::Status(
+            hyper::abi::native::HYPER_NATIVE_STATUS_NOT_SUPPORTED,
+        ))
+    }
+    fn submit_block_queue_window(
+        &self,
+        _receiver: &InvocationReceiver,
+        _token: u64,
+        _count: u32,
+        _frame: UserSlice,
+    ) -> Result<u64, crate::block::service::TransferError> {
+        Err(crate::block::service::TransferError::Status(
+            hyper::abi::native::HYPER_NATIVE_STATUS_NOT_SUPPORTED,
+        ))
+    }
+    fn wait_block_queue(
+        &self,
+        _receiver: &InvocationReceiver,
+        _ticket: u64,
+        _deadline: u64,
+    ) -> Result<(u64, i64), crate::block::service::TransferError> {
+        Err(crate::block::service::TransferError::Status(
+            hyper::abi::native::HYPER_NATIVE_STATUS_NOT_SUPPORTED,
+        ))
+    }
+    fn wait_block_queue_space(
+        &self,
+        _receiver: &InvocationReceiver,
+        _bytes: u64,
+        _deadline: u64,
+    ) -> Result<(), crate::block::service::TransferError> {
+        Err(crate::block::service::TransferError::Status(
+            hyper::abi::native::HYPER_NATIVE_STATUS_NOT_SUPPORTED,
+        ))
+    }
+    fn reap_block_queue(
+        &self,
+        _receiver: &InvocationReceiver,
+        _ticket: u64,
+        _output: Option<UserSlice>,
+    ) -> Result<(i64, usize), crate::block::service::TransferError> {
+        Err(crate::block::service::TransferError::Status(
+            hyper::abi::native::HYPER_NATIVE_STATUS_NOT_SUPPORTED,
+        ))
+    }
+    fn block_queue_info(
+        &self,
+        _receiver: &InvocationReceiver,
+    ) -> Result<[u8; 128], crate::block::service::TransferError> {
+        Err(crate::block::service::TransferError::Status(
+            hyper::abi::native::HYPER_NATIVE_STATUS_NOT_SUPPORTED,
+        ))
+    }
     fn mount_filesystem(
         &self,
         _channel: HandleValue,
         _buffer: HandleValue,
+        _queue: Option<HandleValue>,
         _directory: &InvocationReceiver,
         _path: UserSlice,
         _read_only: bool,
@@ -626,6 +706,13 @@ pub(crate) trait SystemInspectServices: UserMemoryServices {
         Err(hyper::abi::native::HYPER_NATIVE_STATUS_NOT_SUPPORTED)
     }
     fn trace_stop(
+        &self,
+        _receiver: &InvocationReceiver,
+        _generation: u64,
+    ) -> crate::diagnostics::trace::Result<()> {
+        Err(hyper::abi::native::HYPER_NATIVE_STATUS_NOT_SUPPORTED)
+    }
+    fn trace_clear(
         &self,
         _receiver: &InvocationReceiver,
         _generation: u64,

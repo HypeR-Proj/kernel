@@ -207,7 +207,6 @@ pub(in crate::abi::native) fn sys_filesystem_mount(
     arguments: &Arguments,
 ) -> NativeAction {
     let result = (|| {
-        require_zero(&arguments[5..])?;
         if arguments[4] > 1 {
             return Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT);
         }
@@ -220,6 +219,11 @@ pub(in crate::abi::native) fn sys_filesystem_mount(
             .mount_filesystem(
                 parse_handle(arguments[0])?,
                 parse_handle(arguments[1])?,
+                if arguments[5] == 0 {
+                    None
+                } else {
+                    Some(parse_handle(arguments[5])?)
+                },
                 receiver,
                 path,
                 arguments[4] != 0,

@@ -42,16 +42,28 @@ impl Health {
 pub(in crate::fs::vfs) struct Transport {
     pub(super) health: FallibleArc<Health>,
     buffer: WritableVmo<KernelPageBackend, DomainAccount>,
-    _mapping: WritableMappingLease<KernelPageBackend, DomainAccount>,
+    block: Option<BlockTransport>,
+    mapping: WritableMappingLease<KernelPageBackend, DomainAccount>,
     domain: ResourceDomain,
     sequence: u64,
     read_only: bool,
 }
+struct BlockTransport {
+    queue: KernelRef<crate::block::BlockQueue, KernelService>,
+    window: FallibleArc<crate::block::WindowBinding>,
+    // The volume mutex serializes this private copy of provider metadata.
+    // Allocate once under the mount sponsor, not below every nested page-in.
+    read_plan: super::ScratchVec<u8>,
+}
 impl Transport {
+    pub(crate) fn publication(&self) -> Option<FallibleArc<crate::block::WindowBinding>> {
+        self.block.as_ref().map(|block| block.window.clone())
+    }
     pub(crate) fn prepare(
         process: &Process,
         channel: HandleValue,
         buffer: HandleValue,
+        queue: Option<HandleValue>,
         read_only: bool,
     ) -> Result<Self, super::Error> {
         let channel = process
@@ -79,6 +91,33 @@ impl Transport {
         buffer
             .populate(0, buffer.size())
             .map_err(|_| super::Error::Allocation)?;
+        let block = if let Some(queue) = queue {
+            let queue = process
+                .resolve_handle::<crate::block::BlockQueue>(
+                    queue,
+                    Rights::READ.union(Rights::WAIT).union(if read_only {
+                        Rights::NONE
+                    } else {
+                        Rights::WRITE
+                    }),
+                )
+                .map_err(|_| super::Error::InvalidInput)?;
+            let window = queue
+                .object()
+                .bind_window()
+                .map_err(|_| super::Error::InvalidInput)?;
+            let queue = queue.into_operation_pin().into_filesystem_transport();
+            let mut read_plan =
+                super::ScratchVec::new(super::ScratchBudget::new(&process.resource_domain()));
+            crate::fs::vfs::scratch::resize_bytes(&mut read_plan, protocol::EXTENT_PLAN_BYTES)?;
+            Some(BlockTransport {
+                queue,
+                window,
+                read_plan,
+            })
+        } else {
+            None
+        };
         let channel = channel.into_operation_pin().into_filesystem_transport();
         let health = FallibleArc::try_new(Health {
             channel,
@@ -87,7 +126,8 @@ impl Transport {
         Ok(Self {
             health,
             buffer,
-            _mapping: mapping,
+            block,
+            mapping,
             domain: process.resource_domain(),
             sequence: 0,
             read_only,
@@ -104,6 +144,7 @@ impl Transport {
     ) -> Result<u64, Error> {
         self.exchange(
             Request {
+                window_token: 0,
                 sequence: 0,
                 operation,
                 path,
@@ -242,6 +283,7 @@ impl Transport {
     pub(super) fn stat_into(&mut self, path: &str, entry: &mut Entry) -> Result<(), Error> {
         self.exchange(
             Request {
+                window_token: 0,
                 sequence: 0,
                 operation: Operation::Stat,
                 path,
@@ -268,6 +310,7 @@ impl Transport {
         let result = (|| {
             let response = self.exchange(
                 Request {
+                    window_token: 0,
                     sequence: 0,
                     operation: Operation::ReadDirectory,
                     path,
@@ -318,32 +361,53 @@ impl Transport {
             .map_err(|_| Error::Io)?;
         Ok(actual)
     }
-    pub(super) fn read_at(
+    /// Batch RPCs by byte capacity, independently of destination page boundaries.
+    /// Each reply is copied straight from its shared buffer into private pages;
+    /// the scatter visitor allocates neither payload nor pointer metadata.
+    fn read_buffered_scatter(
         &mut self,
         path: &str,
         offset: u64,
-        output: &mut [u8],
+        output: &mut [&mut [u8]],
+        skip: usize,
     ) -> Result<usize, Error> {
+        use {
+            crate::fs::vfs::read_contract::BatchError, crate::fs::vfs::read_contract::scatter_copy,
+        };
+        let capacity = output
+            .iter()
+            .try_fold(0usize, |length, part| length.checked_add(part.len()))
+            .and_then(|length| length.checked_sub(skip))
+            .ok_or(Error::InvalidInput)?;
+        offset
+            .checked_add(capacity as u64)
+            .ok_or(Error::InvalidInput)?;
         let mut done = 0;
-        for chunk in output.chunks_mut(protocol::DATA_BYTES) {
+        while done < capacity {
+            let requested = (capacity - done).min(protocol::DATA_BYTES);
             let response = self.call(
                 Operation::Read,
                 path,
                 "",
-                offset.checked_add(done as u64).ok_or(Error::InvalidInput)?,
-                chunk.len() as u64,
+                offset + done as u64,
+                requested as u64,
                 [None; 2],
             )?;
             let actual = usize::try_from(response).map_err(|_| Error::Corrupt)?;
-            if actual > chunk.len() {
-                self.health.fail();
+            if actual > requested {
                 return Err(Error::Corrupt);
             }
-            self.buffer
-                .read_exposed(0, &mut chunk[..actual])
-                .map_err(|_| Error::Io)?;
+            scatter_copy(output, skip + done, actual, |source, part| {
+                self.buffer
+                    .read_exposed(source as u64, part)
+                    .map_err(|_| Error::Io)
+            })
+            .map_err(|error| match error {
+                BatchError::Contract(_) => Error::Corrupt,
+                BatchError::Transfer(error) => error,
+            })?;
             done += actual;
-            if actual < chunk.len() {
+            if actual < requested {
                 break;
             }
         }
@@ -353,27 +417,53 @@ impl Transport {
         &mut self,
         path: &str,
         offset: u64,
-        input: &[u8],
+        input: &super::super::write_source::WriteSource<'_>,
     ) -> Result<usize, Error> {
         let mut done = 0;
-        for chunk in input.chunks(protocol::DATA_BYTES) {
+        while done < input.len() {
             self.health.check()?;
-            self.buffer.write_exposed(0, chunk).map_err(|_| Error::Io)?;
-            let response = self.call(
-                Operation::Write,
-                path,
-                "",
-                offset.checked_add(done as u64).ok_or(Error::InvalidInput)?,
-                chunk.len() as u64,
-                [None; 2],
-            )?;
-            let actual = usize::try_from(response).map_err(|_| Error::Corrupt)?;
-            if actual > chunk.len() {
+            let length = (input.len() - done).min(protocol::DATA_BYTES);
+            let window = if let Some(block) = &self.block {
+                Some(
+                    crate::block::IoWindow::begin(block.window.window(), length, |memory| {
+                        input.copy_to_vmo(memory, done, length)
+                    })
+                    .map_err(|_| Error::Io)?,
+                )
+            } else {
+                // Blockless providers consume the ordinary RPC byte buffer.
+                // They receive no queue authority or private page addresses.
+                input
+                    .copy_to_exposed_vmo(&self.mapping, done, length)
+                    .map_err(|_| Error::Io)?;
+                None
+            };
+            let response = self.exchange(
+                Request {
+                    window_token: window.as_ref().map_or(0, |guard| guard.token()),
+                    sequence: 0,
+                    operation: Operation::Write,
+                    path,
+                    target: "",
+                    offset: offset.checked_add(done as u64).ok_or(Error::InvalidInput)?,
+                    length: length as u64,
+                    accessed: None,
+                    modified: None,
+                    cursor: DirectoryCursor::START,
+                },
+                None,
+            );
+            if window.is_some_and(|guard| guard.finish().is_err()) {
+                self.health.fail();
+                return Err(Error::Corrupt);
+            }
+            let actual = usize::try_from(response?).map_err(|_| Error::Corrupt)?;
+            if actual > length {
                 self.health.fail();
                 return Err(Error::Corrupt);
             }
             done += actual;
-            if actual < chunk.len() {
+            if actual < length {
                 break;
             }
         }
@@ -434,3 +524,6 @@ fn decode_response(
     }
     Ok(actual)
 }
+
+#[path = "transfer.rs"]
+mod transfer;

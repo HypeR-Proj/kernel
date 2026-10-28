@@ -248,6 +248,23 @@ impl PageBackend for Backend {
         self.write_owned(destination, destination_offset, &bytes[..length])
     }
 
+    fn copy_exposed(
+        &self,
+        source: &Self::Page,
+        source_offset: usize,
+        destination: &mut Self::Page,
+        destination_offset: usize,
+        length: usize,
+    ) -> Result<(), Self::Error> {
+        self.copy_owned(
+            source,
+            source_offset,
+            destination,
+            destination_offset,
+            length,
+        )
+    }
+
     fn read_exposed(
         &self,
         page: &Self::Page,
@@ -1267,6 +1284,280 @@ fn permission_ceiling_allows_only_explicit_monotonic_authority() {
         address_space.prepare_protect(root, slice(0x91_000, PAGE_SIZE), Permissions::read_write(),),
         Err(AddressSpaceError::InvalidPermissions)
     ));
+}
+
+#[test]
+fn prepared_read_copies_resident_pages_across_segments_after_unmap() {
+    let (backend, account) = fixtures();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE * 4),
+        backend.clone(),
+        account.clone(),
+    ));
+    let first = crate::require_ok(WritableVmo::try_new(
+        PAGE_SIZE * 2,
+        backend.clone(),
+        account.clone(),
+    ));
+    let second = crate::require_ok(WritableVmo::try_new(
+        PAGE_SIZE,
+        backend.clone(),
+        account.clone(),
+    ));
+    let mut expected: Vec<u8> = (0..PAGE_SIZE as usize * 3)
+        .map(|index| (index % 251) as u8)
+        .collect();
+    crate::require_ok(first.write(0, &expected[..PAGE_SIZE as usize * 2]));
+    crate::require_ok(second.write(0, &expected[PAGE_SIZE as usize * 2..]));
+    for (at, length, storage) in [
+        (0x1000, PAGE_SIZE * 2, first.clone()),
+        (0x3000, PAGE_SIZE, second),
+    ] {
+        complete(crate::require_ok(
+            crate::require_ok(space.prepare_map_writable(
+                space.root_vmar(),
+                slice(at, length),
+                storage,
+                0,
+                Permissions::read_write(),
+                Permissions::read_write(),
+            ))
+            .commit_for_test(),
+        ));
+    }
+    let start = PAGE_SIZE as usize - 7;
+    let length = PAGE_SIZE as usize + 20;
+    let source =
+        crate::require_ok(space.prepare_user_read(slice(0x1000 + start as u64, length as u64)));
+    assert_eq!(source.len(), length as u64);
+    // Pinning is lifetime ownership, not a snapshot of mutable app bytes.
+    crate::require_ok(space.copy_to_user(slice(0x1000 + start as u64, 2), &[0xfa, 0xfb]));
+    expected[start..start + 2].copy_from_slice(&[0xfa, 0xfb]);
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x1000, PAGE_SIZE * 3)))
+            .commit_for_test(),
+    ));
+    let destination = crate::require_ok(WritableVmo::try_new(PAGE_SIZE * 3, backend, account));
+    crate::require_ok(destination.write(0, &vec![0xa7; PAGE_SIZE as usize * 3]));
+    let target = PAGE_SIZE as usize - 3;
+    let competing_writer = crate::require_ok(destination.try_mapping_write_lease());
+    assert!(matches!(
+        source.copy_to_vmo(&destination, 0, target as u64, length),
+        Err(AddressSpaceError::Busy)
+    ));
+    drop(competing_writer);
+    crate::require_ok(source.copy_to_vmo(&destination, 0, target as u64, length));
+    let mut actual = vec![0; PAGE_SIZE as usize * 3];
+    crate::require_ok(destination.read(0, &mut actual));
+    assert!(actual[..target].iter().all(|byte| *byte == 0xa7));
+    assert_eq!(
+        &actual[target..target + length],
+        &expected[start..start + length]
+    );
+    assert!(actual[target + length..].iter().all(|byte| *byte == 0xa7));
+    let mut subrange = [0; 31];
+    crate::require_ok(source.copy_to_slice(5, &mut subrange));
+    assert_eq!(subrange.as_slice(), &expected[start + 5..start + 36]);
+    assert!(matches!(
+        source.copy_to_vmo(&destination, length as u64, 0, 1),
+        Err(AddressSpaceError::InvalidRange)
+    ));
+    let mut unchanged = [0];
+    crate::require_ok(destination.read(0, &mut unchanged));
+    assert_eq!(unchanged, [0xa7]);
+}
+
+#[test]
+fn prepared_read_uses_mapping_lease_for_exposed_rpc_destination() {
+    let (backend, account) = fixtures();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE * 2),
+        backend.clone(),
+        account.clone(),
+    ));
+    let source = crate::require_ok(WritableVmo::try_new(
+        PAGE_SIZE,
+        backend.clone(),
+        account.clone(),
+    ));
+    let expected: Vec<u8> = (0..PAGE_SIZE as usize)
+        .map(|index| (index % 251) as u8)
+        .collect();
+    crate::require_ok(source.write(0, &expected));
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_map_writable(
+            space.root_vmar(),
+            slice(0x1000, PAGE_SIZE),
+            source,
+            0,
+            Permissions::read_only(),
+            Permissions::read_only(),
+        ))
+        .commit_for_test(),
+    ));
+    let prepared = crate::require_ok(space.prepare_user_read(slice(0x1007, 128)));
+    let destination = crate::require_ok(WritableVmo::try_new(PAGE_SIZE, backend, account.clone()));
+    crate::require_ok(destination.write(0, &vec![0xa7; PAGE_SIZE as usize]));
+    let lease = crate::require_ok(destination.try_mapping_write_lease());
+    assert!(matches!(
+        prepared.copy_to_vmo(&destination, 3, 17, 64),
+        Err(AddressSpaceError::Busy)
+    ));
+    crate::require_ok(prepared.copy_to_exposed_vmo(&lease, 3, 17, 64));
+    let mut actual = vec![0; PAGE_SIZE as usize];
+    crate::require_ok(destination.read_exposed(0, &mut actual));
+    assert!(actual[..17].iter().all(|byte| *byte == 0xa7));
+    assert_eq!(&actual[17..81], &expected[10..74]);
+    assert!(actual[81..].iter().all(|byte| *byte == 0xa7));
+    // Range failures happen before the first destination write. The lease
+    // retains snapshot exclusion until its final owner, even between copies.
+    assert!(matches!(
+        prepared.copy_to_exposed_vmo(&lease, 128, 0, 1),
+        Err(AddressSpaceError::InvalidRange)
+    ));
+    assert!(matches!(
+        prepared.copy_to_exposed_vmo(&lease, 0, PAGE_SIZE, 1),
+        Err(AddressSpaceError::InvalidRange)
+    ));
+    assert!(matches!(
+        destination.try_snapshot(account),
+        Err(VmoError::Busy)
+    ));
+    let mut unchanged = vec![0; PAGE_SIZE as usize];
+    crate::require_ok(destination.read_exposed(0, &mut unchanged));
+    assert_eq!(unchanged, actual);
+    crate::require_ok(lease.write_exposed(0, &[0x42]));
+    drop(lease);
+    crate::require_ok(prepared.copy_to_vmo(&destination, 0, 128, 128));
+    crate::require_ok(destination.read(0, &mut actual));
+    assert_eq!(actual[0], 0x42);
+    assert_eq!(&actual[128..256], &expected[7..135]);
+}
+
+#[test]
+fn direct_exposed_copy_rejects_self_alias_and_copies_disjoint_vmos() {
+    let (backend, account) = fixtures();
+    let source = crate::require_ok(WritableVmo::try_new(
+        PAGE_SIZE * 2,
+        backend.clone(),
+        account.clone(),
+    ));
+    let destination = crate::require_ok(WritableVmo::try_new(PAGE_SIZE * 2, backend, account));
+    crate::require_ok(source.write(0, &vec![0x6c; PAGE_SIZE as usize * 2]));
+    crate::require_ok(
+        destination
+            .populate(0, PAGE_SIZE * 2)
+            .map_err(|failure| failure.cause),
+    );
+    assert!(matches!(
+        source.copy_from_exposed_vmo(&source, 0, 0, 1),
+        Err(VmoError::InvalidRange)
+    ));
+    crate::require_ok(destination.copy_from_exposed_vmo(&source, 13, 7, PAGE_SIZE as usize));
+    let mut bytes = vec![0; PAGE_SIZE as usize];
+    crate::require_ok(destination.read(7, &mut bytes));
+    assert!(bytes.iter().all(|byte| *byte == 0x6c));
+}
+
+#[test]
+fn prepared_read_retains_only_selected_file_pages_without_refaulting() {
+    let (backend, account) = fixtures();
+    let range = slice(0x1000, PAGE_SIZE * 4);
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        range,
+        backend,
+        account.clone(),
+    ));
+    let (source, reads, fail, _) = protected_source(vec![0x71; PAGE_SIZE as usize * 4]);
+    let view = crate::require_ok(space.prepare_file_view(
+        source,
+        PAGE_SIZE * 4,
+        0,
+        PAGE_SIZE * 4,
+        0,
+        false,
+        user::PrivateMappingMode::CopyOnWrite,
+    ));
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_map_private_view(
+            space.root_vmar(),
+            range,
+            view,
+            Permissions::read_only(),
+            Permissions::read_only(),
+        ))
+        .commit_for_test(),
+    ));
+    let source = crate::require_ok(space.prepare_user_read(slice(0x2020, 16)));
+    let calls = reads.load(Ordering::Relaxed);
+    let (reclaim, count) =
+        crate::require_some(crate::require_ok(space.prepare_file_reclaim(range)));
+    assert_eq!(count, 4);
+    complete(crate::require_ok(reclaim.commit_for_test()));
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), 1);
+    fail.store(true, Ordering::Relaxed);
+    let mut bytes = [0; 16];
+    crate::require_ok(source.copy_to_slice(0, &mut bytes));
+    assert_eq!(bytes, [0x71; 16]);
+    assert_eq!(reads.load(Ordering::Relaxed), calls);
+    assert!(matches!(
+        space.prepare_user_read(slice(0x2020, 16)),
+        Err(AddressSpaceError::BackingNotResident)
+    ));
+    drop(source);
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn scatter_copy_checks_total_before_writing_and_crosses_mapping_boundaries() {
+    let (backend, account) = fixtures();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, PAGE_SIZE * 2),
+        backend.clone(),
+        account.clone(),
+    ));
+    for address in [0x1000, 0x2000] {
+        let storage = crate::require_ok(WritableVmo::try_new(
+            PAGE_SIZE,
+            backend.clone(),
+            account.clone(),
+        ));
+        crate::require_ok(
+            storage
+                .populate(0, PAGE_SIZE)
+                .map_err(|failure| failure.cause),
+        );
+        complete(crate::require_ok(
+            crate::require_ok(space.prepare_map_writable(
+                space.root_vmar(),
+                slice(address, PAGE_SIZE),
+                storage,
+                0,
+                Permissions::read_write(),
+                Permissions::read_write(),
+            ))
+            .commit_for_test(),
+        ));
+    }
+    let range = slice(0x2000 - 3, 9);
+    let output = crate::require_ok(space.prepare_user_write_for_test(range));
+    let invalid: &[&[u8]] = &[b"abc", b"defg"];
+    assert!(matches!(
+        space.write_user_reservation_parts_for_test(&output, invalid.iter().copied()),
+        Err(AddressSpaceError::SizeMismatch)
+    ));
+    let mut actual = [0xff; 9];
+    crate::require_ok(space.copy_from_user(range, &mut actual));
+    assert_eq!(actual, [0; 9]);
+    let parts: &[&[u8]] = &[b"", b"12", b"3456", b"", b"789"];
+    crate::require_ok(space.write_user_reservation_parts_for_test(&output, parts.iter().copied()));
+    space.release_user_write_for_test(output);
+    crate::require_ok(space.copy_from_user(range, &mut actual));
+    assert_eq!(&actual, b"123456789");
 }
 
 #[test]

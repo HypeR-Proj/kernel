@@ -16,6 +16,19 @@ pub struct SpinLock<T> {
 
 struct LockRelease<'lock>(&'lock AtomicBool);
 
+struct LocksRelease<'a, T> {
+    locks: &'a [&'a SpinLock<T>],
+    held: usize,
+}
+
+impl<T> Drop for LocksRelease<'_, T> {
+    fn drop(&mut self) {
+        for lock in &self.locks[..self.held] {
+            lock.locked.store(false, Ordering::Release);
+        }
+    }
+}
+
 impl Drop for LockRelease<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
@@ -63,6 +76,30 @@ impl<T> SpinLock<T> {
         let result = operation(unsafe { &mut *self.value.get() });
         drop(release);
         result
+    }
+
+    /// Acquires every lock before visiting any value, without waiting or allocating.
+    /// Contention (including a duplicate lock) releases the acquired prefix and
+    /// returns false without invoking `operation`. Callbacks must not yield or
+    /// acquire these locks; unwind releases every lock but does not undo mutations.
+    pub fn try_with_each(locks: &[&Self], mut operation: impl FnMut(&mut T)) -> bool {
+        let mut release = LocksRelease { locks, held: 0 };
+        for lock in locks {
+            if lock
+                .locked
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+            {
+                return false;
+            }
+            release.held += 1;
+        }
+        for lock in locks {
+            // SAFETY: Every distinct lock was acquired above and remains held
+            // until `release` drops. Each exclusive reference stays in its callback.
+            operation(unsafe { &mut *lock.value.get() });
+        }
+        true
     }
 
     /// Runs `operation` only when the lock can be acquired immediately.
