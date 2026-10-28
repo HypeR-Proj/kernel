@@ -111,6 +111,30 @@ impl<B: PageBackend, A: MemoryAccount> PrivateView<B, A> {
             return Err(VmoError::InvalidRange);
         }
         let mut next = self.clone_version()?;
+        let data_end = file.data_offset + file.length;
+        // Reuse resident complete pages before allocating or copying scratch.
+        // This probe never performs I/O: cold contiguous holes still use the
+        // bounded bulk read below. Segment edges remain private and zero-filled.
+        for index in first..end_index {
+            let start = index as u64 * PAGE_SIZE;
+            if !next.has_page(index)
+                && start >= file.data_offset
+                && start + PAGE_SIZE <= data_end
+                && let Some(page) = file
+                    .backing
+                    .cached_page(file.offset + start)
+                    .map_err(|_| VmoError::BackingIo)?
+            {
+                next.pages[index] = Some(PrivatePage {
+                    owner: super::super::own_shared_page::<B, A>(page, &self.account)?,
+                    writable: false,
+                });
+                *next.instructions_published.get_mut() = false;
+            }
+        }
+        if next.pages[first..end_index].iter().all(Option::is_some) {
+            return FallibleArc::try_new(next).map_err(map_allocation);
+        }
         let scratch_bytes = count.min(BATCH_PAGES) * PAGE_SIZE as usize;
         let _scratch_charge = self
             .account
@@ -124,7 +148,6 @@ impl<B: PageBackend, A: MemoryAccount> PrivateView<B, A> {
             .try_reserve_exact(scratch_bytes)
             .map_err(|_| VmoError::Allocation)?;
         scratch.resize(scratch_bytes, 0);
-        let data_end = file.data_offset + file.length;
         let mut index = first;
         while index < end_index {
             if next.has_page(index) {

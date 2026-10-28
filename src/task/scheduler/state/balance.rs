@@ -195,6 +195,69 @@ impl Scheduler {
         })
     }
 
+    // Candidate observations retire before queue mutation. The source CPU
+    // lock remains held by balance_ready_in across both phases.
+    #[inline(never)]
+    fn select_balance_target(
+        &mut self,
+        id: ThreadId,
+        source: CpuIndex,
+        excluded: ThreadId,
+        loads: &[CpuLoad; hyper::cpu::MAX_CPUS],
+    ) -> Result<Option<(CpuIndex, bool)>, Error> {
+        let thread = self.thread(id)?;
+        if id == excluded
+            || thread.state() != ThreadState::Ready
+            || !matches!(
+                thread.scheduling_policy(),
+                SchedulingPolicy::Fair | SchedulingPolicy::Budget
+            )
+            || self
+                .thread_mut(id)?
+                .apply_schedule(|schedule| schedule.auto_migrated)
+            || thread.placement_policy() != PlacementPolicy::Movable
+            || thread.pending_migration().is_some()
+            || !matches!(
+                thread.execution_kind(),
+                ExecutionKind::Kernel | ExecutionKind::User | ExecutionKind::Vcpu
+            )
+            || self
+                .switching_from(source)?
+                .is_some_and(|handoff| handoff.thread == id)
+        {
+            return Ok(None);
+        }
+        let target = least_loaded(
+            source.get(),
+            (0..hyper::cpu::MAX_CPUS)
+                .filter_map(CpuIndex::new)
+                .filter(|cpu| {
+                    *cpu != source
+                        && self.cpu_is_schedulable(*cpu)
+                        && thread.can_run_on(*cpu)
+                        && thread.wait_record().permits_assignment(*cpu)
+                        && loads[cpu.get()].realtime == 0
+                        && improves_balance(loads[source.get()].runnable, loads[cpu.get()].runnable)
+                })
+                .map(|cpu| {
+                    (
+                        cpu.get(),
+                        loads[cpu.get()]
+                            .runnable
+                            .saturating_mul(4)
+                            .saturating_add(loads[cpu.get()].budget.saturating_mul(2)),
+                    )
+                }),
+        )
+        .and_then(CpuIndex::new);
+        Ok(target.map(|target| {
+            (
+                target,
+                thread.scheduling_policy() == SchedulingPolicy::Budget,
+            )
+        }))
+    }
+
     fn balance_ready_in(
         &mut self,
         excluded: ThreadId,
@@ -219,55 +282,9 @@ impl Scheduler {
                 continue;
             };
             let outcome = self.with_cpu_schedule_stored(source, |scheduler| {
-                let thread = scheduler.thread(id)?;
-                if id == excluded
-                    || thread.state() != ThreadState::Ready
-                    || !matches!(
-                        thread.scheduling_policy(),
-                        SchedulingPolicy::Fair | SchedulingPolicy::Budget
-                    )
-                    || scheduler
-                        .thread_mut(id)?
-                        .apply_schedule(|schedule| schedule.auto_migrated)
-                    || thread.placement_policy() != PlacementPolicy::Movable
-                    || thread.pending_migration().is_some()
-                    || !matches!(
-                        thread.execution_kind(),
-                        ExecutionKind::Kernel | ExecutionKind::User | ExecutionKind::Vcpu
-                    )
-                    || scheduler
-                        .switching_from(source)?
-                        .is_some_and(|handoff| handoff.thread == id)
-                {
-                    return Ok(None);
-                }
-                let target = least_loaded(
-                    source.get(),
-                    (0..hyper::cpu::MAX_CPUS)
-                        .filter_map(CpuIndex::new)
-                        .filter(|cpu| {
-                            *cpu != source
-                                && scheduler.cpu_is_schedulable(*cpu)
-                                && thread.can_run_on(*cpu)
-                                && thread.wait_record().permits_assignment(*cpu)
-                                && loads[cpu.get()].realtime == 0
-                                && improves_balance(
-                                    loads[source.get()].runnable,
-                                    loads[cpu.get()].runnable,
-                                )
-                        })
-                        .map(|cpu| {
-                            (
-                                cpu.get(),
-                                loads[cpu.get()]
-                                    .runnable
-                                    .saturating_mul(4)
-                                    .saturating_add(loads[cpu.get()].budget.saturating_mul(2)),
-                            )
-                        }),
-                )
-                .and_then(CpuIndex::new);
-                let Some(target) = target else {
+                let Some((target, budget)) =
+                    scheduler.select_balance_target(id, source, excluded, loads)?
+                else {
                     return Ok(None);
                 };
                 // Keep this source lock from the Ready/context-save checks
@@ -285,12 +302,7 @@ impl Scheduler {
                 migration
                     .target_ready
                     .ok_or(Error::InvalidThreadState)
-                    .map(|ready| {
-                        Some((
-                            ready,
-                            thread.scheduling_policy() == SchedulingPolicy::Budget,
-                        ))
-                    })
+                    .map(|ready| Some((ready, budget)))
             })?;
             if let Some((outcome, budget)) = outcome {
                 loads[source.get()].runnable -= 1;

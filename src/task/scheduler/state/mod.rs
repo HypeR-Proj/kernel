@@ -76,6 +76,9 @@ struct ThreadScheduleObservation {
 }
 
 impl ThreadObservation {
+    // Keep capture visible to field projection so callers do not materialize
+    // the complete wait/queue snapshot just to read placement metadata.
+    #[inline(always)]
     fn capture(thread: &Thread) -> Self {
         let schedule_owner = thread.schedule_owner_cpu();
         Self {
@@ -95,6 +98,7 @@ impl ThreadObservation {
         }
     }
 
+    #[inline(always)]
     fn capture_cpu(thread: &Thread, schedule: &ThreadScheduleState) -> Self {
         Self {
             schedule: Some(ThreadScheduleObservation {
@@ -1525,8 +1529,19 @@ impl Scheduler {
     }
 
     pub(super) fn thread(&self, id: ThreadId) -> Result<ThreadObservation, Error> {
+        self.observe_thread(id, |thread| thread)
+    }
+
+    // Project an owned observation before returning through a caller's stack.
+    // Migration often needs only a few fields, not a full wait/queue snapshot
+    // retained below every nested scheduler operation at an IRQ tail.
+    fn observe_thread<R>(
+        &self,
+        id: ThreadId,
+        operation: impl FnOnce(ThreadObservation) -> R,
+    ) -> Result<R, Error> {
         self.registry.with_thread(id, |thread| {
-            match thread.schedule_owner_cpu() {
+            let observation = match thread.schedule_owner_cpu() {
                 None => ThreadObservation::capture(thread),
                 Some(cpu) if self.active_domain.is_some_and(|active| active.cpu == cpu) => {
                     // SAFETY: `active_domain` is installed only while
@@ -1545,7 +1560,8 @@ impl Scheduler {
                     execution: thread.execution_kind(),
                     context: thread.context_pointer(),
                 },
-            }
+            };
+            operation(observation)
         })
     }
 

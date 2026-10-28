@@ -273,18 +273,7 @@ pub(crate) fn map_file(
                 } else {
                     Permissions::read_write()
                 };
-                let prepared = space
-                    .logical()
-                    .prepare_map_private_view(
-                        vmar.object().token(),
-                        range,
-                        view,
-                        permission,
-                        maximum,
-                    )
-                    .map_err(MachineError::Logical)?;
-                space.prepare_change(prepared)?.commit()?;
-                Ok(())
+                map_loaded_file_view(vmar.object(), range, view, permission, maximum)
             })
         },
         |error| match error {
@@ -292,6 +281,27 @@ pub(crate) fn map_file(
             _ => None,
         },
     )
+}
+
+// File population may block in filesystem RPC and device I/O. Construct the
+// logical/machine mapping transaction only after population has returned.
+#[inline(never)]
+fn map_loaded_file_view(
+    vmar: &VmarObject,
+    range: UserSlice,
+    view: hyper::mm::FallibleArc<
+        super::vmo::PrivateView<super::KernelPageBackend, super::DomainAccount>,
+    >,
+    permission: Permissions,
+    maximum: Permissions,
+) -> Result<(), ServiceError> {
+    let space = vmar.address_space();
+    let prepared = space
+        .logical()
+        .prepare_map_private_view(vmar.token(), range, view, permission, maximum)
+        .map_err(MachineError::Logical)?;
+    space.prepare_change(prepared)?.commit()?;
+    Ok(())
 }
 
 pub(crate) fn read_vmo(

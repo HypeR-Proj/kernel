@@ -72,10 +72,13 @@ pub(crate) fn load_native(
     loader: &ExecutableSnapshot,
     domain: ResourceDomain,
 ) -> Result<LoadedProcessImage, Error> {
-    let image = Image::parse(loader.bytes()).map_err(Error::Elf)?;
+    // Borrow the admitted image in its result slot; moving the fixed segment
+    // table would retain a second copy below mapping and page-table allocation.
+    let parsed = Image::parse(loader.bytes());
+    let image = parsed.as_ref().map_err(|error| Error::Elf(*error))?;
     validate_host_machine(image.machine)?;
     let address_space = create_address_space(domain)?;
-    match prepare_address_space(loader, &image, &address_space) {
+    match prepare_address_space(loader, image, &address_space) {
         Ok(image) => Ok(LoadedProcessImage {
             image,
             address_space,

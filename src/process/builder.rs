@@ -328,6 +328,7 @@ impl ProcessBuilder {
         .union(Rights::START)
         .union(Rights::REQUEST_STOP);
 
+    #[inline(never)]
     pub(crate) fn try_publication(
         _factory: &TaskFactory,
         group: &TaskGroupObject,
@@ -338,6 +339,18 @@ impl ProcessBuilder {
         let loader = loader
             .executable_snapshot(domain.domain())
             .map_err(ProcessBuilderError::ExecutableFile)?;
+        Self::allocate_loaded(group, domain, executable, loader)
+    }
+
+    // BuilderPlan construction must not reserve its by-value scratch beneath
+    // loader I/O, which can enter block waits and IRQ-tail scheduling.
+    #[inline(never)]
+    fn allocate_loaded(
+        group: &TaskGroupObject,
+        domain: &ResourceDomainObject,
+        executable: PreparedHandle,
+        loader: ExecutableSnapshot,
+    ) -> Result<ObjectPublication<Self>, ProcessBuilderError<()>> {
         let object_charge = reserve_builder_charge(domain.domain())?;
         let mut data = Vec::new();
         data.try_reserve_exact(MAX_STARTUP_DATA_BYTES)
@@ -538,11 +551,22 @@ impl ProcessBuilder {
     /// Every error leaves the builder Open and reusable. Sealing claims no
     /// source handles, creates no Thread and publishes no Process identity.
     pub(crate) fn seal(&self) -> Result<(), ProcessBuilderError<()>> {
-        let mut plan = self.take_open_plan()?;
+        let plan = self.take_open_plan()?;
         let prepared = match prepare_sealed_process(&plan) {
             Ok(prepared) => prepared,
             Err(error) => return self.finish_open_operation(plan, Err(error)),
         };
+        self.finish_seal(plan, prepared)
+    }
+
+    // Construct and arbitrate the sealed owner after loader/page-table work;
+    // its by-value state must not remain below those allocation call chains.
+    #[inline(never)]
+    fn finish_seal(
+        &self,
+        mut plan: BuilderPlan,
+        prepared: PreparedProcess,
+    ) -> Result<(), ProcessBuilderError<()>> {
         // Installed loader pages own independent storage. No full-image snapshot
         // survives sealing, even if the caller leaves the builder dormant.
         drop(plan.loader.take());
@@ -800,6 +824,8 @@ impl ProcessBuilder {
 /// Copies only the authority needed by the child's ELF loader. The normal
 /// capability transfer transaction checks READ, EXECUTE, PROTECT, DUPLICATE and
 /// TRANSFER together; EXECUTE alone never becomes readable child authority.
+// Retire transfer/rollback scratch before snapshot I/O and builder publication.
+#[inline(never)]
 fn copy_executable_for_child(
     caller: &Process,
     executable: HandleValue,

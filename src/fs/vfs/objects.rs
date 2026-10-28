@@ -980,6 +980,15 @@ impl FileObject {
         Ok(Some(pages))
     }
 
+    pub(crate) fn prefetch(&self, offset: u64, length: usize) -> Result<u64, Error> {
+        Ok(self
+            .location
+            .mount()
+            .filesystem()
+            .read_file_pages(self.location.node(), &self.cache, offset, length)?
+            .map_or(0, |(pages, _)| pages.length as u64))
+    }
+
     pub(crate) fn executable_snapshot(
         &self,
         sponsor: &ResourceDomain,

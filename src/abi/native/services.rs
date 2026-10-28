@@ -1007,6 +1007,12 @@ pub(crate) trait VfsServices: UserMemoryServices {
         &self,
         file: &InvocationReceiver,
     ) -> Result<(HandleValue, u64), VfsServiceError>;
+    fn prefetch_file(
+        &self,
+        file: &InvocationReceiver,
+        offset: u64,
+        length: u64,
+    ) -> Result<u64, VfsServiceError>;
     fn file_info(&self, file: &InvocationReceiver) -> Result<FileInfo, VfsServiceError>;
     fn directory_info(
         &self,

@@ -35,8 +35,22 @@ pub(crate) fn read_batches<E>(
         .ok_or(BatchError::Contract(Error::ArithmeticOverflow))?;
     let mut completed = 0usize;
     while completed < capacity {
-        let length = (capacity - completed).min(batch_size);
-        let actual = match transfer(offset + completed as u64, completed, length) {
+        // Finish the first partial window, then start every following backend
+        // batch at a common boundary. This keeps page-rounded cache fills within
+        // their bound even for unaligned callers and avoids repeated edge reads.
+        let at = offset + completed as u64;
+        let window = batch_size - (at % batch_size as u64) as usize;
+        let granule = (batch_size as u64).min(hyper::mm::PAGE_SIZE);
+        let covering_limit = batch_size - (at % granule) as usize;
+        // A small request may cross a batch boundary without exceeding the
+        // page-fill bound. Preserve it as one read rather than adding an RPC.
+        let remaining = capacity - completed;
+        let length = if remaining <= covering_limit {
+            remaining
+        } else {
+            window
+        };
+        let actual = match transfer(at, completed, length) {
             Ok(actual) => actual,
             Err(_) if completed != 0 => return Ok(completed),
             Err(error) => return Err(BatchError::Transfer(error)),

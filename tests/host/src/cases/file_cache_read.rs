@@ -958,3 +958,180 @@ fn owned_mixed_runs_preserve_offsets_and_failed_later_fill_is_never_published() 
             .all(|(at, &byte)| byte == pattern(at as u64))
     );
 }
+
+#[test]
+fn partial_scatter_reads_fill_whole_file_pages_and_repeated_ranges_need_no_io() {
+    use crate::file_data_cache::read_pages;
+    for (offset, requested, file_len) in [
+        (0, 64, 3 * PAGE),
+        (17, 100, 3 * PAGE),
+        (PAGE - 7, PAGE + 31, 4 * PAGE),
+        (PAGE + 17, PAGE, PAGE + 73),
+    ] {
+        let cache = crate::require_ok(FileDataCache::try_new(8));
+        let file = identity(5, 1, 1);
+        let mut calls = Vec::new();
+        let result = crate::require_some(crate::require_ok(read_pages(
+            &cache,
+            file,
+            &(),
+            file_len as u64,
+            offset as u64,
+            requested,
+            |at, parts| {
+                let length = parts.iter().map(|part| part.len()).sum::<usize>();
+                calls.push((at, length));
+                let mut current = at;
+                for part in parts {
+                    for byte in part.iter_mut() {
+                        *byte = pattern(current);
+                        current += 1;
+                    }
+                }
+                Ok::<usize, ()>(length)
+            },
+        )));
+        let end = (offset + requested).min(file_len);
+        let start = offset / PAGE * PAGE;
+        assert_eq!(
+            calls,
+            vec![(
+                start as u64,
+                end.div_ceil(PAGE).saturating_mul(PAGE).min(file_len) - start
+            )]
+        );
+        let expected: Vec<_> = (offset..end).map(|at| pattern(at as u64)).collect();
+        assert_eq!(result.length, expected.len());
+        assert_eq!(
+            result.pages().flatten().copied().collect::<Vec<_>>(),
+            expected
+        );
+        drop(result);
+        // Read the full covered range, including bytes outside the first request.
+        let warm = crate::require_some(crate::require_ok(read_pages(
+            &cache,
+            file,
+            &(),
+            file_len as u64,
+            start as u64,
+            calls[0].1,
+            |_, _| Err::<usize, _>("repeat reached backend"),
+        )));
+        assert!(!warm.had_miss);
+        assert!(
+            warm.pages()
+                .flatten()
+                .enumerate()
+                .all(|(i, &b)| b == pattern((start + i) as u64))
+        );
+    }
+}
+
+#[test]
+fn partial_scatter_short_reads_do_not_publish_padding_or_expose_prefix() {
+    use crate::file_data_cache::read_pages;
+    for actual in [0, 7, 19, 31] {
+        let cache = crate::require_ok(FileDataCache::try_new(1));
+        let result = crate::require_ok(read_pages(
+            &cache,
+            identity(5, 2, 1),
+            &(),
+            PAGE as u64,
+            19,
+            100,
+            |_, parts| {
+                parts[0][..actual].fill(0x53);
+                Ok::<usize, ()>(actual)
+            },
+        ));
+        if actual <= 19 {
+            assert!(result.is_none());
+        } else {
+            let result = crate::require_some(result.as_ref());
+            assert_eq!(result.length, actual - 19);
+            assert_eq!(
+                result.pages().flatten().copied().collect::<Vec<_>>(),
+                vec![0x53; result.length]
+            );
+        }
+        assert_eq!(cache.snapshot().clean, 0);
+        drop(result);
+        assert_eq!(cache.snapshot().live_payloads, 0);
+    }
+}
+
+#[test]
+fn rounded_short_prefix_falls_back_to_requested_bytes_without_false_eof() {
+    use crate::file_data_cache::read_pages;
+    let cache = crate::require_ok(FileDataCache::try_new(1));
+    let file = identity(5, 4, 1);
+    let mut device = RangeDevice::new(0..PAGE as u64, 512);
+    let mut output = [0; 100];
+    let pages = crate::require_ok(read_pages(
+        &cache,
+        file,
+        &(),
+        PAGE as u64,
+        1024,
+        output.len(),
+        |at, parts| device.read_at(at, parts[0]),
+    ));
+    assert!(pages.is_none());
+    assert_eq!(cache.snapshot().clean, 0);
+    assert_eq!(cache.snapshot().live_payloads, 0);
+    let actual = crate::require_ok(read(
+        &cache,
+        file,
+        &(),
+        PAGE as u64,
+        1024,
+        &mut output,
+        |at, bytes| device.read_at(at, bytes),
+    ));
+    assert_eq!(actual, output.len());
+    assert!(
+        output
+            .iter()
+            .enumerate()
+            .all(|(i, &b)| b == pattern(1024 + i as u64))
+    );
+    assert_eq!(device.reads, vec![(0, PAGE), (1024, output.len())]);
+}
+
+#[test]
+fn partial_scatter_handles_empty_ranges_and_maximum_file_offset_without_overflow() {
+    use crate::file_data_cache::read_pages;
+    let cache = crate::require_ok(FileDataCache::try_new(1));
+    for (file_len, offset, requested) in [(10, 20, 100), (10, 3, 0), (u64::MAX, u64::MAX, 10)] {
+        let result = crate::require_some(crate::require_ok(read_pages(
+            &cache,
+            identity(5, 3, 1),
+            &(),
+            file_len,
+            offset,
+            requested,
+            |_, _| Err::<usize, _>("empty read reached backend"),
+        )));
+        assert_eq!(result.length, 0);
+        assert_eq!(result.pages().flatten().count(), 0);
+    }
+    let result = crate::require_some(crate::require_ok(read_pages(
+        &cache,
+        identity(5, 3, 1),
+        &(),
+        u64::MAX,
+        u64::MAX - 17,
+        32,
+        |at, parts| {
+            assert_eq!(at, u64::MAX - (PAGE as u64 - 1));
+            assert_eq!(parts[0].len(), PAGE - 1);
+            parts[0].fill(0x71);
+            Ok::<usize, ()>(PAGE - 1)
+        },
+    )));
+    assert_eq!(result.length, 17);
+    assert_eq!(
+        result.pages().flatten().copied().collect::<Vec<_>>(),
+        vec![0x71; 17]
+    );
+}

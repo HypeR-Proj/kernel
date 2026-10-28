@@ -528,6 +528,9 @@ impl BlockQueue {
 
     /// Wait for one request slot and exactly this payload size. This does not
     /// reserve credits: competing submitters must retry admission after waking.
+    // Admission wait registration is a separate slow phase. Its publication
+    // scratch must not remain below later request commit/completion waits.
+    #[inline(never)]
     pub(crate) fn wait_space(
         &self,
         bytes: usize,

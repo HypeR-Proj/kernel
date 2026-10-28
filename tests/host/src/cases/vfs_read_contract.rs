@@ -6,16 +6,21 @@ use crate::vfs_read_contract::Error;
 #[test]
 fn bulk_read_preserves_offsets_across_batches() {
     use crate::vfs_read_contract::read_batches;
-    let mut calls = 0;
+    let mut sizes = Vec::new();
     let result = read_batches::<()>(17, 2 * 1024 * 1024, 65536, |offset, done, size| {
         assert_eq!(offset, 17 + done as u64);
-        assert_eq!(done, calls * 65536);
-        assert_eq!(size, 65536);
-        calls += 1;
+        if !sizes.is_empty() {
+            assert_eq!(offset % 65536, 0);
+        }
+        assert_eq!(offset / 65536, (offset + size as u64 - 1) / 65536);
+        sizes.push(size);
         Ok(size)
     });
     assert_eq!(result, Ok(2 * 1024 * 1024));
-    assert_eq!(calls, 32);
+    assert_eq!(sizes.len(), 33);
+    assert_eq!(sizes[0], 65536 - 17);
+    assert_eq!(sizes[32], 17);
+    assert_eq!(sizes.iter().sum::<usize>(), 2 * 1024 * 1024);
 }
 
 #[test]
@@ -145,4 +150,29 @@ fn buffered_scatter_rejects_bounds_before_copy_and_propagates_copy_fault() {
         }),
         Ok(())
     );
+}
+
+#[test]
+fn small_crossing_reads_stay_whole_but_page_rounded_overflow_is_split() {
+    use crate::vfs_read_contract::read_batches;
+    const BATCH: usize = 512 * 1024;
+    let mut calls = Vec::new();
+    assert_eq!(
+        read_batches::<()>(BATCH as u64 - 17, 4096, BATCH, |at, done, count| {
+            calls.push((at, done, count));
+            Ok(count)
+        }),
+        Ok(4096)
+    );
+    assert_eq!(calls, [(BATCH as u64 - 17, 0, 4096)]);
+    calls.clear();
+    assert_eq!(
+        read_batches::<()>(13, BATCH - 1, BATCH, |at, done, count| {
+            assert!((at % 4096) + count as u64 <= BATCH as u64);
+            calls.push((at, done, count));
+            Ok(count)
+        }),
+        Ok(BATCH - 1)
+    );
+    assert_eq!(calls, [(13, 0, BATCH - 13), (BATCH as u64, BATCH - 13, 12)]);
 }

@@ -286,6 +286,14 @@ impl VfsServices for ProcessServices<'_> {
     ) -> Result<(HandleValue, u64), VfsServiceError> {
         crate::fs::vfs::protect_file(self.process, file)
     }
+    fn prefetch_file(
+        &self,
+        file: &InvocationReceiver,
+        offset: u64,
+        length: u64,
+    ) -> Result<u64, VfsServiceError> {
+        crate::fs::vfs::prefetch_file(file, offset, length)
+    }
     fn file_info(
         &self,
         file: &InvocationReceiver,

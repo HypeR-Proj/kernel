@@ -595,3 +595,23 @@ pub(in crate::abi::native) fn sys_file_protect(
         Err(error) => failure(error),
     })
 }
+
+#[inline(never)]
+pub(in crate::abi::native) fn sys_file_prefetch(
+    services: &impl VfsServices,
+    receiver: &InvocationReceiver,
+    arguments: &Arguments,
+) -> NativeAction {
+    let result = (|| {
+        require_zero(&arguments[2..])?;
+        if arguments[1] > abi::HYPER_NATIVE_FILE_MAX_PREFETCH_BYTES
+            || arguments[0].checked_add(arguments[1]).is_none()
+        {
+            return Err(INVALID);
+        }
+        services
+            .prefetch_file(receiver, arguments[0], arguments[1])
+            .map_err(status_from_vfs_service_error)
+    })();
+    NativeAction::Return(info_result(result))
+}

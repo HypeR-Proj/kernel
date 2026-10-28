@@ -19,10 +19,28 @@ SYMBOLS = (
     '15PreparedProcess7try_new',
     '7Process17finish_retirement',
     '7Process34create_user_thread_with_scheduling',
+    '26sys_process_builder_create15ProcessServices',
+    '14ProcessBuilder15try_publication',
+    '14ProcessBuilder15allocate_loaded',
+    '25copy_executable_for_child',
+    '18ExecutableSnapshot4read18FilesystemInstance',
+    'executable13parser_buffer',
+    '26sys_filesystem_mount_ramfs15ProcessServices',
+    '18FilesystemInstance15try_empty_ramfs',
+    '20sys_filesystem_mount15ProcessServices',
+    '18FilesystemInstance15try_from_remote',
+    '9Transport7prepare',
+    '7Process24reserve_handle_batch_for',
+    '7Process26prepare_table_storage_plan',
+    '7Process28prepare_handle_batch_scratch',
+    '7Process28reserve_table_storage_charge',
+    '7Process31finish_handle_batch_reservation',
     '24sys_process_builder_seal15ProcessServices',
+    '14ProcessBuilder11finish_seal',
     '25sys_process_builder_start15ProcessServices',
     '36sys_memory_inspector_read_statistics15ProcessServices',
     '6loader11load_native',
+    '9bootstrap5Image5parse',
     '6loader20create_address_space',
     '23TranslationEpochSegment7try_new',
     '6loader21prepare_address_space',
@@ -31,6 +49,11 @@ SYMBOLS = (
     '13VcpuExecution13try_installed',
     '12CpuScheduler15local_selection',
     '12CpuScheduler12choose_ready',
+    'NC24with_cpu_schedule_stored16balance_ready_in0E0',
+    '9Scheduler21select_balance_target',
+    '9Scheduler14migrate_thread',
+    '9Scheduler17request_migration',
+    '9Scheduler17move_ready_thread',
     'ready_index7rebuild19ReadyQueueAuthority',
     'ready_index7rebuild24LocalReadyQueueAuthority',
     'ready_index7balance19ReadyQueueAuthority',
@@ -47,12 +70,21 @@ SYMBOLS = (
     'vfs7resolve12prepare_walk',
     'vfs7resolve13restore_start',
     'vfs7resolve15walk_components',
+    'vfs7resolve11finish_walk',
+    '9Transport8exchange',
+    '9Transport13wait_response',
+    'wait19prepare_signal_wait',
     '30sys_capability_channel_receive15ProcessServices',
     '25PreparedCapabilityReceive7try_new',
     '31sys_capability_channel_try_send15ProcessServices',
     '22PreparedCapabilitySend14copy_from_user',
     '26send_prepared_capabilities',
     '9Transport12read_scatter',
+    'transfer14read_unaligned',
+    'NCNv7service8map_file0',
+    '7service20map_loaded_file_view',
+    'scatter11BlockAccess12read_scatter',
+    '10BlockQueue10wait_space11BlockAccess12read_scatter',
 )
 
 
@@ -74,6 +106,129 @@ class ProcessStackTests(unittest.TestCase):
 
     def test_production_frames_are_checked(self):
         self.assertEqual(len(self.check().splitlines()), len(SYMBOLS))
+
+    def test_loader_snapshot_cannot_retain_builder_construction_scratch(self):
+        symbol = '14ProcessBuilder15try_publication'
+        self.functions[symbol] = function(symbol, 'sub sp, sp, #1200\nret')
+        with self.assertRaisesRegex(ValueError, 'entry frame 1200 exceeds'):
+            self.check()
+
+    def test_loader_io_cannot_retain_preparation_scratch(self):
+        for symbol, frame in (
+                ('26sys_process_builder_create15ProcessServices', 1872),
+                ('18ExecutableSnapshot4read18FilesystemInstance', 720),
+                ('9Transport12read_scatter', 1232),
+                ('NCNv7service8map_file0', 1088),
+                ('26sys_filesystem_mount_ramfs15ProcessServices', 1328),
+                ('20sys_filesystem_mount15ProcessServices', 2176),
+                ('24sys_process_builder_seal15ProcessServices', 1424),
+                ('6loader11load_native', 1520),
+                ('vfs7resolve4walk', 912),
+                ('vfs7resolve15walk_components', 944),
+                ('9Transport8exchange', 784),
+                ('9Transport13wait_response', 672),
+                ('7Process24reserve_handle_batch_for', 1904),
+                ('7Process26prepare_table_storage_plan', 880),
+                ('scatter11BlockAccess12read_scatter', 1440)):
+            with self.subTest(symbol=symbol):
+                original = self.functions[symbol]
+                self.functions[symbol] = function(symbol, f'sub sp, sp, #{frame}\nret')
+                with self.assertRaisesRegex(ValueError, f'entry frame {frame} exceeds'):
+                    self.check()
+                self.functions[symbol] = original
+
+    def test_scatter_wait_bounds_the_combined_live_frames(self):
+        for symbol, frame in (('scatter11BlockAccess12read_scatter', 768),
+                              ('10BlockQueue10wait_space11BlockAccess12read_scatter', 1280)):
+            self.functions[symbol] = function(symbol, f'sub sp, sp, #{frame}\nret')
+        with self.assertRaisesRegex(ValueError, 'scatter admission wait: live frames 2048'):
+            self.check()
+
+    def test_builder_construction_bounds_the_combined_live_frames(self):
+        for symbol, frame in (('26sys_process_builder_create15ProcessServices', 1024),
+                              ('14ProcessBuilder15try_publication', 512),
+                              ('14ProcessBuilder15allocate_loaded', 1536)):
+            self.functions[symbol] = function(symbol, f'sub sp, sp, #{frame}\nret')
+        with self.assertRaisesRegex(ValueError, 'process creation .*live frames 3072'):
+            self.check()
+
+    def test_unaligned_read_bounds_the_combined_live_frames(self):
+        for symbol, frame in (('9Transport12read_scatter', 512),
+                              ('transfer14read_unaligned', 512)):
+            self.functions[symbol] = function(symbol, f'sub sp, sp, #{frame}\nret')
+        with self.assertRaisesRegex(ValueError, 'unaligned extent read: live frames 1024'):
+            self.check()
+
+    def test_file_mapping_bounds_the_combined_live_frames(self):
+        for symbol, frame in (('NCNv7service8map_file0', 1024),
+                              ('7service20map_loaded_file_view', 768)):
+            self.functions[symbol] = function(symbol, f'sub sp, sp, #{frame}\nret')
+        with self.assertRaisesRegex(ValueError, 'file mapping publication: live frames 1792'):
+            self.check()
+
+    def test_rpc_wait_cannot_hide_live_frame_growth(self):
+        for symbol, frame in (('9Transport8exchange', 384),
+                              ('9Transport13wait_response', 512)):
+            self.functions[symbol] = function(symbol, f'sub sp, sp, #{frame}\nret')
+        with self.assertRaisesRegex(ValueError, 'filesystem RPC wait: live frames 896'):
+            self.check()
+
+    def test_handle_table_growth_cannot_hide_live_frame_growth(self):
+        for symbol, frame in (('7Process24reserve_handle_batch_for', 1536),
+                              ('7Process26prepare_table_storage_plan', 832)):
+            self.functions[symbol] = function(symbol, f'sub sp, sp, #{frame}\nret')
+        with self.assertRaisesRegex(ValueError, 'handle batch .*live frames 2368'):
+            self.check()
+
+    def test_loader_mapping_bounds_the_combined_live_frames(self):
+        for symbol, frame in (('24sys_process_builder_seal15ProcessServices', 1280),
+                              ('6loader11load_native', 832),
+                              ('6loader21prepare_address_space', 768)):
+            self.functions[symbol] = function(symbol, f'sub sp, sp, #{frame}\nret')
+        with self.assertRaisesRegex(ValueError, 'process seal .*live frames 2880'):
+            self.check()
+
+    def test_irq_tail_migration_cannot_retain_full_observations(self):
+        for symbol, frame in (('9Scheduler14migrate_thread', 320),
+                              ('9Scheduler17request_migration', 496)):
+            with self.subTest(symbol=symbol):
+                original = self.functions[symbol]
+                self.functions[symbol] = function(symbol, f'sub sp, sp, #{frame}\nret')
+                with self.assertRaisesRegex(ValueError, f'entry frame {frame} exceeds'):
+                    self.check()
+                self.functions[symbol] = original
+
+    def test_irq_tail_migration_bounds_the_combined_live_frames(self):
+        for symbol, frame in (('NC24with_cpu_schedule_stored16balance_ready_in0E0', 192),
+                              ('9Scheduler14migrate_thread', 256),
+                              ('9Scheduler17request_migration', 256),
+                              ('9Scheduler17move_ready_thread', 320)):
+            self.functions[symbol] = function(symbol, f'sub sp, sp, #{frame}\nret')
+        with self.assertRaisesRegex(ValueError, 'balance migration: live frames 1024'):
+            self.check()
+
+    def test_seal_publication_bounds_the_combined_live_frames(self):
+        for symbol, frame in (('24sys_process_builder_seal15ProcessServices', 1280),
+                              ('14ProcessBuilder11finish_seal', 1024)):
+            self.functions[symbol] = function(symbol, f'sub sp, sp, #{frame}\nret')
+        with self.assertRaisesRegex(ValueError, 'process seal publication: live frames 2304'):
+            self.check()
+
+    def test_rpc_preparation_cannot_hide_live_frame_growth(self):
+        for symbol, frame in (('9Transport8exchange', 256),
+                              ('9Transport13wait_response', 512),
+                              ('wait19prepare_signal_wait', 640)):
+            self.functions[symbol] = function(symbol, f'sub sp, sp, #{frame}\nret')
+        with self.assertRaisesRegex(ValueError, 'filesystem RPC wait preparation: live frames 1408'):
+            self.check()
+
+    def test_path_result_assembly_cannot_hide_live_frame_growth(self):
+        for symbol, frame in (('vfs7resolve4walk', 256),
+                              ('vfs7resolve15walk_components', 768),
+                              ('vfs7resolve11finish_walk', 512)):
+            self.functions[symbol] = function(symbol, f'sub sp, sp, #{frame}\nret')
+        with self.assertRaisesRegex(ValueError, 'VFS result assembly: live frames 1536'):
+            self.check()
 
     def test_self_test_services_do_not_replace_real_syscall(self):
         del self.functions['6loader11load_native']
@@ -120,11 +275,11 @@ class ProcessStackTests(unittest.TestCase):
             self.check()
 
     def test_vfs_outlining_cannot_hide_live_frame_growth(self):
-        for phase, frame in (('15walk_components', 1152), ('13restore_start', 1664)):
+        for phase, frame in (('15walk_components', 896), ('13restore_start', 1664)):
             with self.subTest(phase=phase):
                 self.setUp()
                 self.functions['vfs7resolve4walk'] = function(
-                    'vfs7resolve4walk', 'sub sp, sp, #960\nret')
+                    'vfs7resolve4walk', 'sub sp, sp, #256\nret')
                 self.functions['vfs7resolve' + phase] = function(
                     'vfs7resolve' + phase, f'sub sp, sp, #{frame}\nret')
                 with self.assertRaisesRegex(ValueError, 'VFS .*live frames'):

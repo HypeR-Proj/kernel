@@ -73,7 +73,8 @@ impl Transport {
                 Err(error) => return Err(error),
             };
             let block = self.block.as_mut().ok_or(Error::Corrupt)?;
-            let plan_bytes = &mut block.read_plan;
+            let (plan_bytes, sector) = block.read_scratch.split_at_mut(protocol::EXTENT_PLAN_BYTES);
+            let sector: &mut [u8; 512] = sector.try_into().map_err(|_| Error::Corrupt)?;
             if size > plan_bytes.len() {
                 return Err(Error::Corrupt);
             }
@@ -94,7 +95,7 @@ impl Transport {
             if plan.length() == 0 {
                 break;
             }
-            let mut ranges = [Range { first: 0, bytes: 0 }; 16];
+            let ranges = &mut block.read_ranges;
             let mut count = 0;
             let mut length = 0;
             for extent in plan.extents() {
@@ -121,7 +122,15 @@ impl Transport {
                         count = 0;
                         length = 0;
                     }
-                    read_unaligned(&mut access, extent.offset, output, done, bytes, &sponsor)?;
+                    read_unaligned(
+                        &mut access,
+                        sector,
+                        extent.offset,
+                        output,
+                        done,
+                        bytes,
+                        &sponsor,
+                    )?;
                     done += bytes;
                     continue;
                 }
@@ -181,8 +190,12 @@ fn slices<'a>(
     }
 }
 
+// Unaligned bookkeeping ends before the next extent RPC. The sector scratch
+// belongs to the mount and remains exclusively borrowed through completion.
+#[inline(never)]
 fn read_unaligned(
     access: &mut BlockAccess,
+    sector: &mut [u8; 512],
     mut disk: u64,
     output: &mut [&mut [u8]],
     mut at: usize,
@@ -206,22 +219,21 @@ fn read_unaligned(
             at += count;
             length -= count;
         } else {
-            let mut sector = [0u8; 512];
             access
                 .read_scatter(
                     &[Range {
                         first: disk / 512,
                         bytes: 512,
                     }],
-                    &mut [&mut sector],
+                    &mut [sector.as_mut_slice()],
                 )
                 .map_err(block_error)?;
             let count = (512 - inside).min(length);
-            let mut copied = 0;
-            for part in slices(output, at, count, sponsor)? {
+            crate::fs::vfs::read_contract::scatter_copy(output, at, count, |copied, part| {
                 part.copy_from_slice(&sector[inside + copied..inside + copied + part.len()]);
-                copied += part.len();
-            }
+                Ok::<(), core::convert::Infallible>(())
+            })
+            .map_err(|_| Error::Corrupt)?;
             disk += count as u64;
             at += count;
             length -= count;

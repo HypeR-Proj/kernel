@@ -257,6 +257,9 @@ impl FilesystemInstance {
         .map_err(Error::from)
     }
 
+    // Filesystem construction finishes before mount-point traversal. Do not
+    // retain the by-value backend and resource-admission scratch below its RPC.
+    #[inline(never)]
     pub(super) fn try_empty_ramfs(sponsor: &ResourceDomain) -> Result<FallibleArc<Self>, Error> {
         let charge = allocation_charge::<Self>(sponsor)?;
         FallibleArc::try_new(Self {
@@ -278,6 +281,8 @@ impl FilesystemInstance {
         }
     }
 
+    // Remote backend construction completes before mount-point lookup RPCs.
+    #[inline(never)]
     pub(super) fn try_from_remote(
         device: super::remote::Transport,
         sponsor: &ResourceDomain,
@@ -463,6 +468,7 @@ impl FilesystemInstance {
         node: &NodeLease,
         cache: &FileDataCache<CachePage>,
         offset: u64,
+        populate: bool,
     ) -> Result<Option<io_cache::MappedPage<CachePage>>, Error> {
         use io_cache::{CacheAccess, CacheKey, FilePageIndex};
         if matches!(self.read_cache_policy(), ReadCachePolicy::Direct) {
@@ -485,6 +491,9 @@ impl FilesystemInstance {
             content.revision(),
         );
         let key = CacheKey::new(identity, FilePageIndex::new(offset / hyper::mm::PAGE_SIZE));
+        if !populate {
+            return cache.lookup_mapping(key).map_err(|_| Error::Allocation);
+        }
         for _ in 0..8 {
             match cache.access(key).map_err(|_| Error::Allocation)? {
                 CacheAccess::Hit(_) => {
@@ -560,6 +569,32 @@ impl FilesystemInstance {
                 );
                 // The guard covers both cache publication and the copy into
                 // kernel scratch. Callers release it before user-page access.
+                if let Backend::Remote(fs) = &self.backend
+                    && let Some(pages) = io_cache::read_pages(
+                        cache,
+                        identity,
+                        &node.remote()?.record,
+                        length,
+                        offset,
+                        destination.len(),
+                        |at, output| fs.read_scatter(node.remote()?, at, output),
+                    )
+                    .map_err(read_error)?
+                {
+                    let mut at = 0;
+                    for part in pages.pages() {
+                        destination[at..at + part.len()].copy_from_slice(part);
+                        at += part.len();
+                    }
+                    return Ok((
+                        pages.length,
+                        Some(ReadObservation {
+                            identity,
+                            length,
+                            had_miss: pages.had_miss,
+                        }),
+                    ));
+                }
                 let (bytes, had_miss) = io_cache::read_observed(
                     cache,
                     identity,

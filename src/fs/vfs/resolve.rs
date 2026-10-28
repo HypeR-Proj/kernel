@@ -7,6 +7,7 @@ use super::instance::{DirectoryAnchor, Location, Mount, MountNamespace};
 use super::objects::Error;
 use super::resolve_state::{NameDescriptor, PendingComponent, PendingPath, StateError, Traversal};
 use super::scratch::{ScratchBudget, ScratchString, ScratchVec};
+use crate::fs::primitives::file_data::StorageBudget;
 use hyper::mm::FallibleArc;
 use {
     crate::fs::primitives::MAX_PATH_BYTES, crate::fs::primitives::Name,
@@ -193,6 +194,7 @@ struct PreparedWalk {
     // Drop ancestry before its retained name arena, just as the original locals.
     traversal: Traversal<Step, ScratchBudget>,
     pending: PendingPath<ScratchBudget>,
+    _charge: crate::accounting::CommittedCharge,
 }
 
 // Construction's by-value temporary state must not stay below later RPC waits.
@@ -201,7 +203,11 @@ fn prepare_walk(
     root: &Location,
     value: &NormalizedPath,
     budget: &ScratchBudget,
-) -> Result<PreparedWalk, Error> {
+) -> Result<alloc::boxed::Box<PreparedWalk>, Error> {
+    // This state survives every component RPC and IRQ-tail scheduler entry.
+    // Charge one bounded request-owned allocation instead of retaining it on
+    // each caller's kernel stack; all preparation failures release the charge.
+    let charge = budget.reserve(core::mem::size_of::<PreparedWalk>())?;
     let path = Path::new(&value.text).map_err(|_| Error::InvalidPath)?;
     let mut pending = PendingPath::new(path, budget.clone()).map_err(map_state_error)?;
     if value.directory_required {
@@ -215,7 +221,19 @@ fn prepare_walk(
         budget.clone(),
     )
     .map_err(map_state_error)?;
-    Ok(PreparedWalk { traversal, pending })
+    let mut storage = hyper::mm::try_box_uninit::<PreparedWalk>().map_err(|_| Error::Allocation)?;
+    let pointer = storage.as_mut_ptr();
+    // SAFETY: storage exclusively owns correctly aligned PreparedWalk memory.
+    // All fallible preparation has finished. Move each field exactly once into
+    // its final allocation before exposing any reference; nothing can fail or
+    // unwind between these writes and assume_init. Earlier failures drop the
+    // still-local traversal, pending names and charge in their normal order.
+    unsafe {
+        core::ptr::addr_of_mut!((*pointer).traversal).write(traversal);
+        core::ptr::addr_of_mut!((*pointer).pending).write(pending);
+        core::ptr::addr_of_mut!((*pointer)._charge).write(charge);
+        Ok(storage.assume_init())
+    }
 }
 
 // Relative ancestry construction must retire before ordinary component lookup
@@ -229,7 +247,9 @@ fn restore_start(
     epochs: &mut Epochs,
     budget: &ScratchBudget,
 ) -> Result<(), Error> {
-    let PreparedWalk { pending, traversal } = prepared;
+    let PreparedWalk {
+        pending, traversal, ..
+    } = prepared;
     for (location, name) in view.ancestry(root, start, budget, |mount| {
         epochs.observe(mount).map(|_| ())
     })? {
@@ -255,7 +275,9 @@ fn walk_components(
     epochs: &mut Epochs,
     budget: &ScratchBudget,
 ) -> Result<Resolved, Error> {
-    let PreparedWalk { pending, traversal } = prepared;
+    let PreparedWalk {
+        pending, traversal, ..
+    } = prepared;
     let mut parent = traversal.current().location.clone();
     let mut final_name = ScratchString::new(budget.clone());
     while let Some(component) = pending.pop() {
@@ -313,6 +335,22 @@ fn walk_components(
             }
         }
     }
+    finish_walk(prepared, parent, final_name, epochs, budget)
+}
+
+// Canonical-name allocation and result construction follow component lookup;
+// they must not reserve scratch below backend RPCs during traversal.
+#[inline(never)]
+fn finish_walk(
+    prepared: &PreparedWalk,
+    parent: Location,
+    final_name: ScratchString,
+    epochs: &mut Epochs,
+    budget: &ScratchBudget,
+) -> Result<Resolved, Error> {
+    let PreparedWalk {
+        pending, traversal, ..
+    } = prepared;
     let mut length = 0usize;
     for step in traversal.visited() {
         let Some(descriptor) = step.name else {

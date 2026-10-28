@@ -104,12 +104,28 @@ impl FileProtection {
         &self,
         offset: u64,
     ) -> Result<Option<crate::fs::cache::MappedPage<CachePage>>, Error> {
+        self.file_page(offset, true)
+    }
+
+    /// Probe without I/O so missing pages can still be filled as one batch.
+    pub(crate) fn cached_page(
+        &self,
+        offset: u64,
+    ) -> Result<Option<crate::fs::cache::MappedPage<CachePage>>, Error> {
+        self.file_page(offset, false)
+    }
+
+    fn file_page(
+        &self,
+        offset: u64,
+        populate: bool,
+    ) -> Result<Option<crate::fs::cache::MappedPage<CachePage>>, Error> {
         let content = &self.content;
         content
             .location
             .mount()
             .filesystem()
-            .shared_file_page(content.location.node(), &content.cache, offset)
+            .shared_file_page(content.location.node(), &content.cache, offset, populate)
             .map_err(Into::into)
     }
 

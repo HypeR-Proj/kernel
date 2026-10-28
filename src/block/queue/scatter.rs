@@ -24,6 +24,7 @@ impl BlockAccess {
     /// Fill disjoint initialized kernel slices directly from the exchange pool.
     /// No pointer from this path is ever submitted to the I/O VM. The internal
     /// progress queue also prevents public unreaped results from blocking paging.
+    #[inline(never)]
     pub(crate) fn read_scatter(
         &self,
         ranges: &[Range],

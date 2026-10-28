@@ -10,6 +10,10 @@ use hyper::mm::FallibleArc;
 /// A content-protected file. Reads may block and must run outside MM locks and
 /// CPU pins. Implementations retain protection, not a whole-file memory copy.
 pub(crate) trait FilePageSource<B: PageBackend>: Send + Sync {
+    /// Probe canonical storage without I/O. Missing pages must remain batched.
+    fn cached_page(&self, _offset: u64) -> Result<Option<B::Page>, ()> {
+        Ok(None)
+    }
     /// Returns canonical immutable cache storage for a complete file page.
     /// None means this backend has no shared cache (for example boot RAMFS).
     fn shared_page(&self, _offset: u64) -> Result<Option<B::Page>, ()> {
@@ -49,6 +53,11 @@ impl<B: PageBackend, A: MemoryAccount> FileBacking<B, A> {
     pub(super) fn shared_page(&self, offset: u64) -> Result<Option<B::Page>, ()> {
         let source = self.source.with(|source| source.clone()).ok_or(())?;
         source.shared_page(offset)
+    }
+
+    pub(super) fn cached_page(&self, offset: u64) -> Result<Option<B::Page>, ()> {
+        let source = self.source.with(|source| source.clone()).ok_or(())?;
+        source.cached_page(offset)
     }
 
     pub(super) fn read_at(&self, offset: u64, output: &mut [u8]) -> Result<usize, ()> {

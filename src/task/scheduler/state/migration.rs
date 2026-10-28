@@ -44,14 +44,11 @@ impl Scheduler {
             return self
                 .with_cpu_schedule_stored(cpu, |scheduler| scheduler.migrate_thread(id, target));
         }
-        let thread = self.thread(id)?;
-        if !thread.can_run_on(target) {
+        let affinity = self.observe_thread(id, |thread| thread.affinity())?;
+        if !affinity.contains(target) {
             return Err(Error::CpuNotAllowed);
         }
-        let plan = MigrationRequest {
-            target,
-            affinity: thread.affinity(),
-        };
+        let plan = MigrationRequest { target, affinity };
         self.request_migration(id, plan)
     }
 
@@ -83,27 +80,30 @@ impl Scheduler {
         id: ThreadId,
         plan: MigrationRequest,
     ) -> Result<MigrationOutcome, Error> {
-        let thread = self.thread(id)?;
-        if !matches!(
-            thread.execution_kind(),
-            ExecutionKind::Kernel | ExecutionKind::User | ExecutionKind::Vcpu
-        ) || thread.placement_policy() != PlacementPolicy::Movable
-        {
-            return Err(Error::MigrationUnsupported);
-        }
-        if !plan.affinity.contains(plan.target) || !self.cpu_is_schedulable(plan.target) {
-            return Err(Error::NoRegisteredCpuInAffinity);
-        }
-        if !thread.wait_record().permits_assignment(plan.target) {
-            return Err(Error::MigrationBlockedByCpuLocalWait);
-        }
-        if thread.state() == ThreadState::Terminated {
-            return Err(Error::TerminatedThread);
-        }
-
-        let state = self.thread(id)?.state();
-        let source = self.thread(id)?.cpu_index();
-        if let Some(existing) = self.thread(id)?.pending_migration() {
+        let (state, source, pending) = self.observe_thread(id, |thread| {
+            if !matches!(
+                thread.execution_kind(),
+                ExecutionKind::Kernel | ExecutionKind::User | ExecutionKind::Vcpu
+            ) || thread.placement_policy() != PlacementPolicy::Movable
+            {
+                return Err(Error::MigrationUnsupported);
+            }
+            if !plan.affinity.contains(plan.target) || !self.cpu_is_schedulable(plan.target) {
+                return Err(Error::NoRegisteredCpuInAffinity);
+            }
+            if !thread.wait_record().permits_assignment(plan.target) {
+                return Err(Error::MigrationBlockedByCpuLocalWait);
+            }
+            if thread.state() == ThreadState::Terminated {
+                return Err(Error::TerminatedThread);
+            }
+            Ok((
+                thread.state(),
+                thread.cpu_index(),
+                thread.pending_migration(),
+            ))
+        })??;
+        if let Some(existing) = pending {
             if existing != plan {
                 return Err(Error::MigrationInProgress);
             }
@@ -149,7 +149,7 @@ impl Scheduler {
             ThreadState::Dormant | ThreadState::Blocked => {
                 if state == ThreadState::Blocked
                     && !matches!(
-                        self.thread(id)?.queue_links().membership,
+                        self.observe_thread(id, |thread| thread.queue_links().membership)?,
                         QueueMembership::Waiting { .. }
                     )
                 {
@@ -316,9 +316,13 @@ impl Scheduler {
         plan: MigrationRequest,
     ) -> Result<ReadyOutcome, Error> {
         self.record_fair_origin(id)?;
-        let source = self.thread(id)?.cpu_index();
-        let old_affinity = self.thread(id)?.affinity();
-        let membership = self.thread(id)?.queue_links().membership;
+        let (source, old_affinity, membership) = self.observe_thread(id, |thread| {
+            (
+                thread.cpu_index(),
+                thread.affinity(),
+                thread.queue_links().membership,
+            )
+        })?;
         if !matches!(
             membership,
             QueueMembership::ReadyRealTime { cpu, .. } | QueueMembership::ReadyFair { cpu }

@@ -299,6 +299,9 @@ pub(super) fn dispatch_operation(
         abi::NativeOperation::FileReadAt => {
             handlers::sys_file_read_at(services, receiver, arguments)
         }
+        abi::NativeOperation::FilePrefetch => {
+            handlers::sys_file_prefetch(services, receiver, arguments)
+        }
         abi::NativeOperation::FileGetInfo => {
             handlers::sys_file_get_info(services, receiver, arguments)
         }

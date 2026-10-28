@@ -4318,6 +4318,7 @@ fn memory_lock_current_has_no_future_policy_and_cow_keeps_existing_grant() {
 
 struct SharedTestFile {
     pages: Arc<Vec<Page>>,
+    reads: Arc<AtomicU64>,
 }
 impl user::FilePageSource<Backend> for SharedTestFile {
     fn size(&self) -> u64 {
@@ -4326,7 +4327,11 @@ impl user::FilePageSource<Backend> for SharedTestFile {
     fn shared_page(&self, offset: u64) -> Result<Option<Page>, ()> {
         Ok(self.pages.get((offset / PAGE_SIZE) as usize).cloned())
     }
+    fn cached_page(&self, offset: u64) -> Result<Option<Page>, ()> {
+        self.shared_page(offset)
+    }
     fn read_at(&self, offset: u64, output: &mut [u8]) -> Result<usize, ()> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
         for (index, byte) in output.iter_mut().enumerate() {
             let at = offset as usize + index;
             *byte = *self
@@ -4348,6 +4353,7 @@ fn shared_clean_file_pages_share_physical_storage_and_private_writes_cannot_modi
     crate::require_ok(backend.write_owned(&mut page, 0, &[0x53; 64]));
     let canonical = page.physical;
     let source = Arc::new(vec![page]);
+    let reads = Arc::new(AtomicU64::new(0));
     let mut spaces = Vec::new();
     for _ in 0..2 {
         let space = crate::require_ok(UserAddressSpace::try_new(
@@ -4359,6 +4365,7 @@ fn shared_clean_file_pages_share_physical_storage_and_private_writes_cannot_modi
         let view = crate::require_ok(space.prepare_file_view(
             Box::new(SharedTestFile {
                 pages: source.clone(),
+                reads: reads.clone(),
             }),
             PAGE_SIZE,
             0,
@@ -4385,6 +4392,7 @@ fn shared_clean_file_pages_share_physical_storage_and_private_writes_cannot_modi
         ));
         spaces.push(space);
     }
+    assert_eq!(reads.load(Ordering::Relaxed), 0);
     let a = &spaces[0];
     let b = &spaces[1];
     let cow = crate::require_some(crate::require_ok(a.prepare_private_write(slice(0x1000, 1))));
@@ -4399,6 +4407,55 @@ fn shared_clean_file_pages_share_physical_storage_and_private_writes_cannot_modi
     ));
     assert!(crate::require_ok(b.prepare_file_reclaim(slice(0x1000, PAGE_SIZE))).is_none());
     assert_eq!(account.0.pinned.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn shared_file_segment_edges_remain_private_and_zero_outside_the_segment() {
+    let (backend, account) = fixtures();
+    let mut pages = Vec::new();
+    for _ in 0..3 {
+        let mut page = crate::require_ok(backend.allocate_zeroed());
+        crate::require_ok(backend.write_owned(&mut page, 0, &vec![0x5b; PAGE_SIZE as usize]));
+        pages.push(page);
+    }
+    let source = Arc::new(pages);
+    let reads = Arc::new(AtomicU64::new(0));
+    let range = slice(0x1000, PAGE_SIZE * 3);
+    let space = crate::require_ok(UserAddressSpace::try_new(window(), range, backend, account));
+    let view = crate::require_ok(space.prepare_file_view(
+        Box::new(SharedTestFile {
+            pages: source.clone(),
+            reads: reads.clone(),
+        }),
+        PAGE_SIZE * 3,
+        0,
+        PAGE_SIZE * 2 + 7,
+        13,
+        false,
+        user::PrivateMappingMode::CopyOnWrite,
+    ));
+    let plan = crate::require_ok(space.prepare_map_private_view(
+        space.root_vmar(),
+        range,
+        view,
+        Permissions::read_only(),
+        Permissions::read_only(),
+    ));
+    let token = crate::require_some(plan.snapshots().next()).token;
+    let resident = crate::require_ok(plan.resident_pages(token));
+    assert_ne!(resident.pages()[0], Some(source[0].physical));
+    assert_eq!(resident.pages()[1], Some(source[1].physical));
+    assert_ne!(resident.pages()[2], Some(source[2].physical));
+    drop(resident);
+    complete(crate::require_ok(plan.commit_for_test()));
+    let mut bytes = vec![0xff; PAGE_SIZE as usize * 3];
+    crate::require_ok(space.copy_from_user(range, &mut bytes));
+    assert!(bytes[..13].iter().all(|&b| b == 0));
+    let end = PAGE_SIZE as usize * 2 + 20;
+    assert!(bytes[13..end].iter().all(|&b| b == 0x5b));
+    assert!(bytes[end..].iter().all(|&b| b == 0));
+    assert_eq!(reads.load(Ordering::Relaxed), 2);
+    assert!(source.iter().all(|p| p.bytes.iter().all(|&b| b == 0x5b)));
 }
 
 // Compare incremental edits with the independently enumerated logical snapshot.

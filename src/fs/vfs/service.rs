@@ -127,6 +127,26 @@ pub(crate) fn file_info(file: &InvocationReceiver) -> Result<super::FileInfo, Se
     file.object().info().map_err(Into::into)
 }
 
+/// Explicit cache fill does not advance the per-open sequential predictor or
+/// schedule another speculative job. Dropping the result releases every pin.
+pub(crate) fn prefetch_file(
+    file: &InvocationReceiver,
+    offset: u64,
+    length: u64,
+) -> Result<u64, ServiceError> {
+    let file = file
+        .resolve::<FileObject>(Rights::READ)
+        .map_err(crate::process::ProcessError::from)?;
+    if length > hyper::abi::native::HYPER_NATIVE_FILE_MAX_PREFETCH_BYTES
+        || offset.checked_add(length).is_none()
+    {
+        return Err(ServiceError::InvalidInput);
+    }
+    file.object()
+        .prefetch(offset, length as usize)
+        .map_err(Into::into)
+}
+
 /// Publish one process-local protection token. Object publication checks that
 /// the process still admits handles; a concurrent exit rolls preparation back.
 pub(crate) fn protect_file(
@@ -181,9 +201,9 @@ pub(crate) fn read_file_at(
     if capacity == 0 {
         return Ok((0, file_size));
     }
-    // Aligned cached reads retain page owners, then copy directly into the
+    // Bulk cached reads retain page owners, then copy only requested bytes into the
     // reserved user range after releasing the content gate. Scratch remains a
-    // bounded fallback for RAM files, unaligned ranges and cache pressure.
+    // bounded path for small transfers, RAM files and cache pressure.
     let mut small = [0_u8; SMALL_TRANSFER_BYTES];
     let mut large = ScratchVec::new(ScratchBudget::new(&process.resource_domain()));
     let completed = super::read_contract::read_batches(

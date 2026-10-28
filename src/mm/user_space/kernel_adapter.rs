@@ -462,6 +462,14 @@ fn pointer_ranges_overlap(
 }
 
 impl super::vmo::FilePageSource<KernelPageBackend> for crate::fs::vfs::FileProtection {
+    fn cached_page(&self, offset: u64) -> Result<Option<KernelUserPage>, ()> {
+        Ok(self
+            .cached_page(offset)
+            .map_err(|_| ())?
+            .map(|page| KernelUserPage {
+                storage: PageStorage::Cached(page),
+            }))
+    }
     fn shared_page(&self, offset: u64) -> Result<Option<KernelUserPage>, ()> {
         Ok(self
             .shared_page(offset)

@@ -168,6 +168,7 @@ impl Process {
         self.reserve_handle_batch_for(count, HandleAdmission::Published)
     }
 
+    #[inline(never)]
     pub(super) fn reserve_handle_batch_for(
         &self,
         count: usize,
@@ -196,10 +197,8 @@ impl Process {
         let scratch_bytes = charge_scratch_bytes
             .checked_add(reservation_scratch_bytes)
             .ok_or(ProcessError::Allocation)?;
-        let scratch_request =
-            ResourceAmount::ZERO.with(ResourceKind::KernelMemoryBytes, scratch_bytes);
-        let scratch_charge = self.inner.domain.reserve(scratch_request)?.commit();
-        let mut reservation_storage = Some(HandleBatchReservationStorage::try_new(count)?);
+        let (scratch_charge, storage) = self.prepare_handle_batch_scratch(count, scratch_bytes)?;
+        let mut reservation_storage = Some(storage);
         let reservation = loop {
             let snapshot = self.inner.state.with(|state| {
                 require_handle_admission(state.lifecycle.phase(), admission)?;
@@ -236,6 +235,32 @@ impl Process {
                 Err(error) => return Err(error),
             }
         };
+        drop(reservation_storage);
+        self.finish_handle_batch_reservation(count, reservation, scratch_charge, metadata_request)
+    }
+
+    // Temporary accounting and buffer construction finish before table growth.
+    #[inline(never)]
+    fn prepare_handle_batch_scratch(
+        &self,
+        count: usize,
+        bytes: u64,
+    ) -> Result<(CommittedCharge, HandleBatchReservationStorage), ProcessError> {
+        let request = ResourceAmount::ZERO.with(ResourceKind::KernelMemoryBytes, bytes);
+        let charge = self.inner.domain.reserve(request)?.commit();
+        Ok((charge, HandleBatchReservationStorage::try_new(count)?))
+    }
+
+    // Table growth has returned before record/charge construction begins. Keep
+    // this rollback scratch out of nested table allocation and IRQ scheduling.
+    #[inline(never)]
+    fn finish_handle_batch_reservation(
+        &self,
+        count: usize,
+        reservation: HandleBatchReservation,
+        scratch_charge: CommittedCharge,
+        metadata_request: ResourceAmount,
+    ) -> Result<ProcessHandleBatchReservation, ProcessError> {
         let metadata = self.inner.domain.reserve(metadata_request);
         let metadata = match metadata {
             Ok(charge) => charge.commit(),
@@ -298,6 +323,22 @@ impl Process {
         &self,
         snapshot: HandleTableStorageSnapshot,
     ) -> Result<PreparedTableStorage, ProcessError> {
+        let charge = self.reserve_table_storage_charge(snapshot)?;
+        let plan = HandleTableStoragePlan::try_new(snapshot)?;
+        let sidecar = HandleSidecar::prepare(snapshot)?;
+        Ok(PreparedTableStorage {
+            slots: Some(plan),
+            index: sidecar,
+            charge,
+        })
+    }
+
+    // Resource-admission values need not survive under allocator entry.
+    #[inline(never)]
+    fn reserve_table_storage_charge(
+        &self,
+        snapshot: HandleTableStorageSnapshot,
+    ) -> Result<Option<CommittedCharge>, ProcessError> {
         let storage_bytes = snapshot
             .growth_bytes()
             .and_then(|bytes| {
@@ -319,13 +360,7 @@ impl Process {
                     .commit(),
             )
         };
-        let plan = HandleTableStoragePlan::try_new(snapshot)?;
-        let sidecar = HandleSidecar::prepare(snapshot)?;
-        Ok(PreparedTableStorage {
-            slots: Some(plan),
-            index: sidecar,
-            charge,
-        })
+        Ok(charge)
     }
 
     pub(crate) fn publish_handles<const N: usize>(

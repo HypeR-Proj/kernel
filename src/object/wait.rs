@@ -351,8 +351,7 @@ pub(crate) fn wait_one(
         return Ok(SignalWaitOutcome::Observed(snapshot));
     }
 
-    let waiter_charge = reserve_waiter(domain)?;
-    let prepared_wait = PreparedSignalWait::try_new(requested, waiter_charge)?;
+    let prepared_wait = prepare_signal_wait(domain, requested)?;
 
     let mut prepared = match prepare_timed_wait(domain, deadline_nanoseconds)? {
         TimedWaitPreparation::Completed(WaitOutcome::TimedOut) => {
@@ -525,6 +524,17 @@ pub(crate) fn wait_many(
         (WaitOutcome::Cancelled, None) => Ok(SignalWaitManyOutcome::Cancelled),
         _ => object_wait_invariant("multi-wait outcome disagreed with signal winner", None),
     }
+}
+
+// Retire accounting and by-value SignalWaiter construction scratch before
+// arming timers or entering the scheduler. Only its owned allocation survives.
+#[inline(never)]
+fn prepare_signal_wait(
+    domain: &ResourceDomain,
+    requested: crate::object::signals::SignalMask,
+) -> Result<PreparedSignalWait, ObjectWaitError> {
+    let charge = reserve_waiter(domain)?;
+    Ok(PreparedSignalWait::try_new(requested, charge)?)
 }
 
 fn reserve_waiter(domain: &ResourceDomain) -> Result<CommittedCharge, ObjectWaitError> {

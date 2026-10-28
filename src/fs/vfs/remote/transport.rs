@@ -51,14 +51,19 @@ pub(in crate::fs::vfs) struct Transport {
 struct BlockTransport {
     queue: KernelRef<crate::block::BlockQueue, KernelService>,
     window: FallibleArc<crate::block::WindowBinding>,
-    // The volume mutex serializes this private copy of provider metadata.
-    // Allocate once under the mount sponsor, not below every nested page-in.
-    read_plan: super::ScratchVec<u8>,
+    // The volume mutex serializes the private extent plan, sector bounce
+    // buffer and batch descriptors. Allocate once under the mount sponsor,
+    // keeping all fixed-size read scratch off nested page-in stacks.
+    read_scratch: super::ScratchVec<u8>,
+    read_ranges: super::ScratchVec<crate::block::Range>,
 }
 impl Transport {
     pub(crate) fn publication(&self) -> Option<FallibleArc<crate::block::WindowBinding>> {
         self.block.as_ref().map(|block| block.window.clone())
     }
+    // Capability resolution and transport buffers are a construction phase,
+    // not live scratch beneath subsequent filesystem mounting and lookup.
+    #[inline(never)]
     pub(crate) fn prepare(
         process: &Process,
         channel: HandleValue,
@@ -107,13 +112,20 @@ impl Transport {
                 .bind_window()
                 .map_err(|_| super::Error::InvalidInput)?;
             let queue = queue.into_operation_pin().into_filesystem_transport();
-            let mut read_plan =
+            let mut read_scratch =
                 super::ScratchVec::new(super::ScratchBudget::new(&process.resource_domain()));
-            crate::fs::vfs::scratch::resize_bytes(&mut read_plan, protocol::EXTENT_PLAN_BYTES)?;
+            crate::fs::vfs::scratch::resize_bytes(
+                &mut read_scratch,
+                protocol::EXTENT_PLAN_BYTES + 512,
+            )?;
+            let mut read_ranges =
+                super::ScratchVec::new(super::ScratchBudget::new(&process.resource_domain()));
+            read_ranges.resize(16, crate::block::Range { first: 0, bytes: 0 })?;
             Some(BlockTransport {
                 queue,
                 window,
-                read_plan,
+                read_scratch,
+                read_ranges,
             })
         } else {
             None
@@ -260,24 +272,36 @@ impl Transport {
                 Err(ByteChannelError::WouldBlock) => {}
                 Err(_) => return Err(Error::Closed),
             }
-            let source = channel.signal_source().ok_or(Error::Closed)?;
-            match wait_one(
-                source,
-                &self.domain,
-                ByteChannel::READABLE.union(ByteChannel::PEER_CLOSED).bits(),
-                deadline_nanoseconds,
-                // Publication transfers the shared range to the worker. An
-                // app's stop request cannot retire a mount used by other apps.
-                // Drain this bounded transaction; the user runner handles stop
-                // before the syscall returns. Scheduler cancellation selects one
-                // current wait ticket, not every subsequent rearm.
-                || false,
-            )
-            .map_err(|_| Error::Closed)?
-            {
-                SignalWaitOutcome::Observed(_) | SignalWaitOutcome::Cancelled => {}
-                SignalWaitOutcome::TimedOut => return Err(Error::Closed),
-            }
+            self.wait_response(deadline_nanoseconds)?;
+        }
+    }
+
+    // Wait registration follows request publication. Its timer/charge scratch
+    // must not remain below channel publication and IRQ-tail scheduling.
+    #[inline(never)]
+    fn wait_response(&self, deadline_nanoseconds: u64) -> Result<(), Error> {
+        let source = self
+            .health
+            .channel
+            .object()
+            .signal_source()
+            .ok_or(Error::Closed)?;
+        match wait_one(
+            source,
+            &self.domain,
+            ByteChannel::READABLE.union(ByteChannel::PEER_CLOSED).bits(),
+            deadline_nanoseconds,
+            // Publication transfers the shared range to the worker. An
+            // app's stop request cannot retire a mount used by other apps.
+            // Drain this bounded transaction; the user runner handles stop
+            // before the syscall returns. Scheduler cancellation selects one
+            // current wait ticket, not every subsequent rearm.
+            || false,
+        )
+        .map_err(|_| Error::Closed)?
+        {
+            SignalWaitOutcome::Observed(_) | SignalWaitOutcome::Cancelled => Ok(()),
+            SignalWaitOutcome::TimedOut => Err(Error::Closed),
         }
     }
     pub(super) fn stat_into(&mut self, path: &str, entry: &mut Entry) -> Result<(), Error> {

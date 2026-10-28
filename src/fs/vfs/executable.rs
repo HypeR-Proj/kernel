@@ -61,6 +61,8 @@ impl ExecutableSnapshot {
     }
 }
 
+// Resource-admission temporaries must retire before the blocking file read.
+#[inline(never)]
 fn parser_buffer(
     length: u64,
     sponsor: &ResourceDomain,

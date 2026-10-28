@@ -64,6 +64,8 @@ pub struct Image {
 }
 
 impl Image {
+    // Parsing scratch retires before callers install mappings and page tables.
+    #[inline(never)]
     pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() < 64
             || bytes.len() as u64 > MAX_IMAGE_SIZE

@@ -49,6 +49,11 @@ scheduler admission. These frame checks supplement runtime acceptance; they do
 not bound the complete call graph or every preemption point. No unstable compiler
 flags or `.stack_sizes` metadata are required.
 
+IRQ-tail load balancing projects only the thread fields needed by each migration
+phase. Candidate-selection snapshots retire before queue mutation while the same
+source CPU lock remains held. These boundaries reduce the common scheduling cost
+below interrupted syscalls without changing placement or migration semantics.
+
 Capability sends separate input admission from receiver matching and publication.
 The image check bounds both the input frames and their combined size, so rollback
 owners for the later delivery phase cannot occupy stack below sender input
@@ -56,15 +61,42 @@ admission's usercopy/COW and allocator calls. No message capacity or transfer
 semantics change at this boundary.
 
 Path resolution separates state construction, relative-ancestry reconstruction,
-and component lookup. Preparation temporaries retire before backend lookup RPC;
-image checks bound each phase and its live sum with the traversal coordinator.
+component lookup and canonical-result assembly. Traversal state lives in one
+bounded allocation charged to the requesting domain and released with the request.
+Preparation temporaries retire before backend lookup RPC; image checks bound each
+phase and its live sum with the traversal coordinator.
 This preserves space for IRQ-tail scheduling on an interrupted VFS syscall.
+RAM and remote filesystem construction also finish before mount-point traversal,
+so backend initialization scratch does not survive below namespace lookup RPC.
 
-Block-backed filesystem transports allocate their 1040-byte extent-plan scratch
-once under the mount sponsor and reuse it under the volume mutex. The metadata
-copy remains private to the kernel; it is released with the transport. Keeping
-it off the stack avoids carrying it below nested file-page faults and block
-completion waits. The optimized image check bounds this read frame as well.
+Process builder creation retires capability-copy and buffer-admission scratch
+before reading the restricted loader snapshot, then constructs the builder in
+a separate phase. File mappings likewise populate their source before constructing
+the mapping transaction. These phase boundaries keep later construction temporaries
+off filesystem reads, block submission and IRQ-tail scheduling. The image audit
+bounds the coordinators and their separate preparation/construction frames.
+Bulk handle reservations finish table growth before charge-record construction;
+table backing is allocated only after its resource-admission temporaries retire.
+Both phases retain the original lock order and abort reserved slots on failure.
+Loader parsing retires its scratch before address-space construction and mapping;
+the admitted segment table is borrowed without a second stack copy. Sealing builds
+and publishes its final owner only after mapping succeeds. The image check bounds
+the live seal/loader frames for parsing, construction, mapping and publication.
+
+Block admission waits keep timed-wait registration scratch in a separate slow
+path. Aligned filesystem reads do not retain the unaligned sector bounce buffer.
+Filesystem RPC publication likewise excludes reply-wait scratch; single-object
+waits finish charged signal-node construction before timer and scheduler entry.
+Scatter destinations remain borrowed until the committed request completes;
+splitting phases does not weaken that unconditional join or change batch sizes.
+
+Block-backed filesystem transports allocate the 1040-byte extent plan, a
+512-byte sector bounce buffer and sixteen batch descriptors once under the mount
+sponsor, then reuse them under the volume mutex. All remain private to the kernel
+and are released with the transport. Aligned and unaligned page-in paths carry
+only borrowed descriptors below block completion waits. The optimized image check
+bounds both read frames and their combined size; no per-read allocation is added
+for this scratch.
 
 `sh tests/ci/run.sh native-stack-16k` builds a production image with 16 KiB
 kernel thread stacks and runs Native acceptance on one and four CPUs. This is
@@ -74,14 +106,18 @@ in the boot log. It does not enable stack-audit instrumentation or change the
 developer's `kernel/.config`.
 
 The repository `board-storage` CI suite additionally builds with 16 KiB kernel
-thread stacks, the minimum supported configuration. It exercises physical
-device claims, storage startup, system-root handoff and guest startup on that
+thread stacks, the minimum supported configuration. Storage-media and userspace
+device acceptance require at least 4096 bytes of measured reserve, above the
+general 2048-byte minimum. It exercises physical device claims, storage startup,
+system-root handoff and guest startup on that
 image. IRQ and emergency stacks retain their default capacities. This catches
 overflow in long-lived services which do not contribute retired-thread samples.
 
 If `board-storage-media` fails, CI also performs a bounded diagnostic boot using
 QEMU GDB write watchpoints over the lowest 4 KiB of the first 256 stack slots.
-It records new low-reserve observations and stops below the 2048-byte threshold.
+It records new low-reserve observations and stops below the 4096-byte threshold.
+The diagnostic replays the storage probe and a cross-filesystem copy on its disk
+snapshot; `watch-stack.py --command` can select another bounded shell workload.
 The existing artifact includes `stack-watch/report.json`, symbolized
 `stack-watch/backtraces.log` and `stack-watch/serial.log`. This uses the matching
 kernel ELF, accounts for KASLR and follows frame pointers only within the stopped

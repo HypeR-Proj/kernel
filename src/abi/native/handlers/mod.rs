@@ -102,9 +102,9 @@ pub(super) use vfs::{
     sys_directory_open_file_with_options, sys_directory_read, sys_directory_read_link,
     sys_directory_remove, sys_directory_remove_if, sys_directory_rename,
     sys_directory_scope_create, sys_directory_set_metadata, sys_directory_symlink,
-    sys_file_get_info, sys_file_get_metadata, sys_file_lock, sys_file_protect, sys_file_read_at,
-    sys_file_resize, sys_file_set_metadata, sys_file_sync, sys_file_unlock, sys_file_write_at,
-    sys_filesystem_begin_root_switch, sys_filesystem_finish_root_switch,
+    sys_file_get_info, sys_file_get_metadata, sys_file_lock, sys_file_prefetch, sys_file_protect,
+    sys_file_read_at, sys_file_resize, sys_file_set_metadata, sys_file_sync, sys_file_unlock,
+    sys_file_write_at, sys_filesystem_begin_root_switch, sys_filesystem_finish_root_switch,
     sys_filesystem_mount_ramfs, sys_filesystem_switch_root,
 };
 pub(super) use vm::{

@@ -20,13 +20,24 @@ const MAX_BYTES: usize = 512 * 1024;
 /// Index eviction remains possible; physical recovery waits for these pins.
 pub(crate) struct PageRead<Owner> {
     pages: Vec<CachedPage<FilePage<Owner>>>,
+    first_offset: usize,
     pub(crate) length: usize,
     pub(crate) had_miss: bool,
 }
 
 impl<Owner> PageRead<Owner> {
     pub(crate) fn pages(&self) -> impl Iterator<Item = &[u8]> + Clone {
-        self.pages.iter().map(|page| page.value().bytes())
+        self.pages.iter().scan(
+            (self.first_offset, self.length),
+            |(skip, remaining), page| {
+                let bytes = page.value().bytes();
+                let start = (*skip).min(bytes.len());
+                *skip -= start;
+                let length = (*remaining).min(bytes.len() - start);
+                *remaining -= length;
+                Some(&bytes[start..start + length])
+            },
+        )
     }
 }
 
@@ -35,10 +46,13 @@ enum Slot<'a, Owner> {
     Fill(PendingPage<'a, FilePage<Owner>>),
 }
 
-/// Reads complete file pages, including an exact EOF tail, in bounded scatter
-/// batches. The caller holds the file content gate through this operation.
-/// `None` selects the ordinary charged scratch path for unaligned requests or
-/// cache admission pressure. All reservations are released before that fallback.
+/// Fills complete file pages covering the request, including an exact EOF tail,
+/// in bounded scatter batches, but exposes only the requested bytes. The caller
+/// holds the file content gate through this operation. Partial ELF segment reads
+/// must not leave persistent holes in the cache at each segment boundary.
+/// `None` selects the ordinary charged scratch path for oversized requests,
+/// cache admission pressure, or short reads confined to the rounded prefix.
+/// All reservations are released before that fallback.
 ///
 /// The backend sees only exclusive unpublished page slices. It must finish all
 /// access before returning. A short read publishes only complete pages; its
@@ -57,13 +71,16 @@ pub(crate) fn read_pages<E, Owner: Clone>(
     let end = offset
         .checked_add(length as u64)
         .ok_or(ReadError::ArithmeticOverflow)?;
-    if !offset.is_multiple_of(PAGE_SIZE)
-        || length > MAX_BYTES
-        || (!end.is_multiple_of(PAGE_SIZE) && end != file_len)
-    {
+    let first_offset = (offset % PAGE_SIZE) as usize;
+    let offset = offset - first_offset as u64;
+    // Subtraction from the known file length also avoids rounding u64::MAX up.
+    let padding = (PAGE_SIZE - end % PAGE_SIZE) % PAGE_SIZE;
+    let end = end + padding.min(file_len.saturating_sub(end));
+    let covered = if length == 0 { 0 } else { end - offset };
+    if covered > MAX_BYTES as u64 {
         return Ok(None);
     }
-    let count = length.div_ceil(PAGE_SIZE as usize);
+    let count = (covered as usize).div_ceil(PAGE_SIZE as usize);
     let layouts = [
         Layout::array::<Slot<'_, Owner>>(count),
         Layout::array::<CachedPage<FilePage<Owner>>>(count),
@@ -144,6 +161,12 @@ pub(crate) fn read_pages<E, Owner: Clone>(
         }
         index = end;
     }
+    // A short read may stop entirely within the rounded leading prefix. Zero
+    // requested bytes then says nothing about EOF at the caller's offset.
+    // Release the unpublished pages and let demand reads use their exact range.
+    if length != 0 && first_offset != 0 && completed <= first_offset {
+        return Ok(None);
+    }
     drop(reservation);
     let mut remaining = completed;
     for slot in slots {
@@ -166,7 +189,8 @@ pub(crate) fn read_pages<E, Owner: Clone>(
     }
     Ok(Some(PageRead {
         pages,
-        length: completed,
+        first_offset,
+        length: completed.saturating_sub(first_offset).min(length),
         had_miss,
     }))
 }

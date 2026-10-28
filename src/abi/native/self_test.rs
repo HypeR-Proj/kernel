@@ -652,6 +652,15 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
             self.calls.set(self.calls.get().saturating_add(1));
             Err(VfsServiceError::FileSystem(crate::fs::vfs::VfsError::Busy))
         }
+        fn prefetch_file(
+            &self,
+            _: &InvocationReceiver,
+            _: u64,
+            _: u64,
+        ) -> Result<u64, VfsServiceError> {
+            self.calls.set(self.calls.get().saturating_add(1));
+            Ok(0)
+        }
         fn file_info(&self, _: &InvocationReceiver) -> Result<FileInfo, VfsServiceError> {
             self.calls.set(self.calls.get().saturating_add(1));
             Err(VfsServiceError::Process(ProcessError::Allocation))
@@ -2256,6 +2265,25 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
         || services.calls.get() != before_private_calls
     {
         return Err(SelfTestError::InvalidRecordSize);
+    }
+    for arguments in [
+        [
+            0,
+            hyper::abi::native::HYPER_NATIVE_FILE_MAX_PREFETCH_BYTES + 1,
+            0,
+            0,
+            0,
+            0,
+        ],
+        [u64::MAX, 1, 0, 0, 0, 0],
+        [0, 4096, 1, 0, 0, 0],
+    ] {
+        if harness.dispatch(&services, invoke(NativeOperation::FilePrefetch, arguments))
+            != NativeAction::Return(failure(HYPER_NATIVE_STATUS_INVALID_ARGUMENT))
+            || services.calls.get() != before_private_calls
+        {
+            return Err(SelfTestError::InvalidRecordSize);
+        }
     }
     // Valid mapping record coordinates must reach user-copy validation. A stale
     // receiver-prefixed adapter would instead reject address/size before the copy.
