@@ -39,7 +39,7 @@ pub(super) fn mount_ramfs(
 pub(super) fn switch_root(
     process: &Process,
     root: &InvocationReceiver,
-    request: UserSlice,
+    request: &[u8; 48],
 ) -> Result<(), VfsServiceError> {
     with_root_request(
         process,
@@ -56,7 +56,7 @@ pub(super) fn switch_root(
 pub(super) fn begin_root_switch(
     process: &Process,
     root: &InvocationReceiver,
-    request: UserSlice,
+    request: &[u8; 48],
 ) -> Result<HandleValue, VfsServiceError> {
     with_root_request(
         process,
@@ -116,15 +116,13 @@ pub(super) fn finish_root_switch(
 fn with_root_request<T>(
     process: &Process,
     root: &InvocationReceiver,
-    request: UserSlice,
+    request: &[u8; 48],
     operation: impl FnOnce(&DirectoryObject, &str, &str, &[(&str, &str)]) -> Result<T, VfsServiceError>,
 ) -> Result<T, VfsServiceError> {
     let directory = root
         .resolve::<DirectoryObject>(NAMESPACE_RIGHTS)
         .map_err(crate::process::ProcessError::from)?;
-    let mut header = [0u8; 48];
-    process.copy_from_user(request, &mut header)?;
-    let words = decode_words::<6>(&header)?;
+    let words = decode_words::<6>(request)?;
     let count = usize::try_from(words[5]).map_err(|_| VfsServiceError::InvalidInput)?;
     if count > MAX_MOVES || (count == 0 && words[4] != 0) {
         return Err(VfsServiceError::InvalidInput);

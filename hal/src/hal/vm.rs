@@ -427,6 +427,11 @@ pub enum VcpuTerminalReason {
 #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
 pub enum VcpuSynchronousTerminal {
     Undecodable,
+    #[cfg(CONFIG_ARCH_RISCV64)]
+    SupervisorCall {
+        extension: u64,
+        function: u64,
+    },
     #[cfg(CONFIG_ARCH_AARCH64)]
     Failed {
         exit: GuestSyncExit,
@@ -640,6 +645,14 @@ impl VcpuRunExit {
                                 crate::arch::vm::GuestSynchronousTerminal::Unsupported(exit) => {
                                     VcpuSynchronousTerminal::Unsupported(exit)
                                 }
+                                #[cfg(CONFIG_ARCH_RISCV64)]
+                                crate::arch::vm::GuestSynchronousTerminal::SupervisorCall {
+                                    extension,
+                                    function,
+                                } => VcpuSynchronousTerminal::SupervisorCall {
+                                    extension,
+                                    function,
+                                },
                             };
                             VcpuTerminalCause::Synchronous(synchronous)
                         }

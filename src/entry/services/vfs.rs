@@ -24,7 +24,7 @@ impl VfsServices for ProcessServices<'_> {
     fn switch_root(
         &self,
         directory: &InvocationReceiver,
-        request: UserSlice,
+        request: &[u8; 48],
     ) -> Result<(), VfsServiceError> {
         super::vfs_namespace::switch_root(self.process, directory, request)
     }
@@ -32,7 +32,7 @@ impl VfsServices for ProcessServices<'_> {
     fn begin_root_switch(
         &self,
         directory: &InvocationReceiver,
-        request: UserSlice,
+        request: &[u8; 48],
     ) -> Result<HandleValue, VfsServiceError> {
         super::vfs_namespace::begin_root_switch(self.process, directory, request)
     }
@@ -196,16 +196,6 @@ impl VfsServices for ProcessServices<'_> {
         )
     }
 
-    fn create_file(
-        &self,
-        directory: &InvocationReceiver,
-        path: UserSlice,
-        rights: Rights,
-        mode: u32,
-    ) -> Result<HandleValue, VfsServiceError> {
-        crate::fs::vfs::create_file(self.process, directory, path, rights, mode)
-    }
-
     fn create_directory(
         &self,
         directory: &InvocationReceiver,
@@ -235,15 +225,6 @@ impl VfsServices for ProcessServices<'_> {
         input: Option<UserSlice>,
     ) -> Result<(u64, u64), VfsServiceError> {
         crate::fs::vfs::write_file_at(self.process, file, offset, input)
-    }
-
-    fn open_file(
-        &self,
-        root: &InvocationReceiver,
-        path: UserSlice,
-        rights: Rights,
-    ) -> Result<HandleValue, VfsServiceError> {
-        crate::fs::vfs::open_file(self.process, root, path, rights)
     }
 
     fn open_directory(

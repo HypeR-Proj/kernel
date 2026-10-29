@@ -843,13 +843,13 @@ pub(crate) trait VfsServices: UserMemoryServices {
     fn switch_root(
         &self,
         directory: &InvocationReceiver,
-        request: UserSlice,
+        request: &[u8; 48],
     ) -> Result<(), VfsServiceError>;
 
     fn begin_root_switch(
         &self,
         directory: &InvocationReceiver,
-        request: UserSlice,
+        request: &[u8; 48],
     ) -> Result<HandleValue, VfsServiceError>;
     fn finish_root_switch(
         &self,
@@ -948,13 +948,6 @@ pub(crate) trait VfsServices: UserMemoryServices {
         mode: u32,
     ) -> Result<HandleValue, VfsServiceError>;
 
-    fn create_file(
-        &self,
-        directory: &InvocationReceiver,
-        path: UserSlice,
-        rights: Rights,
-        mode: u32,
-    ) -> Result<HandleValue, VfsServiceError>;
     fn create_directory(
         &self,
         directory: &InvocationReceiver,
@@ -975,12 +968,6 @@ pub(crate) trait VfsServices: UserMemoryServices {
         input: Option<UserSlice>,
     ) -> Result<(u64, u64), VfsServiceError>;
 
-    fn open_file(
-        &self,
-        root: &InvocationReceiver,
-        path: UserSlice,
-        rights: Rights,
-    ) -> Result<HandleValue, VfsServiceError>;
     fn open_directory(
         &self,
         root: &InvocationReceiver,

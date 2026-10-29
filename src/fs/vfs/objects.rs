@@ -190,9 +190,9 @@ pub(crate) struct FileOpenOptions {
 impl FileOpenOptions {
     pub(crate) fn new(rights: Rights, bits: u64, mode: u32) -> Result<Self, Error> {
         if bits & !7 != 0
-            || bits & 3 == 3
+            || bits & 3 == 2
             || mode & !0o777 != 0
-            || (bits != 0 && !rights.contains(Rights::WRITE))
+            || (bits & 4 != 0 && !rights.contains(Rights::WRITE))
         {
             return Err(Error::InvalidInput);
         }

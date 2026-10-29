@@ -259,6 +259,9 @@ Every Native trap invokes a process-local capability. The register previously
 used for a syscall number carries the receiver handle; a separate register
 carries an operation local to that receiver's object kind. The six argument
 registers contain business arguments only, without repeating the receiver.
+Every operation leaves at least one register reserved and zero. Sized request
+records and output strides are specified in the
+[Native ABI reference](../../../sdk/abi/docs/native.md).
 
 | Architecture | Receiver handle | Operation | Arguments | Result |
 | --- | --- | --- | --- | --- |
@@ -1159,14 +1162,15 @@ contracts and validation are reviewed:
 - the exact x86-64 secondary result registers;
 - whether the initial surface includes a dedicated SharedQueue or BackendSession
   for large asynchronous workloads;
-- the complete priority-inheritance atomic-wait contract; and
-- the compatibility policy to adopt when ABI versioning eventually begins.
+- the complete priority-inheritance atomic-wait contract.
 
 These questions remain outside the current ABI design until resolved.
 
 ### Native thread creation affinity
 
-`thread_create(entry, stack, tls, argument, affinity_words, word_count)` creates
+`thread_create(request, request_size)` copies a size-delimited
+`thread_create_request` containing entry, stack, TLS, argument and affinity
+pointer/count, plus reserved-zero flags and a reserved word. It creates
 an inert Thread; `thread_start` publishes runnable execution. Passing zero for
 both affinity arguments inherits the calling Thread's current allowed CPU set,
 including changes made after that caller was created. An explicit affinity is

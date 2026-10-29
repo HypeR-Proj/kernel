@@ -8,8 +8,7 @@ use crate::capability::InvocationReceiver;
 use hyper::abi::native::{
     HYPER_NATIVE_CPU_OBSERVATION_MIN_SIZE, HYPER_NATIVE_MEMORY_OBSERVATION_MIN_SIZE,
     HYPER_NATIVE_OBJECT_DETAILS_MIN_SIZE, HyperNativeCpuObservation, HyperNativeMemoryObservation,
-    HyperNativeObjectDetails, HyperNativeObjectInspection, HyperNativeTaskProcess,
-    HyperNativeTaskThread,
+    HyperNativeObjectDetails,
 };
 use {
     crate::abi::native::services::InspectServices, crate::abi::native::services::NativeAction,
@@ -62,7 +61,7 @@ pub(in crate::abi::native) fn sys_task_inspector_scan_processes(
     let result = parse_inspector_scan(
         arguments,
         crate::diagnostics::inspect::PROCESS_PAGE_CAPACITY,
-        core::mem::size_of::<HyperNativeTaskProcess>(),
+        hyper::abi::native::HYPER_NATIVE_TASK_PROCESS_MIN_SIZE,
     )
     .and_then(|(cursor, destination)| {
         let mut page = Page::empty();
@@ -83,7 +82,7 @@ pub(in crate::abi::native) fn sys_task_inspector_scan_threads(
     let result = parse_inspector_scan(
         arguments,
         crate::diagnostics::inspect::THREAD_PAGE_CAPACITY,
-        core::mem::size_of::<HyperNativeTaskThread>(),
+        hyper::abi::native::HYPER_NATIVE_TASK_THREAD_MIN_SIZE,
     )
     .and_then(|(cursor, destination)| {
         let mut page = Page::empty();
@@ -104,7 +103,7 @@ pub(in crate::abi::native) fn sys_object_inspector_scan_objects(
     let result = parse_inspector_scan(
         arguments,
         OBJECT_PAGE_CAPACITY,
-        core::mem::size_of::<HyperNativeObjectInspection>(),
+        hyper::abi::native::HYPER_NATIVE_OBJECT_INSPECTION_MIN_SIZE,
     )
     .and_then(|(cursor, destination)| {
         let mut page = Page::empty();

@@ -514,6 +514,10 @@ mod tests {
         assert_eq!(requested.thread_absence_is_terminal(), Ok(true));
 
         let guest = started();
+        // An interrupt producer may pass admission before terminal publication
+        // and observe a missing scheduler Thread only after the reaper runs.
+        assert_eq!(guest.ensure_live(), Ok(()));
+        assert_eq!(guest.thread_absence_is_terminal(), Ok(false));
         assert_eq!(
             guest.close_guest(TerminalReason::Synchronous),
             Ok(GuestCloseOutcome::Published)

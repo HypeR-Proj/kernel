@@ -150,7 +150,7 @@ pub(crate) fn run() -> Result<(), TestError> {
         matches!(
             root.open_file_with_options(
                 "dangling",
-                &FileOpenOptions::new(Rights::WRITE, 2, 0o666)?,
+                &FileOpenOptions::new(Rights::WRITE, 3, 0o666)?,
                 &domain,
                 Ok::<FileObject, Error>
             ),
@@ -158,6 +158,25 @@ pub(crate) fn run() -> Result<(), TestError> {
         ),
         "exclusive create does not follow final symlink",
     )?;
+    let read_only_created = root.open_file_with_options(
+        "read-only-created",
+        &FileOpenOptions::new(Rights::READ, 3, 0o600)?,
+        &domain,
+        Ok::<FileObject, Error>,
+    )?;
+    check(
+        read_only_created.metadata()?.attributes.mode() == 0o600,
+        "create with read-only result",
+    )?;
+    for bits in [2, 8, 4] {
+        check(
+            matches!(
+                FileOpenOptions::new(Rights::READ, bits, 0o600),
+                Err(Error::InvalidInput)
+            ),
+            "exclusive needs create; unknown options and read-only truncate fail",
+        )?;
+    }
     check(
         root.remove_if("other", false, identity + 1, &scratch) == Err(Error::Busy),
         "conditional removal identity",

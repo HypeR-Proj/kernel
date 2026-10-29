@@ -539,7 +539,7 @@ impl RemoteFs {
         let path = state.path(node)?;
         let entry = state.stat(&path)?;
         if entry.directory() {
-            return Err(Error::NotRegularFile.into());
+            return Err(Error::IsDirectory.into());
         }
         let read_only = entry.read_only();
         let attributes = attributes(entry);

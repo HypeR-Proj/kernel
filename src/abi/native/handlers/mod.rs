@@ -72,7 +72,7 @@ pub(super) use ipc::{
 pub(super) use memory::{
     sys_vmar_allocate, sys_vmar_destroy, sys_vmar_lock_memory, sys_vmar_map, sys_vmar_map_file,
     sys_vmar_map_private, sys_vmar_protect, sys_vmar_unlock_memory, sys_vmar_unmap, sys_vmo_create,
-    sys_vmo_create_contiguous, sys_vmo_create_snapshot, sys_vmo_read, sys_vmo_write,
+    sys_vmo_create_snapshot, sys_vmo_read, sys_vmo_write,
 };
 pub(super) use object::{
     sys_event_create, sys_event_signal, sys_object_wait_many, sys_object_wait_one,
@@ -96,11 +96,9 @@ pub(super) use task::{
 };
 pub(super) use vfs::{
     sys_directory_begin_read, sys_directory_canonicalize, sys_directory_create_directory,
-    sys_directory_create_file, sys_directory_get_info, sys_directory_get_metadata,
-    sys_directory_get_self_metadata, sys_directory_link, sys_directory_open_directory,
-    sys_directory_open_directory_nofollow, sys_directory_open_file,
-    sys_directory_open_file_with_options, sys_directory_read, sys_directory_read_link,
-    sys_directory_remove, sys_directory_remove_if, sys_directory_rename,
+    sys_directory_get_info, sys_directory_get_metadata, sys_directory_get_self_metadata,
+    sys_directory_link, sys_directory_open_directory, sys_directory_open_file, sys_directory_read,
+    sys_directory_read_link, sys_directory_remove, sys_directory_remove_if, sys_directory_rename,
     sys_directory_scope_create, sys_directory_set_metadata, sys_directory_symlink,
     sys_file_get_info, sys_file_get_metadata, sys_file_lock, sys_file_prefetch, sys_file_protect,
     sys_file_read_at, sys_file_resize, sys_file_set_metadata, sys_file_sync, sys_file_unlock,

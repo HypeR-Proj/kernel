@@ -42,26 +42,6 @@ impl From<ProcessError> for ServiceError {
     }
 }
 
-pub(crate) fn open_file(
-    process: &Process,
-    directory: &InvocationReceiver,
-    path: UserSlice,
-    rights: Rights,
-) -> Result<HandleValue, ServiceError> {
-    let path = copy_path(process, path)?;
-
-    let required = super::rights_contract::directory_rights_for_file(rights.bits())
-        .and_then(Rights::from_bits)
-        .ok_or(ServiceError::InvalidInput)?;
-    let directory = directory
-        .resolve::<DirectoryObject>(required)
-        .map_err(crate::process::ProcessError::from)?;
-    let file = directory
-        .object()
-        .open_file(&path, &process.resource_domain())?;
-    Ok(process.create_object(file, rights)?)
-}
-
 pub(crate) fn open_directory(
     process: &Process,
     directory: &InvocationReceiver,
@@ -265,31 +245,6 @@ impl From<super::instance::Error> for ServiceError {
     fn from(error: super::instance::Error) -> Self {
         Self::FileSystem(error.into())
     }
-}
-
-pub(crate) fn create_file(
-    process: &Process,
-    directory: &InvocationReceiver,
-    path: UserSlice,
-    rights: Rights,
-    mode: u32,
-) -> Result<HandleValue, ServiceError> {
-    let path = copy_path(process, path)?;
-    if mode & !0o777 != 0 {
-        return Err(ServiceError::InvalidInput);
-    }
-    let required = super::rights_contract::directory_rights_for_file(rights.bits())
-        .and_then(Rights::from_bits)
-        .ok_or(ServiceError::InvalidInput)?
-        .union(Rights::WRITE);
-    let directory = directory
-        .resolve::<DirectoryObject>(required)
-        .map_err(crate::process::ProcessError::from)?;
-    prepare_file_handle(process, rights, |prepare| {
-        directory
-            .object()
-            .create_file(&path, mode, &process.resource_domain(), prepare)
-    })
 }
 
 pub(crate) fn create_directory(
@@ -633,9 +588,9 @@ pub(crate) fn directory_open_file_with_options(
     mode: u32,
 ) -> Result<HandleValue, ServiceError> {
     if options & !7 != 0
-        || options & 3 == 3
+        || options & 3 == 2
         || mode & !0o777 != 0
-        || (options != 0 && !rights.contains(Rights::WRITE))
+        || (options & 4 != 0 && !rights.contains(Rights::WRITE))
     {
         return Err(ServiceError::InvalidInput);
     }

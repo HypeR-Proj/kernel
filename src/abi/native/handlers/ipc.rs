@@ -160,13 +160,23 @@ pub(in crate::abi::native) fn capability_receive_result(
     }
 }
 
-/// No pointers, allocations or ambient context; annotations never carry authority.
+/// Copies a bounded annotation record; annotations never carry authority.
 pub(in crate::abi::native) fn sys_byte_channel_trace_rpc(
-    services: &impl IpcServices,
+    services: &(impl IpcServices + crate::abi::native::services::UserMemoryServices),
     receiver: &InvocationReceiver,
     arguments: &Arguments,
 ) -> NativeAction {
-    NativeAction::Return(match services.trace_byte_channel_rpc(receiver, arguments) {
+    use crate::abi::native::wire::{copy_extensible_input_record, read_record_u64, require_zero};
+    let result = (|| {
+        require_zero(&arguments[2..])?;
+        let request = copy_extensible_input_record::<64>(services, arguments[0], arguments[1], 64)?;
+        if read_record_u64(&request, 48) != 0 || read_record_u64(&request, 56) != 0 {
+            return Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT);
+        }
+        let values = core::array::from_fn(|i| read_record_u64(&request, i * 8));
+        services.trace_byte_channel_rpc(receiver, &values)
+    })();
+    NativeAction::Return(match result {
         Ok(values) => success(values),
         Err(status) => failure(status),
     })

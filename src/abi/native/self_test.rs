@@ -47,7 +47,7 @@ use {
 };
 use {
     crate::mm::user_space::MemoryServiceError, crate::mm::user_space::Permissions,
-    crate::mm::user_space::UserSlice,
+    crate::mm::user_space::UserAddress, crate::mm::user_space::UserSlice,
 };
 use {
     crate::object::Event, crate::object::ObjectWaitError, crate::object::PublishableRef,
@@ -149,6 +149,30 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
             Ok(())
         }
 
+        fn copy_from_user(&self, _: UserSlice, _: &mut [u8]) -> Result<(), ProcessError> {
+            Err(ProcessError::Allocation)
+        }
+    }
+
+    struct StridedOutput {
+        bytes: Cell<[u8; 64]>,
+    }
+    impl UserMemoryServices for StridedOutput {
+        fn copy_to_user(&self, destination: UserSlice, source: &[u8]) -> Result<(), ProcessError> {
+            let start = destination
+                .base()
+                .get()
+                .checked_sub(0x4000)
+                .ok_or(ProcessError::Allocation)? as usize;
+            let end = start
+                .checked_add(source.len())
+                .ok_or(ProcessError::Allocation)?;
+            let mut bytes = self.bytes.get();
+            let target = bytes.get_mut(start..end).ok_or(ProcessError::Allocation)?;
+            target.copy_from_slice(source);
+            self.bytes.set(bytes);
+            Ok(())
+        }
         fn copy_from_user(&self, _: UserSlice, _: &mut [u8]) -> Result<(), ProcessError> {
             Err(ProcessError::Allocation)
         }
@@ -400,7 +424,7 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
         fn switch_root(
             &self,
             _directory: &InvocationReceiver,
-            _request: UserSlice,
+            _request: &[u8; 48],
         ) -> Result<(), VfsServiceError> {
             self.calls.set(self.calls.get().saturating_add(1));
             Err(VfsServiceError::InvalidInput)
@@ -409,7 +433,7 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
         fn begin_root_switch(
             &self,
             _: &InvocationReceiver,
-            _: UserSlice,
+            _: &[u8; 48],
         ) -> Result<HandleValue, VfsServiceError> {
             self.calls.set(self.calls.get().saturating_add(1));
             Err(VfsServiceError::InvalidInput)
@@ -552,16 +576,6 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
             Err(VfsServiceError::InvalidInput)
         }
 
-        fn create_file(
-            &self,
-            _directory: &InvocationReceiver,
-            _path: UserSlice,
-            _rights: Rights,
-            _mode: u32,
-        ) -> Result<HandleValue, VfsServiceError> {
-            Err(VfsServiceError::InvalidInput)
-        }
-
         fn create_directory(
             &self,
             _directory: &InvocationReceiver,
@@ -595,16 +609,6 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
             _input: Option<UserSlice>,
         ) -> Result<(u64, u64), VfsServiceError> {
             Err(VfsServiceError::InvalidInput)
-        }
-
-        fn open_file(
-            &self,
-            _: &InvocationReceiver,
-            _: UserSlice,
-            _: Rights,
-        ) -> Result<HandleValue, VfsServiceError> {
-            self.calls.set(self.calls.get().saturating_add(1));
-            Err(VfsServiceError::Process(ProcessError::Allocation))
         }
 
         fn open_directory(
@@ -1853,35 +1857,55 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
             return Err(SelfTestError::DispatchAction);
         }
     }
+    // The packed request retains affinity validation and rejects unknown fields.
     for (pointer, count, expected) in [
         (1, 0, HYPER_NATIVE_STATUS_INVALID_ARGUMENT),
         (0, 1, HYPER_NATIVE_STATUS_INVALID_ARGUMENT),
         (0x2000, 5, HYPER_NATIVE_STATUS_INVALID_ARGUMENT),
         (u64::MAX, 1, HYPER_NATIVE_STATUS_FAULT),
     ] {
-        if harness.dispatch(
+        let mut request = [0u8; 64];
+        request[32..40].copy_from_slice(&pointer.to_le_bytes());
+        request[40..48].copy_from_slice(&u64::to_le_bytes(count));
+        if super::wire::decode_thread_create(&request).err() != Some(expected) {
+            return Err(SelfTestError::DispatchAction);
+        }
+    }
+    for (pointer, count) in [(0u64, 0u64), (0x3000, 1), (0x3000, 4)] {
+        let mut request = [0u8; 64];
+        request[..8].copy_from_slice(&0x1000u64.to_le_bytes());
+        request[32..40].copy_from_slice(&pointer.to_le_bytes());
+        request[40..48].copy_from_slice(&count.to_le_bytes());
+        let parsed = super::wire::decode_thread_create(&request)
+            .map_err(|_| SelfTestError::DispatchAction)?;
+        if parsed.registers[0] != 0x1000
+            || parsed.word_count != count as usize
+            || parsed.affinity.is_some() != (count != 0)
+        {
+            return Err(SelfTestError::DispatchAction);
+        }
+        for at in [48, 56] {
+            request[at] = 1;
+            if super::wire::decode_thread_create(&request).err()
+                != Some(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)
+            {
+                return Err(SelfTestError::DispatchAction);
+            }
+            request[at] = 0;
+        }
+    }
+    for arguments in [
+        [0x2000, 63, 0, 0, 0, 0],
+        [0x2000, 64, 1, 0, 0, 0],
+        [0x2000, 4097, 0, 0, 0, 0],
+    ] {
+        if harness.returning(
             &thread_services,
-            invoke(
-                NativeOperation::ThreadCreate,
-                [0x1000, 0x2000, 0, 7, pointer, count],
-            ),
-        ) != NativeAction::Return(failure(expected))
+            invoke(NativeOperation::ThreadCreate, arguments),
+        )? != failure(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)
             || thread_services.calls.get() != 0
         {
             return Err(SelfTestError::ValidationReachedService);
-        }
-    }
-    for (expected_calls, pointer, count) in [(1, 0, 0), (2, 0x3000, 1), (3, 0x3000, 4)] {
-        if harness.dispatch(
-            &thread_services,
-            invoke(
-                NativeOperation::ThreadCreate,
-                [0x1000, 0x2000, 0, 7, pointer, count],
-            ),
-        ) != NativeAction::Return(failure(HYPER_NATIVE_STATUS_INVALID_ARGUMENT))
-            || thread_services.calls.get() != expected_calls
-        {
-            return Err(SelfTestError::DispatchAction);
         }
     }
     let affinity_services = RejectingServices {
@@ -2120,9 +2144,12 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
     for (operation, arguments) in [
         (
             NativeOperation::DeviceFirmwareRead,
-            [0x2000, 0, 65537, 0, 0, 0],
+            [0x2000, 24, 0, 65537, 0, 0],
         ),
-        (NativeOperation::DeviceFirmwareRead, [0x2000, 0, 0, 1, 0, 0]),
+        (
+            NativeOperation::DeviceFirmwareRead,
+            [0x2000, 24, 0, 0, 1, 0],
+        ),
         (NativeOperation::DeviceClaimBundle, [0x2000, 0, 0, 0, 0, 0]),
         (NativeOperation::DeviceClaimBundle, [0x2000, 9, 0, 0, 0, 0]),
         (NativeOperation::DeviceMmio, [0, 8, 0, 0, 0, 0]),
@@ -2329,6 +2356,45 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
             != Some(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)
     {
         return Err(SelfTestError::InvalidRecordSize);
+    }
+    // A larger output stride clears future fields; a smaller supported prefix
+    // does not overwrite the next record or the caller's trailing storage.
+    let output = StridedOutput {
+        bytes: Cell::new([0xa5; 64]),
+    };
+    let destination = UserSlice::new(UserAddress::new(0x4000), 48)
+        .map_err(|_| SelfTestError::InvalidRecordSize)?;
+    for index in 0..2 {
+        super::wire::copy_strided_record(&output, destination, index, 24, &[7; 16])
+            .map_err(|_| SelfTestError::InvalidRecordSize)?;
+    }
+    let bytes = output.bytes.get();
+    if bytes[..16] != [7; 16]
+        || bytes[16..24] != [0; 8]
+        || bytes[24..40] != [7; 16]
+        || bytes[40..48] != [0; 8]
+        || bytes[48..] != [0xa5; 16]
+    {
+        return Err(SelfTestError::InvalidRecordSize);
+    }
+    output.bytes.set([0xa5; 64]);
+    let prefix_destination = UserSlice::new(UserAddress::new(0x4000), 8)
+        .map_err(|_| SelfTestError::InvalidRecordSize)?;
+    super::wire::copy_strided_record(&output, prefix_destination, 0, 8, &[7; 16])
+        .map_err(|_| SelfTestError::InvalidRecordSize)?;
+    let bytes = output.bytes.get();
+    if bytes[..8] != [7; 8]
+        || bytes[8..] != [0xa5; 56]
+        || super::wire::validate_record_stride(8, 8) != Ok(8)
+    {
+        return Err(SelfTestError::InvalidRecordSize);
+    }
+    for stride in [0, 8, 20, HYPER_NATIVE_EXTENSIBLE_RECORD_MAX_BYTES + 8] {
+        if super::wire::validate_record_stride(stride, 16).err()
+            != Some(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)
+        {
+            return Err(SelfTestError::InvalidRecordSize);
+        }
     }
     let compatible_info = prepare_info_request(
         &[0x2000, HANDLE_INFO_SIZE as u64 + 8, 0, 0, 0, 0],

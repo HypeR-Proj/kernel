@@ -209,9 +209,7 @@ impl VmBinding {
             }
         }
         endpoint.signal_waiter();
-        let Some(cpu) = crate::task::scheduler::running_vcpu_cpu(expected_thread)
-            .map_err(|_| Error::Scheduler)?
-        else {
+        let Some(cpu) = reconcile_target(endpoint, expected_thread)? else {
             return Ok(());
         };
         // A local sender may have drained a remote producer's controller bit
@@ -224,8 +222,7 @@ impl VmBinding {
         // after the first immutable scheduler observation. Retry one changed
         // exact target; a still-Running unpromptable Thread cannot safely be
         // allowed to continue with an unreflected interrupt model.
-        let target = crate::task::scheduler::running_vcpu_cpu(expected_thread)
-            .map_err(|_| Error::Scheduler)?;
+        let target = reconcile_target(endpoint, expected_thread)?;
         match target {
             None => {}
             Some(target) if target != cpu && crate::hal::vm::request_guest_exit(target) => {}
@@ -380,6 +377,26 @@ impl VmBinding {
                 },
             }),
         }
+    }
+}
+
+/// A published interrupt update may race complete vCPU retirement before
+/// either scheduler observation. Only terminal endpoint progress proves that
+/// a missing generation-qualified Thread no longer needs a hardware prompt.
+pub(super) fn reconcile_target(
+    endpoint: &crate::vm::endpoint::VcpuEndpoint,
+    thread: ThreadId,
+) -> Result<Option<CpuIndex>, Error> {
+    match crate::task::scheduler::running_vcpu_cpu(thread) {
+        Ok(target) => Ok(target),
+        Err(crate::task::scheduler::Error::ThreadNotFound)
+            if endpoint
+                .thread_absence_is_terminal()
+                .map_err(|_| Error::StaleIdentity)? =>
+        {
+            Ok(None)
+        }
+        Err(_) => Err(Error::Scheduler),
     }
 }
 

@@ -206,27 +206,29 @@ pub(in crate::abi::native) fn sys_filesystem_mount(
     receiver: &InvocationReceiver,
     arguments: &Arguments,
 ) -> NativeAction {
+    use crate::abi::native::wire::{copy_extensible_input_record, read_record_u64};
     let result = (|| {
-        if arguments[4] > 1 {
+        require_zero(&arguments[5..])?;
+        let request = copy_extensible_input_record::<32>(services, arguments[3], arguments[4], 32)?;
+        let flags = read_record_u64(&request, 16);
+        let length = read_record_u64(&request, 8);
+        if flags & !1 != 0 || read_record_u64(&request, 24) != 0 || length == 0 || length > 4096 {
             return Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT);
         }
-        if arguments[3] == 0 || arguments[3] > 4096 {
-            return Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT);
-        }
-        let path = UserSlice::new(UserAddress::new(arguments[2]), arguments[3])
+        let path = UserSlice::new(UserAddress::new(read_record_u64(&request, 0)), length)
             .map_err(|_| HYPER_NATIVE_STATUS_INVALID_ARGUMENT)?;
         services
             .mount_filesystem(
                 parse_handle(arguments[0])?,
                 parse_handle(arguments[1])?,
-                if arguments[5] == 0 {
+                if arguments[2] == 0 {
                     None
                 } else {
-                    Some(parse_handle(arguments[5])?)
+                    Some(parse_handle(arguments[2])?)
                 },
                 receiver,
                 path,
-                arguments[4] != 0,
+                flags & 1 != 0,
             )
             .map_err(crate::abi::native::status::status_from_vfs_service_error)
     })();

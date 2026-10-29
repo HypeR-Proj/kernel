@@ -9,8 +9,6 @@ pub(super) use object_details::encode_object_details;
 
 use crate::capability::handle_wire;
 
-use alloc::vec::Vec;
-
 use hyper::abi::native::{
     HYPER_NATIVE_BYTE_CHANNEL_MAX_MESSAGE_BYTES, HYPER_NATIVE_CAPABILITY_CHANNEL_MAX_HANDLES,
     HYPER_NATIVE_CAPABILITY_CHANNEL_MAX_MESSAGE_BYTES,
@@ -41,10 +39,10 @@ use hyper::abi::native::{
     HYPER_NATIVE_PROCESS_TERMINAL_REQUESTED, HYPER_NATIVE_PROCESS_TERMINAL_TASK_GROUP_STOP,
     HYPER_NATIVE_PROCESS_TERMINAL_THREAD_EXITED, HYPER_NATIVE_RESOURCE_LIMITS_MIN_SIZE,
     HYPER_NATIVE_STATUS_INTERNAL, HYPER_NATIVE_STATUS_INVALID_ARGUMENT,
-    HYPER_NATIVE_STATUS_NO_MEMORY, HYPER_NATIVE_THREAD_REGISTRY_RESIDENT,
-    HYPER_NATIVE_THREAD_REGISTRY_RETIRING, HYPER_NATIVE_THREAD_ROLE_BOOTSTRAP,
-    HYPER_NATIVE_THREAD_ROLE_IDLE, HYPER_NATIVE_THREAD_ROLE_KERNEL, HYPER_NATIVE_THREAD_ROLE_USER,
-    HYPER_NATIVE_THREAD_ROLE_VCPU, HYPER_NATIVE_VIRTUAL_CPU_BOOTSTRAP_MIN_SIZE,
+    HYPER_NATIVE_THREAD_REGISTRY_RESIDENT, HYPER_NATIVE_THREAD_REGISTRY_RETIRING,
+    HYPER_NATIVE_THREAD_ROLE_BOOTSTRAP, HYPER_NATIVE_THREAD_ROLE_IDLE,
+    HYPER_NATIVE_THREAD_ROLE_KERNEL, HYPER_NATIVE_THREAD_ROLE_USER, HYPER_NATIVE_THREAD_ROLE_VCPU,
+    HYPER_NATIVE_VIRTUAL_CPU_BOOTSTRAP_MIN_SIZE,
     HYPER_NATIVE_VIRTUAL_MACHINE_CONFIGURATION_MIN_SIZE,
     HYPER_NATIVE_VIRTUAL_SERIAL_MAX_TRANSFER_BYTES, HyperNativeCapabilityDisposition,
     HyperNativeCapabilityReceiveSlot, HyperNativeCpuObservation, HyperNativeDirectoryEntry,
@@ -369,6 +367,33 @@ pub(super) fn parse_affinity_words(
     Ok((optional_user_slice(pointer, bytes)?, word_count))
 }
 
+/// Validated creation parameters; borrowed affinity is bounded separately.
+pub(super) struct ThreadCreateRequest {
+    pub(super) registers: [u64; 4],
+    pub(super) affinity: Option<UserSlice>,
+    pub(super) word_count: usize,
+}
+
+pub(super) fn decode_thread_create(
+    request: &[u8; 64],
+) -> Result<ThreadCreateRequest, HyperNativeStatus> {
+    if read_record_u64(request, 48) != 0 || read_record_u64(request, 56) != 0 {
+        return Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT);
+    }
+    let pointer = read_record_u64(request, 32);
+    let count = read_record_u64(request, 40);
+    let (affinity, word_count) = if pointer == 0 && count == 0 {
+        (None, 0)
+    } else {
+        parse_affinity_words(pointer, count)?
+    };
+    Ok(ThreadCreateRequest {
+        registers: core::array::from_fn(|i| read_record_u64(request, i * 8)),
+        affinity,
+        word_count,
+    })
+}
+
 pub(super) fn parse_affinity_request(
     arguments: &Arguments,
 ) -> Result<(Option<UserSlice>, usize), HyperNativeStatus> {
@@ -615,8 +640,9 @@ pub(super) fn parse_inspector_scan(
     if requested != capacity {
         return Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT);
     }
+    let stride = validate_record_stride(arguments[3], record_size)?;
     let bytes = capacity
-        .checked_mul(record_size)
+        .checked_mul(stride)
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or(HYPER_NATIVE_STATUS_INTERNAL)?;
     let destination =
@@ -632,13 +658,71 @@ pub(super) fn parse_handle_inspector_scan(
     if requested != HANDLE_PAGE_CAPACITY || arguments[0] == 0 {
         return Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT);
     }
+    let stride = validate_record_stride(
+        arguments[4],
+        hyper::abi::native::HYPER_NATIVE_HANDLE_INSPECTION_MIN_SIZE,
+    )?;
     let bytes = HANDLE_PAGE_CAPACITY
-        .checked_mul(core::mem::size_of::<HyperNativeHandleInspection>())
+        .checked_mul(stride)
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or(HYPER_NATIVE_STATUS_INTERNAL)?;
     let destination =
         UserSlice::new(UserAddress::new(arguments[2]), bytes).map_err(status_from_address_error)?;
     Ok((arguments[0], arguments[1], destination))
+}
+
+pub(super) fn validate_record_stride(
+    stride: u64,
+    minimum: usize,
+) -> Result<usize, HyperNativeStatus> {
+    let stride = usize::try_from(stride).map_err(|_| HYPER_NATIVE_STATUS_INVALID_ARGUMENT)?;
+    if stride < minimum
+        || stride > HYPER_NATIVE_EXTENSIBLE_RECORD_MAX_BYTES as usize
+        || stride % 8 != 0
+    {
+        return Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT);
+    }
+    Ok(stride)
+}
+
+/// Write a supported prefix and clear the unknown tail without proportional scratch.
+pub(super) fn copy_strided_record(
+    services: &impl UserMemoryServices,
+    destination: UserSlice,
+    index: usize,
+    stride: usize,
+    record: &[u8],
+) -> Result<(), HyperNativeStatus> {
+    let at = index
+        .checked_mul(stride)
+        .ok_or(HYPER_NATIVE_STATUS_INTERNAL)?;
+    let end = at.checked_add(stride).ok_or(HYPER_NATIVE_STATUS_INTERNAL)?;
+    if end as u64 > destination.length() {
+        return Err(HYPER_NATIVE_STATUS_INTERNAL);
+    }
+    let base = destination
+        .base()
+        .checked_add(at as u64)
+        .ok_or(HYPER_NATIVE_STATUS_INTERNAL)?;
+    let prefix = record.len().min(stride);
+    let output = UserSlice::new(base, prefix as u64).map_err(status_from_address_error)?;
+    services
+        .copy_to_user(output, &record[..prefix])
+        .map_err(status_from_process_error)?;
+    let zero = [0u8; 64];
+    let mut done = prefix;
+    while done < stride {
+        let count = (stride - done).min(zero.len());
+        let address = base
+            .checked_add(done as u64)
+            .ok_or(HYPER_NATIVE_STATUS_INTERNAL)?;
+        let output = UserSlice::new(address, count as u64).map_err(status_from_address_error)?;
+        services
+            .copy_to_user(output, &zero[..count])
+            .map_err(status_from_process_error)?;
+        done += count;
+    }
+    Ok(())
 }
 
 pub(super) fn copy_encoded_page<T: Copy, const N: usize, const R: usize>(
@@ -647,57 +731,31 @@ pub(super) fn copy_encoded_page<T: Copy, const N: usize, const R: usize>(
     page: &Page<T, N>,
     encode: impl Fn(T) -> [u8; R],
 ) -> Result<(usize, u64), HyperNativeStatus> {
-    let byte_count = page
-        .len()
-        .checked_mul(R)
-        .ok_or(HYPER_NATIVE_STATUS_INTERNAL)?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(byte_count)
-        .map_err(|_| HYPER_NATIVE_STATUS_NO_MEMORY)?;
-    for entry in page.entries() {
-        bytes.extend_from_slice(&encode(*entry));
+    let stride = destination.length() as usize / N;
+    for (index, entry) in page.entries().enumerate() {
+        copy_strided_record(services, destination, index, stride, &encode(*entry))?;
     }
-    let output = UserSlice::new(
-        destination.base(),
-        u64::try_from(byte_count).map_err(|_| HYPER_NATIVE_STATUS_INTERNAL)?,
-    )
-    .map_err(status_from_address_error)?;
-    services
-        .copy_to_user(output, &bytes)
-        .map_err(status_from_process_error)?;
     Ok((page.len(), page.next()))
 }
 
-// Encoding/copyout follows backend completion. Keep its record scratch out of
-// the syscall frame while directory lookup may block deep in a filesystem.
+// Encoding/copyout follows backend completion, outside nested filesystem RPC.
 #[inline(never)]
 pub(super) fn copy_directory_page(
     services: &impl UserMemoryServices,
     destination: UserSlice,
     page: &DirectoryPage,
 ) -> Result<(usize, u64), HyperNativeStatus> {
-    const RECORD_SIZE: usize = core::mem::size_of::<HyperNativeDirectoryEntry>();
-
-    let byte_count = page
-        .len()
-        .checked_mul(RECORD_SIZE)
-        .ok_or(HYPER_NATIVE_STATUS_INTERNAL)?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(byte_count)
-        .map_err(|_| HYPER_NATIVE_STATUS_NO_MEMORY)?;
-    for entry in page.entries() {
-        bytes.extend_from_slice(&encode_directory_entry(*entry)?);
+    let stride = destination.length() as usize
+        / hyper::abi::native::HYPER_NATIVE_DIRECTORY_ENTRY_PAGE_CAPACITY as usize;
+    for (index, entry) in page.entries().enumerate() {
+        copy_strided_record(
+            services,
+            destination,
+            index,
+            stride,
+            &encode_directory_entry(*entry)?,
+        )?;
     }
-    let output = UserSlice::new(
-        destination.base(),
-        u64::try_from(byte_count).map_err(|_| HYPER_NATIVE_STATUS_INTERNAL)?,
-    )
-    .map_err(status_from_address_error)?;
-    services
-        .copy_to_user(output, &bytes)
-        .map_err(status_from_process_error)?;
     Ok((page.len(), page.next_cookie()))
 }
 

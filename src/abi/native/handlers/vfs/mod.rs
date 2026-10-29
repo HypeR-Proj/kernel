@@ -13,7 +13,7 @@ use hyper::abi::native::{
     HYPER_NATIVE_DIRECTORY_ENTRY_PAGE_CAPACITY, HYPER_NATIVE_DIRECTORY_INFO_MIN_SIZE,
     HYPER_NATIVE_DIRECTORY_MAX_PATH_BYTES, HYPER_NATIVE_FILE_INFO_MIN_SIZE,
     HYPER_NATIVE_FILE_MAX_READ_BYTES, HYPER_NATIVE_STATUS_INVALID_ARGUMENT,
-    HyperNativeDirectoryEntry, HyperNativeDirectoryInfo, HyperNativeFileInfo, HyperNativeStatus,
+    HyperNativeDirectoryInfo, HyperNativeFileInfo, HyperNativeStatus,
 };
 use {crate::abi::native::services::NativeAction, crate::abi::native::services::VfsServices};
 use {
@@ -42,35 +42,24 @@ type Status = abi::HyperNativeStatus;
 const INVALID: Status = abi::HYPER_NATIVE_STATUS_INVALID_ARGUMENT;
 
 #[inline(never)]
-pub(in crate::abi::native) fn sys_directory_open_file(
-    services: &impl VfsServices,
-    receiver: &InvocationReceiver,
-    arguments: &Arguments,
-) -> NativeAction {
-    let result = parse_directory_open(arguments).and_then(|(path, rights)| {
-        services
-            .open_file(receiver, path, rights)
-            .map_err(status_from_vfs_service_error)
-    });
-    NativeAction::Return(handle_result(result))
-}
-
-#[inline(never)]
 pub(in crate::abi::native) fn sys_directory_open_directory(
     services: &impl VfsServices,
     receiver: &InvocationReceiver,
     arguments: &Arguments,
 ) -> NativeAction {
     let result = parse_directory_open(arguments).and_then(|(path, rights)| {
-        services
-            .open_directory(receiver, path, rights)
-            .map_err(status_from_vfs_service_error)
+        let result = if arguments[3] & abi::HYPER_NATIVE_DIRECTORY_OPEN_NOFOLLOW != 0 {
+            services.directory_open_directory_nofollow(receiver, path, rights)
+        } else {
+            services.open_directory(receiver, path, rights)
+        };
+        result.map_err(status_from_vfs_service_error)
     });
     NativeAction::Return(handle_result(result))
 }
 
 fn parse_directory_open(arguments: &Arguments) -> Result<(UserSlice, Rights), HyperNativeStatus> {
-    if arguments[3] != 0
+    if arguments[3] & !abi::HYPER_NATIVE_DIRECTORY_OPEN_NOFOLLOW != 0
         || arguments[4] != 0
         || arguments[1] == 0
         || arguments[1] > HYPER_NATIVE_DIRECTORY_MAX_PATH_BYTES
@@ -116,14 +105,15 @@ pub(in crate::abi::native) fn sys_directory_read(
 }
 
 fn parse_directory_read(arguments: &Arguments) -> Result<(u64, UserSlice), HyperNativeStatus> {
-    if arguments[2] != HYPER_NATIVE_DIRECTORY_ENTRY_PAGE_CAPACITY
-        || arguments[3] != 0
-        || arguments[4] != 0
-    {
+    if arguments[2] != HYPER_NATIVE_DIRECTORY_ENTRY_PAGE_CAPACITY || arguments[3] != 0 {
         return Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT);
     }
+    let stride = crate::abi::native::wire::validate_record_stride(
+        arguments[4],
+        abi::HYPER_NATIVE_DIRECTORY_ENTRY_MIN_SIZE,
+    )?;
     let bytes = arguments[2]
-        .checked_mul(core::mem::size_of::<HyperNativeDirectoryEntry>() as u64)
+        .checked_mul(stride as u64)
         .ok_or(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)?;
     let destination =
         UserSlice::new(UserAddress::new(arguments[1]), bytes).map_err(status_from_address_error)?;
@@ -239,25 +229,6 @@ pub(in crate::abi::native) fn sys_file_resize(
         Ok(()) => success([0, 0]),
         Err(status) => failure(status),
     })
-}
-
-#[inline(never)]
-pub(in crate::abi::native) fn sys_directory_create_file(
-    services: &impl VfsServices,
-    receiver: &InvocationReceiver,
-    arguments: &Arguments,
-) -> NativeAction {
-    let result = (|| {
-        if arguments[4] != 0 || arguments[3] & !0o777 != 0 {
-            return Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT);
-        }
-        let path = parse_path(arguments[0], arguments[1])?;
-        let rights = Rights::from_bits(arguments[2]).ok_or(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)?;
-        services
-            .create_file(receiver, path, rights, arguments[3] as u32)
-            .map_err(status_from_vfs_service_error)
-    })();
-    NativeAction::Return(handle_result(result))
 }
 
 #[inline(never)]
@@ -377,25 +348,6 @@ pub(in crate::abi::native) fn sys_directory_remove_if(
 }
 
 #[inline(never)]
-pub(in crate::abi::native) fn sys_directory_open_directory_nofollow(
-    services: &impl VfsServices,
-    receiver: &InvocationReceiver,
-    arguments: &Arguments,
-) -> NativeAction {
-    let result = (|| {
-        require_zero(&arguments[3..])?;
-        services
-            .directory_open_directory_nofollow(
-                receiver,
-                parse_path(arguments[0], arguments[1])?,
-                parse_rights(arguments[2])?,
-            )
-            .map_err(status_from_vfs_service_error)
-    })();
-    NativeAction::Return(handle_result(result))
-}
-
-#[inline(never)]
 pub(in crate::abi::native) fn sys_file_sync(
     services: &impl VfsServices,
     receiver: &InvocationReceiver,
@@ -449,7 +401,7 @@ pub(in crate::abi::native) fn sys_file_unlock(
 }
 
 #[inline(never)]
-pub(in crate::abi::native) fn sys_directory_open_file_with_options(
+pub(in crate::abi::native) fn sys_directory_open_file(
     services: &impl VfsServices,
     receiver: &InvocationReceiver,
     arguments: &Arguments,

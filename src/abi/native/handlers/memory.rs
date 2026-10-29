@@ -27,12 +27,18 @@ pub(in crate::abi::native) fn sys_vmo_create(
     services: &impl MemoryServices,
     arguments: &Arguments,
 ) -> NativeAction {
-    let result = if arguments[1..].iter().any(|value| *value != 0) {
+    let result = if arguments[2..].iter().any(|value| *value != 0)
+        || arguments[1] & !hyper::abi::native::HYPER_NATIVE_VMO_CREATE_CONTIGUOUS != 0
+    {
         Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)
     } else {
-        services
-            .create_vmo(arguments[0])
-            .map_err(status_from_memory_service_error)
+        let created = if arguments[1] & hyper::abi::native::HYPER_NATIVE_VMO_CREATE_CONTIGUOUS != 0
+        {
+            services.create_contiguous_vmo(arguments[0])
+        } else {
+            services.create_vmo(arguments[0])
+        };
+        created.map_err(status_from_memory_service_error)
     };
     NativeAction::Return(handle_result(result))
 }
@@ -265,21 +271,6 @@ pub(in crate::abi::native) fn sys_vmar_map_file(
             .map_err(status_from_memory_service_error)
     })();
     NativeAction::Return(status_only(result))
-}
-
-#[inline(never)]
-pub(in crate::abi::native) fn sys_vmo_create_contiguous(
-    services: &impl MemoryServices,
-    arguments: &Arguments,
-) -> NativeAction {
-    let result = if arguments[1..].iter().any(|value| *value != 0) {
-        Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)
-    } else {
-        services
-            .create_contiguous_vmo(arguments[0])
-            .map_err(status_from_memory_service_error)
-    };
-    NativeAction::Return(handle_result(result))
 }
 
 #[inline(never)]

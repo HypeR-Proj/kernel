@@ -44,14 +44,15 @@ pub(in crate::abi::native) fn sys_filesystem_switch_root(
     arguments: &Arguments,
 ) -> NativeAction {
     let result = (|| {
-        require_zero(&arguments[1..])?;
-        let request = UserSlice::new(
-            UserAddress::new(arguments[0]),
-            abi::HYPER_NATIVE_FILESYSTEM_ROOT_SWITCH_MIN_SIZE as u64,
-        )
-        .map_err(status_from_address_error)?;
+        require_zero(&arguments[2..])?;
+        let request = crate::abi::native::wire::copy_extensible_input_record::<48>(
+            services,
+            arguments[0],
+            arguments[1],
+            48,
+        )?;
         services
-            .switch_root(receiver, request)
+            .switch_root(receiver, &request)
             .map_err(status_from_vfs_service_error)
     })();
     NativeAction::Return(status_only(result))
@@ -64,14 +65,15 @@ pub(in crate::abi::native) fn sys_filesystem_begin_root_switch(
     arguments: &Arguments,
 ) -> NativeAction {
     let result = (|| {
-        require_zero(&arguments[1..])?;
-        let request = UserSlice::new(
-            UserAddress::new(arguments[0]),
-            abi::HYPER_NATIVE_FILESYSTEM_ROOT_SWITCH_MIN_SIZE as u64,
-        )
-        .map_err(status_from_address_error)?;
+        require_zero(&arguments[2..])?;
+        let request = crate::abi::native::wire::copy_extensible_input_record::<48>(
+            services,
+            arguments[0],
+            arguments[1],
+            48,
+        )?;
         services
-            .begin_root_switch(receiver, request)
+            .begin_root_switch(receiver, &request)
             .map_err(status_from_vfs_service_error)
     })();
     NativeAction::Return(crate::abi::native::status::handle_result(result))

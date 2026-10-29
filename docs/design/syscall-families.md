@@ -33,6 +33,11 @@ reserved-zero validation, blocking and cancellation behavior. The kernel capture
 receiver authority once, then dispatches on its kind and operation. All calls run
 on the Thread's kernel stack with ordinary IRQ delivery, including blocking calls.
 
+File open, create and truncate share one option-bearing operation. Directory
+no-follow opening and contiguous VMO allocation likewise use options on their
+canonical open/create operations. Their arguments, flags and records are defined
+in the [Native ABI reference](../../../sdk/abi/docs/native.md).
+
 Directory open options remain a path-resolution policy; they do not define a new
 object kind. `directory_remove_if` additionally checks expected node identity and
 must preserve that lookup/remove race protection. File, directory and VM queries

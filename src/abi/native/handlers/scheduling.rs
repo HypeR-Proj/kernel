@@ -4,13 +4,15 @@
 //! Bounded scheduling records; permission checking occurs atomically with the
 //! target's old configuration in the scheduler or process-builder transaction.
 
+use crate::abi::native::wire::{
+    copy_extensible_input_record, copy_info_record, prepare_info_request, require_zero,
+};
 use hyper::abi::native::{self as abi, NativeResult};
 use {crate::abi::native::Arguments, crate::abi::native::TaskServices};
 use {
     crate::abi::native::status::status_from_object_service_error,
-    crate::abi::native::status::status_from_process_error, crate::abi::native::status::status_only,
+    crate::abi::native::status::status_only,
 };
-use {crate::abi::native::wire::optional_user_slice, crate::abi::native::wire::require_zero};
 use {crate::capability::InvocationReceiver, crate::capability::Rights};
 use {
     crate::task::policy::BudgetParameters, crate::task::policy::FairBackend,
@@ -25,16 +27,12 @@ pub(in crate::abi::native) fn sys_get_scheduling(
     receiver: &InvocationReceiver,
     arguments: &Arguments,
 ) -> NativeResult {
-    status_only((|| {
-        require_zero(&arguments[1..])?;
-        let output = optional_user_slice(arguments[0], 64)?
-            .ok_or(abi::HYPER_NATIVE_STATUS_INVALID_ARGUMENT)?;
+    crate::abi::native::status::info_result((|| {
+        let output = prepare_info_request(arguments, 64, 64)?;
         let params = services
             .get_scheduling(receiver)
             .map_err(status_from_object_service_error)?;
-        services
-            .copy_to_user(output, &encode(params))
-            .map_err(status_from_process_error)
+        copy_info_record(services, output, &encode(params))
     })())
 }
 
@@ -46,16 +44,11 @@ pub(in crate::abi::native) fn sys_set_scheduling(
     builder: bool,
 ) -> NativeResult {
     status_only((|| {
-        require_zero(&arguments[if builder { 2 } else { 1 }..])?;
-        let input = optional_user_slice(arguments[0], 64)?
-            .ok_or(abi::HYPER_NATIVE_STATUS_INVALID_ARGUMENT)?;
-        let mut bytes = [0; 64];
-        services
-            .copy_from_user(input, &mut bytes)
-            .map_err(status_from_process_error)?;
+        require_zero(&arguments[if builder { 3 } else { 2 }..])?;
+        let bytes = copy_extensible_input_record::<64>(services, arguments[0], arguments[1], 64)?;
         let params = decode(&bytes).ok_or(abi::HYPER_NATIVE_STATUS_INVALID_ARGUMENT)?;
         let delegated = if builder {
-            Some(Rights::from_bits(arguments[1]).ok_or(abi::HYPER_NATIVE_STATUS_INVALID_ARGUMENT)?)
+            Some(Rights::from_bits(arguments[2]).ok_or(abi::HYPER_NATIVE_STATUS_INVALID_ARGUMENT)?)
         } else {
             None
         };

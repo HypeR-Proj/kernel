@@ -223,9 +223,6 @@ pub(super) fn dispatch_operation(
         abi::NativeOperation::FileResize => {
             handlers::sys_file_resize(services, receiver, arguments)
         }
-        abi::NativeOperation::DirectoryCreateFile => {
-            handlers::sys_directory_create_file(services, receiver, arguments)
-        }
         abi::NativeOperation::DirectoryCreateDirectory => {
             handlers::sys_directory_create_directory(services, receiver, arguments)
         }
@@ -265,16 +262,10 @@ pub(super) fn dispatch_operation(
         abi::NativeOperation::DirectoryRemoveIf => {
             handlers::sys_directory_remove_if(services, receiver, arguments)
         }
-        abi::NativeOperation::DirectoryOpenDirectoryNofollow => {
-            handlers::sys_directory_open_directory_nofollow(services, receiver, arguments)
-        }
         abi::NativeOperation::FileSync => handlers::sys_file_sync(services, receiver, arguments),
         abi::NativeOperation::FileLock => handlers::sys_file_lock(services, receiver, arguments),
         abi::NativeOperation::FileUnlock => {
             handlers::sys_file_unlock(services, receiver, arguments)
-        }
-        abi::NativeOperation::DirectoryOpenFileWithOptions => {
-            handlers::sys_directory_open_file_with_options(services, receiver, arguments)
         }
         abi::NativeOperation::ClockGetRealtime => handlers::sys_clock_get_realtime(arguments),
         abi::NativeOperation::DirectoryRemove => {
@@ -507,9 +498,6 @@ pub(super) fn dispatch_operation(
         }
         abi::NativeOperation::GuestNotificationControl => {
             handlers::sys_guest_notification_control(services, receiver, arguments)
-        }
-        abi::NativeOperation::VmoCreateContiguous => {
-            handlers::sys_vmo_create_contiguous(services, arguments)
         }
         abi::NativeOperation::VirtualCpuGetInfo => {
             handlers::sys_virtual_cpu_get_info(services, receiver, arguments)

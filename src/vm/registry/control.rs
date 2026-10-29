@@ -301,7 +301,13 @@ impl From<crate::time::Error> for DormantVcpuQuiesceError {
 pub(crate) fn verify_dormant_vcpu_quiesce(
     installed: InstalledVm,
 ) -> Result<(), DormantVcpuQuiesceError> {
-    let (_, _, control) = installed.into_boot_parts();
+    let (id, thread, control) = installed.into_boot_parts();
+    let endpoint = super::acquire_binding(id)?.endpoint_owner(0)?;
+    // Pause an admitted interrupt producer before it observes the scheduler.
+    // Its endpoint remains owned while stop and the reaper remove the Thread.
+    endpoint
+        .publish_reconcile()
+        .map_err(|_| Error::EndpointClosed)?;
     let mut quiescing = match control.begin() {
         Ok(quiescing) => quiescing,
         Err(failure) => {
@@ -316,6 +322,13 @@ pub(crate) fn verify_dormant_vcpu_quiesce(
         quiescing = match quiescing.poll() {
             QuiescePoll::Pending(quiescing) => quiescing,
             QuiescePoll::Quiescent(control) => {
+                if !matches!(
+                    crate::task::scheduler::running_vcpu_cpu(thread),
+                    Err(crate::task::scheduler::Error::ThreadNotFound)
+                ) || super::execution::reconcile_target(&endpoint, thread)?.is_some()
+                {
+                    return Err(DormantVcpuQuiesceError::Registry(Error::Scheduler));
+                }
                 let retired = control.id();
                 if control.retire().is_err() {
                     return Err(DormantVcpuQuiesceError::Registry(Error::Quiescing));

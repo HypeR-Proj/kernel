@@ -38,17 +38,17 @@ pub(in crate::abi::native) fn sys_device_firmware_read(
     arguments: &Arguments,
 ) -> NativeAction {
     let result = (|| {
-        require_zero(&arguments[3..])?;
+        require_zero(&arguments[4..])?;
         let authority = receiver;
-        if arguments[2] > 65536 {
+        if arguments[3] > 65536 {
             return Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT);
         }
-        let mut query = [0u8; 24];
-        let source =
-            optional_user_slice(arguments[0], 24)?.ok_or(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)?;
-        services
-            .copy_from_user(source, &mut query)
-            .map_err(status_from_process_error)?;
+        let query = crate::abi::native::wire::copy_extensible_input_record::<24>(
+            services,
+            arguments[0],
+            arguments[1],
+            24,
+        )?;
         let node = u32::from_le_bytes(
             query[..4]
                 .try_into()
@@ -94,13 +94,13 @@ pub(in crate::abi::native) fn sys_device_firmware_read(
             return Err(hyper::abi::native::HYPER_NATIVE_STATUS_INTERNAL);
         }
         let length = bytes.len() as u64;
-        if arguments[2] == 0 {
+        if arguments[3] == 0 {
             return Ok(length);
         }
-        if arguments[2] < length {
+        if arguments[3] < length {
             return Err(hyper::abi::native::HYPER_NATIVE_STATUS_BUFFER_TOO_SMALL);
         }
-        if let Some(destination) = optional_user_slice(arguments[1], length)? {
+        if let Some(destination) = optional_user_slice(arguments[2], length)? {
             services
                 .copy_to_user(destination, &bytes)
                 .map_err(status_from_process_error)?;

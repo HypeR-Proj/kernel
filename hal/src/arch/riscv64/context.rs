@@ -75,6 +75,7 @@ struct GuestAnchorExit {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GuestSynchronousTerminal {
     Undecodable,
+    SupervisorCall { extension: u64, function: u64 },
     Unsupported(crate::arch::riscv64::vm::exit::UnsupportedGuestExit),
 }
 

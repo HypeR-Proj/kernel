@@ -51,9 +51,9 @@ pub(crate) use protection::{FileProtection, FileProtectionObject};
 pub(crate) use root_transition::RootTransition;
 pub(crate) use scratch::{ScratchBudget, ScratchString, ScratchVec};
 pub(crate) use service::{
-    ServiceError as VfsServiceError, begin_directory_read, create_directory, create_file,
-    directory_info, file_info, open_directory, open_file, prefetch_file, protect_file,
-    read_directory, read_file_at, remove_entry, resize_file, write_file_at,
+    ServiceError as VfsServiceError, begin_directory_read, create_directory, directory_info,
+    file_info, open_directory, prefetch_file, protect_file, read_directory, read_file_at,
+    remove_entry, resize_file, write_file_at,
 };
 
 use crate::fs::primitives::ramfs::RamFs;

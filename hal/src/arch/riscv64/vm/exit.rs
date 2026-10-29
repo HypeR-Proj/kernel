@@ -344,6 +344,13 @@ pub(crate) fn dispatch(frame: &mut crate::arch::riscv64::exception::TrapFrame) -
     );
     let cause = match &captured {
         CapturedExit::Synchronous {
+            exit: GuestSyncExit::SupervisorCall(call),
+            ..
+        } => GuestSynchronousTerminal::SupervisorCall {
+            extension: call.extension,
+            function: call.function,
+        },
+        CapturedExit::Synchronous {
             exit: GuestSyncExit::Unsupported(exit),
             ..
         } => GuestSynchronousTerminal::Unsupported(*exit),

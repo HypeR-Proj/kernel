@@ -9,8 +9,7 @@ use hyper::abi::native::*;
 use {
     crate::abi::native::Arguments, crate::abi::native::services::NativeAction,
     crate::abi::native::services::SystemInspectServices, crate::abi::native::status,
-    crate::abi::native::wire::copy_info_record, crate::abi::native::wire::optional_user_slice,
-    crate::abi::native::wire::prepare_info_request,
+    crate::abi::native::wire::copy_info_record, crate::abi::native::wire::prepare_info_request,
 };
 
 // The fixed wire encoder must change atomically with the schema layouts.
@@ -30,12 +29,9 @@ pub(in crate::abi::native) fn sys_cpu_inspector_trace_start(
     args: &Arguments,
 ) -> NativeAction {
     NativeAction::Return(status::info_result((|| {
-        let input =
-            optional_user_slice(args[0], 56)?.ok_or(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)?;
-        let mut bytes = [0; 56];
-        services
-            .copy_from_user(input, &mut bytes)
-            .map_err(status::status_from_process_error)?;
+        let bytes = crate::abi::native::wire::copy_extensible_input_record::<56>(
+            services, args[0], args[1], 56,
+        )?;
         services.trace_start(receiver, &bytes)
     })()))
 }

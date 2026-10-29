@@ -25,9 +25,8 @@ use {
 use {
     crate::abi::native::wire::PROCESS_INFO_SIZE, crate::abi::native::wire::copy_info_record,
     crate::abi::native::wire::decode_resource_limits,
-    crate::abi::native::wire::encode_process_info, crate::abi::native::wire::parse_affinity_words,
-    crate::abi::native::wire::parse_handle, crate::abi::native::wire::prepare_info_request,
-    crate::abi::native::wire::require_zero,
+    crate::abi::native::wire::encode_process_info, crate::abi::native::wire::parse_handle,
+    crate::abi::native::wire::prepare_info_request, crate::abi::native::wire::require_zero,
 };
 
 #[inline(never)]
@@ -177,24 +176,24 @@ pub(in crate::abi::native) fn sys_thread_create(
     receiver: &InvocationReceiver,
     arguments: &Arguments,
 ) -> NativeResult {
-    let affinity = if arguments[4] == 0 && arguments[5] == 0 {
-        Ok((None, 0))
-    } else {
-        parse_affinity_words(arguments[4], arguments[5])
-    };
-    handle_result(affinity.and_then(|(words, count)| {
+    use crate::abi::native::wire::{copy_extensible_input_record, decode_thread_create};
+    handle_result((|| {
+        require_zero(&arguments[2..])?;
+        let bytes = copy_extensible_input_record::<64>(services, arguments[0], arguments[1], 64)?;
+        let request = decode_thread_create(&bytes)?;
+        let [entry, stack, tls, argument] = request.registers;
         services
             .create_thread(
                 receiver.info().rights,
-                arguments[0],
-                arguments[1],
-                arguments[2],
-                arguments[3],
-                words,
-                count,
+                entry,
+                stack,
+                tls,
+                argument,
+                request.affinity,
+                request.word_count,
             )
             .map_err(status_from_object_service_error)
-    }))
+    })())
 }
 
 #[inline(never)]
