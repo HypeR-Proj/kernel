@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 roolrz
 # SPDX-License-Identifier: Apache-2.0
 
+
 [package]
 name = "hyper-core"
 version = "0.1.0"
@@ -8,6 +9,7 @@ edition = "2024"
 license = "Apache-2.0"
 publish = false
 repository = "https://github.com/HypeR-Proj/kernel"
+workspace = ".."
 
 [lib]
 test = false
@@ -18,8 +20,13 @@ doctest = false
 default = []
 crash-console = []
 
+[dependencies]
+
 [dependencies.hyper-abi]
 version = "=0.0.0"
+path = "../../sdk/abi"
+
+[lints]
 
 [lints.clippy]
 doc_markdown = "deny"
@@ -38,6 +45,4 @@ unsafe_op_in_unsafe_fn = "deny"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"
-check-cfg = [
-    "cfg(loom)",
-]
+check-cfg = ["cfg(loom)"]

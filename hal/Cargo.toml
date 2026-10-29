@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 roolrz
 # SPDX-License-Identifier: Apache-2.0
 
+
 [package]
 name = "hyper-hal"
 version = "0.1.0"
@@ -8,6 +9,7 @@ edition = "2024"
 license = "Apache-2.0"
 publish = false
 repository = "https://github.com/HypeR-Proj/kernel"
+workspace = ".."
 
 [lib]
 test = false
@@ -17,14 +19,13 @@ doctest = false
 [features]
 pmu-profiling = []
 default = []
-crash-console = [
-    "hyper/crash-console",
-    "hyper-drivers/crash-console",
-]
+crash-console = ["hyper/crash-console", "hyper-drivers/crash-console"]
 kernel-test = []
 kernel-vgic-tc-test = []
 kernel-self-test = []
 kernel-stack-audit = []
+
+[dependencies]
 
 [dependencies.hyper]
 package = "hyper-core"
@@ -42,6 +43,8 @@ default-features = false
 [dependencies.hyper-vm-models]
 path = "../vm-models"
 default-features = false
+
+[lints]
 
 [lints.clippy]
 doc_markdown = "deny"

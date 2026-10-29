@@ -12,7 +12,7 @@ services, provisionally switches the VFS root, then transfers supervision to the
 formal component manager. System startup provisions the VM manager, which creates isolated VM runtimes
 through Native capabilities. These stages and paths beyond initial startup are
 not kernel requirements. Kernel self-test images contain no Linux loader or
-default VM. See the [boot layout](https://github.com/HypeR-Proj/HypeR/blob/main/docs/architecture/boot-layout.md) for the default
+default VM. See the [boot layout](https://hyper-proj.github.io/bootstrap/docs/boot-layout.html) for the default
 deployment and recovery behavior.
 
 The AArch64 reference guest selects GICv2 or GICv3 from the creation lease's
@@ -87,9 +87,9 @@ the kernel. Application ELF, argv/auxv and application relocation are userspace
 responsibilities. Kernel-image relocation during boot is unchanged.
 
 The [bootstrap loader](https://github.com/HypeR-Proj/bootstrap/blob/main/userspace-loader/README.md) accepts
-static core executables. The [formal loader](https://github.com/HypeR-Proj/dynamic-loader/blob/main/README.md)
+static core executables. The [formal loader](https://github.com/HypeR-Proj/lib-dynamic-loader/blob/main/README.md)
 loads both static and dynamic programs. They share bounded ELF64 mapping and
-stack encoding in [lib/dynamic-loader/elf](https://github.com/HypeR-Proj/dynamic-loader/blob/main/elf/README.md), accepting
+stack encoding in [lib/dynamic-loader/elf](https://github.com/HypeR-Proj/lib-dynamic-loader/blob/main/elf/README.md), accepting
 branded AArch64/RISC-V `ET_EXEC`/`ET_DYN` images and rejecting overlapping load
 segments, W+X, nonempty ELF TLS and executable stacks. A dynamic `PT_INTERP`
 must match `/lib64/ld-hyper-<arch>.so`; the formal loader validates that identity
@@ -169,7 +169,7 @@ Later file-backed instruction or data faults can also fail: exhausted bounded
 reclaim/refill retries terminate the Process as an unhandled page fault. Explicit
 mapping and copy syscalls instead report allocation, quota or I/O failure statuses.
 
-See the [loader address layout](https://github.com/HypeR-Proj/dynamic-loader/blob/main/elf/README.md#address-layout)
+See the [loader address layout](https://github.com/HypeR-Proj/lib-dynamic-loader/blob/main/elf/README.md#address-layout)
 for the current mapping windows and their policy boundaries.
 
 ## Bootstrap capabilities

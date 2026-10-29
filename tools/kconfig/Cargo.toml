@@ -1,9 +1,7 @@
 # SPDX-FileCopyrightText: 2026 roolrz
 # SPDX-License-Identifier: Apache-2.0
 
-bin = [
-    { name = "hyper-kconfig", path = "src/main.rs" },
-]
+bin = [{name = "hyper-kconfig", path = "src/main.rs"}]
 
 [package]
 name = "hyper-kconfig"

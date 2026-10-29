@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 roolrz
 # SPDX-License-Identifier: Apache-2.0
 
+
 [package]
 name = "hyper-concurrency-tests"
 version = "0.0.0"
@@ -18,6 +19,8 @@ path = "../../core"
 [dev-dependencies.hyper-vm-models]
 path = "../../vm-models"
 default-features = false
+
+[lints]
 
 [lints.clippy]
 expect_used = "deny"

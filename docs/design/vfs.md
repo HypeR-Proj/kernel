@@ -356,11 +356,11 @@ not require dirty-page writeback. The backend seam
 in `instance.rs` separates node leases, owned metadata, data operations and
 temporary loader reads from path policy. The generic userspace adapter owns canonical path identities and ordered
 request lifetime/cancellation there. Workers own media parsing and write layout;
-the kernel executes validated read plans through the mount-bound block queue. [Filesystem services](https://github.com/HypeR-Proj/HypeR/blob/main/docs/design/storage/filesystem-services.md)
+the kernel executes validated read plans through the mount-bound block queue. [Filesystem services](https://hyper-proj.github.io/lib-fs-service/docs/filesystem-services.html)
 describes the bounded shared-buffer protocol, failure retirement and sequential
 readahead. FAT parsing runs in `/svc/fs-fat`, selected on demand by the
 `/svc/fs-backend` manager. The trusted Linux I/O VM remains the physical block
-backend; see the [I/O VM contract](https://github.com/HypeR-Proj/HypeR/blob/main/docs/design/virtualization/io-vm.md).
+backend; see the [I/O VM contract](https://hyper-proj.github.io/io-vm/docs/hyper-integration.html).
 
 The Native surface includes atomic open/create/create-new/truncate, file
 write/append/resize, directory creation, rename with replacement, regular-file
