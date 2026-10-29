@@ -32,7 +32,7 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           apt-get -o Acquire::Retries=2 update
-          apt-get install -y --no-install-recommends ca-certificates git gh python3 rustup build-essential curl xz-utils zstd unzip
+          apt-get install -y --no-install-recommends ca-certificates git gh sudo python3 rustup build-essential curl xz-utils zstd unzip
           if [[ "$KERNEL_CI_SUITE" == *qemu ]]; then
             apt-get install -y qemu-system-arm qemu-system-misc
           fi
