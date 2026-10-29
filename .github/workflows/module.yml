@@ -1,6 +1,5 @@
 # SPDX-FileCopyrightText: 2026 roolrz
 # SPDX-License-Identifier: Apache-2.0
-
 name: Module tests
 on:
   pull_request:
@@ -12,15 +11,54 @@ concurrency:
   group: module-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  module:
+  test:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    name: module
+    name: kernel (${{ matrix.suite }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    container: debian:trixie-slim
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [quality, scripts, configurations, aarch64-production, aarch64-compact, aarch64-qemu, riscv64-qemu, x86_64-build]
+    env:
+      KERNEL_CI_SUITE: ${{ matrix.suite }}
     steps:
+      - name: Install the kernel build and QEMU environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get -o Acquire::Retries=2 update
+          apt-get install -y --no-install-recommends ca-certificates git gh python3 rustup build-essential curl xz-utils zstd unzip
+          if [[ "$KERNEL_CI_SUITE" == *qemu ]]; then
+            apt-get install -y qemu-system-arm qemu-system-misc
+          fi
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - uses: HypeR-Proj/ci/.github/actions/module@main
         with:
           component: ${{ github.event.repository.name }}
+      - name: Collect module diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: module-${{ strategy.job-index }}
+          path: |
+            ${{ runner.temp }}/modules/source-inventory.json
+            ${{ runner.temp }}/modules/target/**/*.log
+            ${{ runner.temp }}/modules/kernel/target/**/*.log
+          if-no-files-found: ignore
+  module:
+    if: always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every module shard to pass
+        env:
+          RESULT: ${{ needs.test.result }}
+        run: test "$RESULT" = success

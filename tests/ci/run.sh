@@ -9,7 +9,7 @@ root=$(CDPATH='' cd -- "$(dirname "$0")/../.." && pwd)
 cd "$root"
 
 usage() {
-    echo "usage: kernel/tests/ci/run.sh {quality|scripts|aarch64-build|aarch64-production|aarch64-self-test|aarch64-compact|aarch64-qemu|riscv64-qemu|x86_64-build}" >&2
+    echo "usage: kernel/tests/ci/run.sh {quality|scripts|configurations|aarch64-build|aarch64-production|aarch64-self-test|aarch64-compact|aarch64-qemu|riscv64-qemu|x86_64-build}" >&2
     exit 2
 }
 
@@ -51,6 +51,9 @@ case "${1:-}" in
         find tests tools/guest -type f -name '*.sh' -print0 |
             xargs -0 shellcheck --severity=warning
         ;;
+    configurations)
+        python3 -B tests/ci/check-features.py
+        ;;
     aarch64-build)
         for variant in production self-test compact; do
             sh tests/ci/run.sh "aarch64-$variant"
@@ -86,6 +89,9 @@ case "${1:-}" in
         copy_aarch64_artifacts compact
         ;;
     aarch64-qemu)
+        if [ -z "${AARCH64_TEST_IMAGE:-}" ]; then
+            sh tests/ci/run.sh aarch64-self-test
+        fi
         test_image=${AARCH64_TEST_IMAGE:-target/ci/aarch64/hyper.self-test.img}
         test -f "$test_image" || {
             echo "missing AArch64 self-test image: $test_image" >&2

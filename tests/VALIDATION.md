@@ -11,7 +11,7 @@ mechanisms, image tests inspect linked artifacts, and QEMU exercises the kernel
 with real scheduler and architecture entry paths. A successful source-text
 search does not establish a lifetime, control-flow or memory-ordering proof.
 
-`sh tests/ci/run.sh quality` from the repository root runs the workspace and
+`sh tests/ci/run.sh quality` from the kernel repository runs the kernel
 HAL checks and the host suites. `make -C kernel check ARCH=...` also compiles
 the `kernel-self-test` configuration, including the ownership assertions below.
 The [repository CI policy](https://github.com/HypeR-Proj/ci/blob/main/ci/README.md) lists the runtime suites.
