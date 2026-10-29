@@ -12,7 +12,7 @@ services, provisionally switches the VFS root, then transfers supervision to the
 formal component manager. System startup provisions the VM manager, which creates isolated VM runtimes
 through Native capabilities. These stages and paths beyond initial startup are
 not kernel requirements. Kernel self-test images contain no Linux loader or
-default VM. See the [boot layout](https://github.com/HypeR-Proj/HypeR/blob/main/docs/architecture/boot-layout.md) for the default
+default VM. See the [boot layout](https://hyper-proj.github.io/bootstrap/docs/boot-layout.html) for the default
 deployment and recovery behavior.
 
 The AArch64 reference guest selects GICv2 or GICv3 from the creation lease's

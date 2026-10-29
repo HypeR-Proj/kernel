@@ -11,7 +11,7 @@ compiler-checked schema in `sdk/abi`; exploratory interfaces below are labelled
 as planned. Linux/FreeBSD application compatibility is outside this contract.
 
 The current integration goal is Native applications plus a trusted Linux I/O VM
-on Pi 5; see the [roadmap](https://github.com/HypeR-Proj/HypeR/blob/main/docs/project/roadmap.md). HypeR is pre-release, so operation selectors and binary layouts do not yet carry a release compatibility guarantee.
+on Pi 5; see the [roadmap](https://hyper-proj.github.io/HypeR/docs/project/roadmap.html). HypeR is pre-release, so operation selectors and binary layouts do not yet carry a release compatibility guarantee.
 
 For operation grouping and consolidation boundaries, see
 [Native object interfaces](syscall-families.md).
@@ -60,7 +60,7 @@ queues, explicit buffer grants and event/session lifecycles. HypeR-owned RAM is
 excluded from Linux's allocatable memory; this reservation does not provide DMA
 isolation. Device-visible memory cannot be released until DMA is quiescent.
 IOMMU-backed leases are a later prerequisite for untrusted device domains, not
-for this trusted bring-up. See the [current roadmap](https://github.com/HypeR-Proj/HypeR/blob/main/docs/project/roadmap.md).
+for this trusted bring-up. See the [current roadmap](https://hyper-proj.github.io/HypeR/docs/project/roadmap.html).
 
 ## vCPU affinity
 
@@ -1132,7 +1132,7 @@ operations, clocks, atomic waits, and VM/device management. The generated
 [schema reference](https://github.com/HypeR-Proj/abi/blob/main/docs/native.md) is authoritative for syscall
 numbers and argument contracts. The [Native init contract](native-init.md)
 describes executable loading and service bootstrap; the
-[current status](https://github.com/HypeR-Proj/HypeR/blob/main/docs/project/status.md) records support and remaining limits.
+[current status](https://hyper-proj.github.io/HypeR/docs/project/status.html) records support and remaining limits.
 
 Verification follows the affected boundary:
 
@@ -1146,12 +1146,12 @@ Verification follows the affected boundary:
   backing-disk operations; runtime-crash tests cover retirement and restart.
 
 The near-term integration target remains a trusted Linux I/O VM on Pi 5,
-consumed through the [I/O VM package contract](https://github.com/HypeR-Proj/HypeR/blob/main/docs/design/virtualization/io-vm.md). Native
+consumed through the [I/O VM package contract](https://hyper-proj.github.io/io-vm/docs/hyper-integration.html). Native
 services provide management and explicit memory/device authority; standard
 virtio-scsi queues and Linux vhost-scsi/LIO carry storage requests. Linux-local
 ioctls do not become Native syscalls. Physical cache/TLB, interrupts and DMA
 retirement still require hardware qualification; QEMU cannot establish those
-properties. Future work is tracked in the [roadmap](https://github.com/HypeR-Proj/HypeR/blob/main/docs/project/roadmap.md), not
+properties. Future work is tracked in the [roadmap](https://hyper-proj.github.io/HypeR/docs/project/roadmap.html), not
 as additional mandatory phases of the Native ABI.
 
 ## Open implementation questions
