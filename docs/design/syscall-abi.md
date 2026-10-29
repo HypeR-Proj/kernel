@@ -11,7 +11,7 @@ compiler-checked schema in `sdk/abi`; exploratory interfaces below are labelled
 as planned. Linux/FreeBSD application compatibility is outside this contract.
 
 The current integration goal is Native applications plus a trusted Linux I/O VM
-on Pi 5; see the [roadmap](../../../docs/project/roadmap.md). HypeR is pre-release, so operation selectors and binary layouts do not yet carry a release compatibility guarantee.
+on Pi 5; see the [roadmap](https://github.com/HypeR-Proj/HypeR/blob/main/docs/project/roadmap.md). HypeR is pre-release, so operation selectors and binary layouts do not yet carry a release compatibility guarantee.
 
 For operation grouping and consolidation boundaries, see
 [Native object interfaces](syscall-families.md).
@@ -60,7 +60,7 @@ queues, explicit buffer grants and event/session lifecycles. HypeR-owned RAM is
 excluded from Linux's allocatable memory; this reservation does not provide DMA
 isolation. Device-visible memory cannot be released until DMA is quiescent.
 IOMMU-backed leases are a later prerequisite for untrusted device domains, not
-for this trusted bring-up. See the [current roadmap](../../../docs/project/roadmap.md).
+for this trusted bring-up. See the [current roadmap](https://github.com/HypeR-Proj/HypeR/blob/main/docs/project/roadmap.md).
 
 ## vCPU affinity
 
@@ -166,7 +166,7 @@ The 96-byte fixed record supplies an executable File, mapping capabilities and
 their actual bounds, plus ExecutionContext, ObjectFactory and SystemInfo handles.
 All handles already belong to the child's table. The first channel read uses its
 explicit receiver; no implicit context is needed to obtain the startup record. The
-[generated ABI reference](../../../sdk/abi/docs/native.md) defines record layouts,
+[generated ABI reference](https://github.com/HypeR-Proj/abi/blob/main/docs/native.md) defines record layouts,
 rights and syscall result slots.
 
 `process_builder_set_data` replaces up to 16 KiB of opaque data; an empty input
@@ -193,8 +193,8 @@ Init uses the same bootstrap with empty startup data and no reply request.
 Application ELF parsing, initial `argc`/`argv`/`envp`/auxv, relocation, final
 stack placement and heap policy belong to the loaders and runtime. See the
 [Native init contract](native-init.md#executable-image) and
-[bootstrap loader](../../../bootstrap/stage1/userspace-loader/README.md) and
-[formal loader](../../../lib/dynamic-loader/README.md) for their entry policies.
+[bootstrap loader](https://github.com/HypeR-Proj/bootstrap/blob/main/userspace-loader/README.md) and
+[formal loader](https://github.com/HypeR-Proj/dynamic-loader/blob/main/README.md) for their entry policies.
 
 ## Entry and completion contract
 
@@ -261,7 +261,7 @@ carries an operation local to that receiver's object kind. The six argument
 registers contain business arguments only, without repeating the receiver.
 Every operation leaves at least one register reserved and zero. Sized request
 records and output strides are specified in the
-[Native ABI reference](../../../sdk/abi/docs/native.md).
+[Native ABI reference](https://github.com/HypeR-Proj/abi/blob/main/docs/native.md).
 
 | Architecture | Receiver handle | Operation | Arguments | Result |
 | --- | --- | --- | --- | --- |
@@ -1065,7 +1065,7 @@ domains cannot consume.
 
 The compiler-checked schema owns object-local selectors, signatures and completion
 contracts. These are representative implemented families; consult the
-[generated reference](../../../sdk/abi/docs/native.md) for the complete surface.
+[generated reference](https://github.com/HypeR-Proj/abi/blob/main/docs/native.md) for the complete surface.
 
 | Family | Objects and representative operations |
 | --- | --- |
@@ -1129,10 +1129,10 @@ Native applications and userspace-managed VMs run on AArch64 and RISC-V.
 The implemented surface includes capability inspection/transfer, Process and
 Thread lifecycle, IPC and WaitSets, VMO/VMAR mappings and COW, filesystem
 operations, clocks, atomic waits, and VM/device management. The generated
-[schema reference](../../../sdk/abi/docs/native.md) is authoritative for syscall
+[schema reference](https://github.com/HypeR-Proj/abi/blob/main/docs/native.md) is authoritative for syscall
 numbers and argument contracts. The [Native init contract](native-init.md)
 describes executable loading and service bootstrap; the
-[current status](../../../docs/project/status.md) records support and remaining limits.
+[current status](https://github.com/HypeR-Proj/HypeR/blob/main/docs/project/status.md) records support and remaining limits.
 
 Verification follows the affected boundary:
 
@@ -1146,12 +1146,12 @@ Verification follows the affected boundary:
   backing-disk operations; runtime-crash tests cover retirement and restart.
 
 The near-term integration target remains a trusted Linux I/O VM on Pi 5,
-consumed through the [I/O VM package contract](../../../docs/design/virtualization/io-vm.md). Native
+consumed through the [I/O VM package contract](https://github.com/HypeR-Proj/HypeR/blob/main/docs/design/virtualization/io-vm.md). Native
 services provide management and explicit memory/device authority; standard
 virtio-scsi queues and Linux vhost-scsi/LIO carry storage requests. Linux-local
 ioctls do not become Native syscalls. Physical cache/TLB, interrupts and DMA
 retirement still require hardware qualification; QEMU cannot establish those
-properties. Future work is tracked in the [roadmap](../../../docs/project/roadmap.md), not
+properties. Future work is tracked in the [roadmap](https://github.com/HypeR-Proj/HypeR/blob/main/docs/project/roadmap.md), not
 as additional mandatory phases of the Native ABI.
 
 ## Open implementation questions

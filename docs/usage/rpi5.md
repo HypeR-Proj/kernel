@@ -12,10 +12,10 @@ has been validated.
 Native boot, bidirectional UART, SD-backed `/data` reads and basic Alpine
 SMP/reboot/poweroff with file persistence were confirmed on a Pi 5 D0 board.
 The combined SDIO1/RP1 deployment also completed the 2026-10-06
-[storage and TCP performance survey](../../../README.md#exploratory-pi-5-io-measurements).
+[storage and TCP performance survey](https://github.com/HypeR-Proj/HypeR/blob/main/README.md#exploratory-pi-5-io-measurements).
 See the qualification records below; sustained load, power-loss durability
 and DMA retirement under faults remain unqualified and are
-[deferred TODOs](../../../docs/project/roadmap.md#deferred-hardware-qualification).
+[deferred TODOs](https://github.com/HypeR-Proj/HypeR/blob/main/docs/project/roadmap.md#deferred-hardware-qualification).
 
 GICv2 guest virtualization is implemented and tested with Linux on QEMU.
 Firmware must describe the GICH and GICV register windows plus the maintenance
@@ -36,7 +36,7 @@ QEMU covers guest boot, timer/console wakeups and VM retirement, including
 runtime crashes. Physical host and diskless Linux boot are confirmed. Interrupt ordering under
 load and physical device quiescence still need hardware validation. The Linux I/O
 backend has a board-configured deployment path; its Pi 5 hardware qualification
-remains in the [roadmap](../../../docs/project/roadmap.md). RP1 UARTs on the 40-pin header are not the
+remains in the [roadmap](https://github.com/HypeR-Proj/HypeR/blob/main/docs/project/roadmap.md). RP1 UARTs on the 40-pin header are not the
 console used by this configuration.
 
 The I/O appliance is built and published by the separate HypeR-io-vm repository.
@@ -45,8 +45,8 @@ launch configuration. The firmware-provided host DTB used below is not a guest
 device-assignment description. The lock selects separate QEMU and Pi 5 build
 profiles. The Pi profile includes the upstream storage drivers; its package
 hardware-qualification status is separate from the recorded development runs. See
-the [I/O VM contract](../../../docs/design/virtualization/io-vm.md) and
-[board storage deployment](../../../docs/usage/deployment/board-storage.md).
+the [I/O VM contract](https://github.com/HypeR-Proj/HypeR/blob/main/docs/design/virtualization/io-vm.md) and
+[board storage deployment](https://github.com/HypeR-Proj/HypeR/blob/main/docs/usage/deployment/board-storage.md).
 
 The Native I/O runtime validates the C0/D0 SDIO1 dependency graph and runs a
 separate userspace MMIO/IRQ worker. The kernel supplies immutable firmware
@@ -297,7 +297,7 @@ supervision, and requests `/etc/fstab`.
 The later `FAT mounted at /data` and fleet-configuration result precede the shell;
 bootstrap readiness alone does not mean that data is mounted. Check `mount`,
 `vmm status io`, `ls /data`, and a small file write/read. See
-[boot layout](../../../docs/architecture/boot-layout.md) for the current handoff and retirement.
+[boot layout](https://github.com/HypeR-Proj/HypeR/blob/main/docs/architecture/boot-layout.md) for the current handoff and retirement.
 Earlier configuration-volume mounting and directory reads passed on Pi 5 D0;
 those results do not qualify later namespace or provider-adoption changes.
 
@@ -314,8 +314,8 @@ On 2026-10-06, the combined deployment using the published I/O VM pin completed
 4 KiB synchronous-write measurements. Native Raspbian on a separate card
 provided reference data. These were single-round exploratory measurements;
 same-boot readback can hit caches and does not prove power-loss durability.
-See the [results](../../../README.md#exploratory-pi-5-io-measurements) and
-[manual test image/tools](../../../tests/hardware/storage/README.md).
+See the [results](https://github.com/HypeR-Proj/HypeR/blob/main/README.md#exploratory-pi-5-io-measurements) and
+[manual test image/tools](https://github.com/HypeR-Proj/ci/blob/main/tests/hardware/storage/README.md).
 The tools are absent from default builds and images.
 
 Stress, power-cut and physical retirement trials remain deferred and
@@ -420,8 +420,8 @@ because physical DMA retirement is not yet qualified.
 The 2026-10-06 physical survey exercised guest TCP in both directions with one
 and four connections, using the Mac as client and the Alpine guest as server.
 Native Raspbian was measured separately with the same client. See the
-[results and limits](../../../README.md#exploratory-pi-5-io-measurements) and
-[manual network exercise](../../../tests/hardware/network/README.md).
+[results and limits](https://github.com/HypeR-Proj/HypeR/blob/main/README.md#exploratory-pi-5-io-measurements) and
+[manual network exercise](https://github.com/HypeR-Proj/ci/blob/main/tests/hardware/network/README.md).
 This does not qualify simultaneous disk/network load, link recovery or faults.
 
 For manual functional checks, connect Ethernet to a network with DHCP, wait
@@ -459,7 +459,7 @@ performance baseline.
 
 These Make targets are local integration tools. The separate image distribution
 repository pins merged HypeR; HypeR's locks select the I/O VM and official boot
-inputs, including immutable binary and source artifacts; see [image distribution](../../../docs/usage/deployment/image-distribution.md).
+inputs, including immutable binary and source artifacts; see [image distribution](https://github.com/HypeR-Proj/HypeR/blob/main/docs/usage/deployment/image-distribution.md).
 Do not promote local reassemblies or uncommitted builds to release pins.
 
 On AArch64, stage-2 permission faults outside a stage-1 walk do not provide a

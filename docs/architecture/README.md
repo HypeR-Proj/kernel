@@ -233,7 +233,7 @@ This decision does not move the VFS out of the kernel. Namespace semantics,
 file handles and VFS policy remain kernel responsibilities; filesystem and
 block backends can be supplied by services. Keep driver execution, service
 policy and kernel resource lifetime separate. See the
-[I/O VM design](../../../docs/design/virtualization/io-vm.md) for the current transport and shared-memory
+[I/O VM design](https://github.com/HypeR-Proj/HypeR/blob/main/docs/design/virtualization/io-vm.md) for the current transport and shared-memory
 contract.
 
 ## Selected HAL crate

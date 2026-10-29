@@ -14,7 +14,7 @@ search does not establish a lifetime, control-flow or memory-ordering proof.
 `sh tests/ci/run.sh quality` from the repository root runs the workspace and
 HAL checks and the host suites. `make -C kernel check ARCH=...` also compiles
 the `kernel-self-test` configuration, including the ownership assertions below.
-The [repository CI policy](../../tests/ci/README.md) lists the runtime suites.
+The [repository CI policy](https://github.com/HypeR-Proj/ci/blob/main/tests/ci/README.md) lists the runtime suites.
 
 ## Compiler and artifact checks
 
@@ -64,7 +64,7 @@ not a claim that every interleaving or failure path has been exhaustively tested
 
 ## Concurrent execution
 
-The [lifecycle fuzz/stress workloads](../../tests/stress/README.md) complement
+The [lifecycle fuzz/stress workloads](https://github.com/HypeR-Proj/ci/blob/main/tests/stress/README.md) complement
 the fixed regression cases. `host/tests/capability_fuzz.rs` runs seeded
 transactions against production handle/object code and checks a separate owner
 model after every operation. The `native-stress` CI shard runs real multithreaded

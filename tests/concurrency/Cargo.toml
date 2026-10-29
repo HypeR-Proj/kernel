@@ -6,11 +6,18 @@ name = "hyper-concurrency-tests"
 version = "0.0.0"
 edition = "2024"
 publish = false
+repository = "https://github.com/HypeR-Proj/kernel"
 
 [dev-dependencies]
-hyper = { package = "hyper-core", path = "../../core" }
-hyper-vm-models = { path = "../../vm-models", default-features = false }
 loom = "0.7.2"
+
+[dev-dependencies.hyper]
+package = "hyper-core"
+path = "../../core"
+
+[dev-dependencies.hyper-vm-models]
+path = "../../vm-models"
+default-features = false
 
 [lints.clippy]
 expect_used = "deny"

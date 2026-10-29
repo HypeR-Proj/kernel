@@ -75,3 +75,14 @@ KASLR selection without a cryptographic dependency or periodic IRQ work.
 
 [Static tracepoints](docs/design/tracepoints.md) provide opt-in, one-line event
 instrumentation with runtime category flags and bounded per-CPU capture.
+
+## Workspace tests
+
+Use the [HypeR workspace](https://github.com/HypeR-Proj/HypeR) to resolve dependencies:
+
+```sh
+./HypeR/hyper test kernel
+```
+
+Build paths in detailed documentation refer to the generated `out/system` directory.
+Edit this repository and prepare the workspace again before building.

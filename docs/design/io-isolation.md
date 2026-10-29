@@ -37,7 +37,7 @@ table, so attenuation is not a security boundary between those threads.
 Linux receives mediated device resources, not a Native authority
 handle. Existing handle attenuation, generational KOIDs, exact register-window
 checks, exclusive resource claims and host-owned PCI/MSI mediation still apply.
-See the [physical-device ABI](../../../sdk/abi/docs/physical-devices.md).
+See the [physical-device ABI](https://github.com/HypeR-Proj/abi/blob/main/docs/physical-devices.md).
 
 ## Backend memory lease
 

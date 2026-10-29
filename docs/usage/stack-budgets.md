@@ -26,7 +26,7 @@ stack. The scheduler's address-stable slot segments also grow on demand. Retirem
 uses links in those existing slots and never allocates during Thread exit. Tests
 exercise more than 1024 simultaneous Threads and subsequent slot reuse; there is
 no thread-capacity-sized temporary on the boot stack.
-See [kernel configuration](../../../docs/usage/deployment/configuration.md#kernel-architecture-and-resource-configuration).
+See [kernel configuration](https://github.com/HypeR-Proj/HypeR/blob/main/docs/usage/deployment/configuration.md#kernel-architecture-and-resource-configuration).
 
 ## Reproducing the checks
 

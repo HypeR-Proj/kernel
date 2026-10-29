@@ -7,6 +7,7 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 publish = false
+repository = "https://github.com/HypeR-Proj/kernel"
 
 [lib]
 test = false
@@ -20,9 +21,14 @@ crash-console = []
 kernel-test = []
 io-dma-revoke-test = []
 
-[dependencies]
-hyper = { package = "hyper-core", path = "../core", default-features = false }
-hyper-platform = { path = "../platform", default-features = false }
+[dependencies.hyper]
+package = "hyper-core"
+path = "../core"
+default-features = false
+
+[dependencies.hyper-platform]
+path = "../platform"
+default-features = false
 
 [lints.clippy]
 doc_markdown = "deny"
@@ -38,4 +44,9 @@ missing_safety_doc = "deny"
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = [
+    "cfg(loom)",
+]

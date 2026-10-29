@@ -7,6 +7,7 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 publish = false
+repository = "https://github.com/HypeR-Proj/kernel"
 
 [lib]
 test = false
@@ -17,8 +18,8 @@ doctest = false
 default = []
 crash-console = []
 
-[dependencies]
-hyper-abi = { path = "../../sdk/abi" }
+[dependencies.hyper-abi]
+version = "=0.0.0"
 
 [lints.clippy]
 doc_markdown = "deny"
@@ -34,4 +35,9 @@ missing_safety_doc = "deny"
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = [
+    "cfg(loom)",
+]

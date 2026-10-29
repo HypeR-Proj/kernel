@@ -7,6 +7,7 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 publish = false
+repository = "https://github.com/HypeR-Proj/kernel"
 
 [lib]
 test = false
@@ -16,17 +17,31 @@ doctest = false
 [features]
 pmu-profiling = []
 default = []
-crash-console = ["hyper/crash-console", "hyper-drivers/crash-console"]
+crash-console = [
+    "hyper/crash-console",
+    "hyper-drivers/crash-console",
+]
 kernel-test = []
 kernel-vgic-tc-test = []
 kernel-self-test = []
 kernel-stack-audit = []
 
-[dependencies]
-hyper = { package = "hyper-core", path = "../core", default-features = false }
-hyper-platform = { path = "../platform", default-features = false }
-hyper-drivers = { path = "../drivers", default-features = false }
-hyper-vm-models = { path = "../vm-models", default-features = false }
+[dependencies.hyper]
+package = "hyper-core"
+path = "../core"
+default-features = false
+
+[dependencies.hyper-platform]
+path = "../platform"
+default-features = false
+
+[dependencies.hyper-drivers]
+path = "../drivers"
+default-features = false
+
+[dependencies.hyper-vm-models]
+path = "../vm-models"
+default-features = false
 
 [lints.clippy]
 doc_markdown = "deny"

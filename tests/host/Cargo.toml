@@ -6,22 +6,51 @@ name = "hyper-host-tests"
 version = "0.0.0"
 edition = "2024"
 publish = false
+repository = "https://github.com/HypeR-Proj/kernel"
 
 [features]
-kernel-trace = ["hyper-trace/kernel-trace"]
+kernel-trace = [
+    "hyper-trace/kernel-trace",
+]
 pmu-profiling = []
-kernel-test = ["hyper-drivers/kernel-test"]
+kernel-test = [
+    "hyper-drivers/kernel-test",
+]
 heap-profiling = []
-io-dma-revoke-test = ["hyper-drivers/io-dma-revoke-test"]
+io-dma-revoke-test = [
+    "hyper-drivers/io-dma-revoke-test",
+]
 
-[dependencies]
-rustc-demangle = { version = "0.1.28", default-features = false }
-hyper-platform = { path = "../../platform", default-features = false }
-hyper-drivers = { path = "../../drivers", default-features = false, features = ["rtc"] }
-hyper-vm-models = { path = "../../vm-models", default-features = false }
-hyper = { package = "hyper-core", path = "../../core", default-features = false }
-hyper-filesystem = { path = "../../../stdlib/rust/hyper-filesystem" }
-hyper-trace = { path = "../../trace", default-features = false }
+[dependencies.rustc-demangle]
+version = "0.1.28"
+default-features = false
+
+[dependencies.hyper-platform]
+path = "../../platform"
+default-features = false
+
+[dependencies.hyper-drivers]
+path = "../../drivers"
+default-features = false
+features = [
+    "rtc",
+]
+
+[dependencies.hyper-vm-models]
+path = "../../vm-models"
+default-features = false
+
+[dependencies.hyper]
+package = "hyper-core"
+path = "../../core"
+default-features = false
+
+[dependencies.hyper-filesystem]
+version = "=0.0.0"
+
+[dependencies.hyper-trace]
+path = "../../trace"
+default-features = false
 
 [lints.clippy]
 expect_used = "deny"
@@ -29,7 +58,10 @@ missing_safety_doc = "deny"
 undocumented_unsafe_blocks = "deny"
 unwrap_used = "deny"
 
-[workspace]
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = [
+    "cfg(loom)",
+]
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+[workspace]

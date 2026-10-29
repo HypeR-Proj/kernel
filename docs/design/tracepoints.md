@@ -14,7 +14,7 @@ patching, periodic polling or a tracing worker in interrupt dispatch.
 exports Perfetto-compatible Chrome Trace JSON or raw JSONL. Scheduler, Native
 syscall, IPC, IRQ, page-fault, block-request and vCPU events use this mechanism.
 The kernel exports fixed binary batches; names, correlation and viewer formats
-remain userspace responsibilities. See the [capture guide](../../../docs/usage/diagnostics/tracing.md).
+remain userspace responsibilities. See the [capture guide](https://github.com/HypeR-Proj/HypeR/blob/main/docs/usage/diagnostics/tracing.md).
 
 ## Add an event
 
@@ -259,4 +259,4 @@ replacement, stopped-buffer stability, loss reporting and real exported events.
 The QEMU harness transfers trace bodies through a fenced FAT data volume and
 extracts them only after QEMU exits; the UART carries command receipts, not bulk
 JSON. The same disk-backed run verifies kernel VFS and formal worker RPC
-correlation. See the [trace usage guide](../../../docs/usage/diagnostics/tracing.md).
+correlation. See the [trace usage guide](https://github.com/HypeR-Proj/HypeR/blob/main/docs/usage/diagnostics/tracing.md).

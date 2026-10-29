@@ -988,5 +988,132 @@
       "check",
       "ARCH=aarch64"
     ]
-  ]
+  ],
+  "cargo_context": {
+    "Cargo.toml": {
+      "workspace": {
+        "members": [
+          "core",
+          "hal",
+          "platform",
+          "drivers",
+          "vm-models",
+          "trace"
+        ],
+        "exclude": [
+          "tests/host",
+          "tests/concurrency",
+          "tools/kallsyms",
+          "tools/kconfig"
+        ],
+        "default-members": [
+          ".",
+          "core",
+          "hal",
+          "platform",
+          "drivers",
+          "vm-models",
+          "trace"
+        ],
+        "resolver": "3"
+      },
+      "membership": null,
+      "dependency_paths": {
+        "/dependencies/hyper-filesystem": "stdlib/rust/hyper-filesystem",
+        "/dependencies/hyper": "kernel/core",
+        "/dependencies/hyper-hal": "kernel/hal",
+        "/dependencies/hyper-platform": "kernel/platform",
+        "/dependencies/hyper-drivers": "kernel/drivers",
+        "/dependencies/hyper-vm-models": "kernel/vm-models",
+        "/dependencies/hyper-trace": "kernel/trace"
+      },
+      "inherited_dependencies": {}
+    },
+    "core/Cargo.toml": {
+      "workspace": null,
+      "membership": "..",
+      "dependency_paths": {
+        "/dependencies/hyper-abi": "sdk/abi"
+      },
+      "inherited_dependencies": {}
+    },
+    "drivers/Cargo.toml": {
+      "workspace": null,
+      "membership": "..",
+      "dependency_paths": {
+        "/dependencies/hyper": "kernel/core",
+        "/dependencies/hyper-platform": "kernel/platform"
+      },
+      "inherited_dependencies": {}
+    },
+    "hal/Cargo.toml": {
+      "workspace": null,
+      "membership": "..",
+      "dependency_paths": {
+        "/dependencies/hyper": "kernel/core",
+        "/dependencies/hyper-platform": "kernel/platform",
+        "/dependencies/hyper-drivers": "kernel/drivers",
+        "/dependencies/hyper-vm-models": "kernel/vm-models"
+      },
+      "inherited_dependencies": {}
+    },
+    "platform/Cargo.toml": {
+      "workspace": null,
+      "membership": "..",
+      "dependency_paths": {
+        "/dependencies/hyper": "kernel/core"
+      },
+      "inherited_dependencies": {}
+    },
+    "tests/concurrency/Cargo.toml": {
+      "workspace": {},
+      "membership": null,
+      "dependency_paths": {
+        "/dev-dependencies/hyper": "kernel/core",
+        "/dev-dependencies/hyper-vm-models": "kernel/vm-models"
+      },
+      "inherited_dependencies": {}
+    },
+    "tests/host/Cargo.toml": {
+      "workspace": {},
+      "membership": null,
+      "dependency_paths": {
+        "/dependencies/hyper-platform": "kernel/platform",
+        "/dependencies/hyper-drivers": "kernel/drivers",
+        "/dependencies/hyper-vm-models": "kernel/vm-models",
+        "/dependencies/hyper": "kernel/core",
+        "/dependencies/hyper-filesystem": "stdlib/rust/hyper-filesystem",
+        "/dependencies/hyper-trace": "kernel/trace"
+      },
+      "inherited_dependencies": {}
+    },
+    "tools/kallsyms/Cargo.toml": {
+      "workspace": null,
+      "membership": null,
+      "dependency_paths": {},
+      "inherited_dependencies": {}
+    },
+    "tools/kconfig/Cargo.toml": {
+      "workspace": null,
+      "membership": null,
+      "dependency_paths": {},
+      "inherited_dependencies": {}
+    },
+    "trace/Cargo.toml": {
+      "workspace": null,
+      "membership": "..",
+      "dependency_paths": {
+        "/dependencies/hyper-core": "kernel/core"
+      },
+      "inherited_dependencies": {}
+    },
+    "vm-models/Cargo.toml": {
+      "workspace": null,
+      "membership": "..",
+      "dependency_paths": {
+        "/dependencies/hyper": "kernel/core"
+      },
+      "inherited_dependencies": {}
+    }
+  }
 }

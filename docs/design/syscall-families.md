@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Native object interfaces
 
-The compiler-checked [schema](../../../sdk/abi/schema/native.rs) owns receiver kinds,
+The compiler-checked [schema](https://github.com/HypeR-Proj/abi/blob/main/schema/native.rs) owns receiver kinds,
 object-local selectors, arguments, required rights and completion classes.
 Every trap names one receiver handle. Common handle and object operations share
 selectors across kinds; other operations are decoded using the receiver kind.
@@ -36,7 +36,7 @@ on the Thread's kernel stack with ordinary IRQ delivery, including blocking call
 File open, create and truncate share one option-bearing operation. Directory
 no-follow opening and contiguous VMO allocation likewise use options on their
 canonical open/create operations. Their arguments, flags and records are defined
-in the [Native ABI reference](../../../sdk/abi/docs/native.md).
+in the [Native ABI reference](https://github.com/HypeR-Proj/abi/blob/main/docs/native.md).
 
 Directory open options remain a path-resolution policy; they do not define a new
 object kind. `directory_remove_if` additionally checks expected node identity and

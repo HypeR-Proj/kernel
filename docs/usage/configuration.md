@@ -51,9 +51,9 @@ make -C kernel image ARCH=aarch64 KERNEL_FEATURES=
 
 Make defaults are `rtc runtime-symbols crash-console` on AArch64 and
 `rtc runtime-symbols` on RISC-V and x86-64. `heap-profiling`, `pmu-profiling` and `kernel-trace` are off everywhere. See
-[PMU recording and export](../../../docs/usage/diagnostics/profiling.md) for limits and authority.
+[PMU recording and export](https://github.com/HypeR-Proj/HypeR/blob/main/docs/usage/diagnostics/profiling.md) for limits and authority.
 The [tracepoint mechanism](../design/tracepoints.md) exposes kernel-internal
-control/read APIs and privileged [Perfetto capture/export](../../../docs/usage/diagnostics/tracing.md) through `perf trace`.
+control/read APIs and privileged [Perfetto capture/export](https://github.com/HypeR-Proj/HypeR/blob/main/docs/usage/diagnostics/tracing.md) through `perf trace`.
 The Make selection comes from the shared Rust Kconfig resolver. Unsupported
 features are hidden and explicit assignments that violate dependencies fail
 validation. AArch64-only production features are `crash-console` and
