@@ -1,9 +1,7 @@
 # SPDX-FileCopyrightText: 2026 roolrz
 # SPDX-License-Identifier: Apache-2.0
 
-bin = [
-    { name = "hyper", path = "src/main.rs", test = false, bench = false },
-]
+bin = [{name = "hyper", path = "src/main.rs", test = false, bench = false}]
 
 [package]
 name = "hyper"
@@ -16,96 +14,41 @@ repository = "https://github.com/HypeR-Proj/kernel"
 publish = false
 autolib = false
 
+[package.metadata]
+
 [package.metadata.hyper]
-production-features = [
-    "rtc",
-    "runtime-symbols",
-    "crash-console",
-    "heap-profiling",
-    "pmu-profiling",
-    "kernel-trace",
-]
+production-features = ["rtc", "runtime-symbols", "crash-console", "heap-profiling", "pmu-profiling", "kernel-trace"]
 
 [package.metadata.hyper.feature-architectures]
-crash-console = [
-    "aarch64",
-]
-pmu-profiling = [
-    "aarch64",
-]
+crash-console = ["aarch64"]
+pmu-profiling = ["aarch64"]
 
 [workspace]
-members = [
-    "core",
-    "hal",
-    "platform",
-    "drivers",
-    "vm-models",
-    "trace",
-]
-exclude = [
-    "tests/host",
-    "tests/concurrency",
-    "tools/kallsyms",
-    "tools/kconfig",
-]
-default-members = [
-    ".",
-    "core",
-    "hal",
-    "platform",
-    "drivers",
-    "vm-models",
-    "trace",
-]
+members = ["core", "hal", "platform", "drivers", "vm-models", "trace"]
+exclude = ["tests/host", "tests/concurrency", "tools/kallsyms", "tools/kconfig"]
+default-members = [".", "core", "hal", "platform", "drivers", "vm-models", "trace"]
 resolver = "3"
 
 [features]
-kernel-trace = [
-    "hyper-trace/kernel-trace",
-]
-pmu-profiling = [
-    "hyper-hal/pmu-profiling",
-]
-default = [
-    "rtc",
-    "runtime-symbols",
-    "crash-console",
-]
-rtc = [
-    "hyper-drivers/rtc",
-]
-runtime-symbols = [
-    "dep:rustc-demangle",
-]
-crash-console = [
-    "hyper/crash-console",
-    "hyper-hal/crash-console",
-    "hyper-drivers/crash-console",
-]
+kernel-trace = ["hyper-trace/kernel-trace"]
+pmu-profiling = ["hyper-hal/pmu-profiling"]
+default = ["rtc", "runtime-symbols", "crash-console"]
+rtc = ["hyper-drivers/rtc"]
+runtime-symbols = ["dep:rustc-demangle"]
+crash-console = ["hyper/crash-console", "hyper-hal/crash-console", "hyper-drivers/crash-console"]
 heap-profiling = []
-kernel-test = [
-    "hyper-hal/kernel-test",
-    "hyper-drivers/kernel-test",
-]
-kernel-vgic-tc-test = [
-    "hyper-hal/kernel-vgic-tc-test",
-]
-kernel-self-test = [
-    "hyper-hal/kernel-self-test",
-]
-kernel-smmuv3-test = [
-    "kernel-self-test",
-]
-io-dma-revoke-test = [
-    "hyper-drivers/io-dma-revoke-test",
-]
-kernel-stack-audit = [
-    "hyper-hal/kernel-stack-audit",
-]
+kernel-test = ["hyper-hal/kernel-test", "hyper-drivers/kernel-test"]
+kernel-vgic-tc-test = ["hyper-hal/kernel-vgic-tc-test"]
+kernel-self-test = ["hyper-hal/kernel-self-test"]
+kernel-smmuv3-test = ["kernel-self-test"]
+io-dma-revoke-test = ["hyper-drivers/io-dma-revoke-test"]
+kernel-stack-audit = ["hyper-hal/kernel-stack-audit"]
+
+[dependencies]
 
 [dependencies.hyper-filesystem]
 version = "=0.0.0"
+path = "../stdlib/rust/hyper-filesystem"
 
 [dependencies.hyper]
 package = "hyper-core"
@@ -137,6 +80,8 @@ optional = true
 path = "trace"
 default-features = false
 
+[lints]
+
 [lints.clippy]
 doc_markdown = "deny"
 empty_docs = "deny"
@@ -154,9 +99,9 @@ unsafe_op_in_unsafe_fn = "deny"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"
-check-cfg = [
-    "cfg(loom)",
-]
+check-cfg = ["cfg(loom)"]
+
+[profile]
 
 [profile.kernel]
 inherits = "release"

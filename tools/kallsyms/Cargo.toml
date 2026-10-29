@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 roolrz
 # SPDX-License-Identifier: Apache-2.0
 
+
 [package]
 name = "hyper-kallsyms"
 version = "0.0.0"
@@ -9,9 +10,13 @@ license = "Apache-2.0"
 publish = false
 repository = "https://github.com/HypeR-Proj/kernel"
 
+[dependencies]
+
 [dependencies.rustc-demangle]
 version = "0.1.28"
 default-features = false
+
+[lints]
 
 [lints.clippy]
 expect_used = "deny"

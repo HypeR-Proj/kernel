@@ -194,7 +194,7 @@ Application ELF parsing, initial `argc`/`argv`/`envp`/auxv, relocation, final
 stack placement and heap policy belong to the loaders and runtime. See the
 [Native init contract](native-init.md#executable-image) and
 [bootstrap loader](https://github.com/HypeR-Proj/bootstrap/blob/main/userspace-loader/README.md) and
-[formal loader](https://github.com/HypeR-Proj/dynamic-loader/blob/main/README.md) for their entry policies.
+[formal loader](https://github.com/HypeR-Proj/lib-dynamic-loader/blob/main/README.md) for their entry policies.
 
 ## Entry and completion contract
 
