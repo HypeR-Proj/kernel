@@ -86,3 +86,10 @@ python3 project.py test kernel
 
 Paths in the documentation are relative to the repo-managed workspace root.
 Edit this repository and prepare the workspace again before building.
+
+The automatic PR workflow runs eight module shards: quality, scripts, feature
+configurations, AArch64 production/compact images, AArch64 self-test + QEMU,
+RISC-V QEMU and x86-64 images. All must pass the `module` gate. Run one locally
+with `KERNEL_CI_SUITE=aarch64-qemu python3 project.py test kernel`. The QEMU shard
+builds its own self-test image; no job depends on another runner's local files.
+These kernel-only checks are not part of system verification.

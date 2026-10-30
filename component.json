@@ -12,13 +12,7 @@
   "tests": [
     [
       "sh",
-      "kernel/tests/ci/run.sh",
-      "quality"
-    ],
-    [
-      "make",
-      "check",
-      "ARCH=aarch64"
+      "{component}/tests/ci/module.sh"
     ]
   ]
 }
