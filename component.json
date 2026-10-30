@@ -14,5 +14,32 @@
       "sh",
       "{component}/tests/ci/module.sh"
     ]
-  ]
+  ],
+  "config": {
+    "schema": "Kconfig",
+    "defaults": "configs/qemu_{arch}_defconfig",
+    "menu": [
+      "make",
+      "-C",
+      "{source}",
+      "menuconfig",
+      "CONFIG_FILE={config}",
+      "ARCH={arch}"
+    ]
+  },
+  "build": {
+    "makefile": "mk/build.mk",
+    "actions": {
+      "*": [
+        [
+          "make",
+          "-C",
+          "{source}",
+          "{action}",
+          "CONFIG_FILE={config}",
+          "ARCH={arch}"
+        ]
+      ]
+    }
+  }
 }

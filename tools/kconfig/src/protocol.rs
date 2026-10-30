@@ -13,6 +13,10 @@ pub(super) fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         return Err("usage: --schema KCONFIG {describe|resolve|migrate} [CONFIG]".into());
     };
     let schema = parse_schema(Path::new(schema_path))?;
+    if command == "menuconfig-state" {
+        let arguments = [vec![String::new(), command.clone()], rest.to_vec()].concat();
+        return super::menu::state_generic(&schema, &arguments);
+    }
     if command == "describe" && rest.is_empty() {
         let defaults = resolve(&schema, BTreeMap::new())?;
         let entries = schema.symbols.iter().map(|symbol| {
