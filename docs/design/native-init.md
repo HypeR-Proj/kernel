@@ -147,7 +147,7 @@ library range. The returned
 base is authoritative. Backing is mapped only as allocations need it; overflow
 regions have independent VMARs, so this reservation is not a heap size limit.
 The kernel still owns the root address space and
-resource accounting; allocator policy lives in `stdlib/hyper`.
+resource accounting; allocator policy lives in `stdlib/system`.
 
 The child receives an ordinary executable File. Its userspace loader acquires
 `PROTECT` before reading size or ELF bytes, then maps file-backed private
