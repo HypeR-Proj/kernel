@@ -36,7 +36,7 @@ this directory.
 
 ## Build independently
 
-From this directory:
+From the kernel directory in a repo-managed workspace:
 
 ```sh
 make defconfig
@@ -51,8 +51,9 @@ root Makefile for complete SDK, initramfs, and production boot composition.
 Its `make menuconfig` opens the product menu, with an entry into this kernel
 menu alongside separate stage1 and formal-system selections.
 
-Generated artifacts and configuration remain under this component's `target/`
-and `.config` paths whether commands begin here or at the repository root.
+Generated artifacts live under `OUT/build/kernel`; the saved kernel configuration
+is `OUT/config/ARCH/modules/kernel.config`. OUT defaults to the workspace's `out`
+directory and can be supplied to either Make entry point.
 
 Both Make entry points share target triples and QEMU defaults from
 `mk/platform.mk`. Kernel feature defaults and saved selections are resolved
@@ -82,6 +83,12 @@ Use the [HypeR workspace](https://github.com/HypeR-Proj/HypeR) to resolve depend
 
 ```sh
 python3 project.py test kernel
+```
+
+Focused host tests use the same configuration and output locations:
+
+```sh
+make -C kernel test-host ARCH=aarch64 HOST_TEST_FEATURES=heap-profiling HOST_TEST_FILTER=runtime_allocator_tests::
 ```
 
 Paths in the documentation are relative to the repo-managed workspace root.

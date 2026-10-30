@@ -80,6 +80,9 @@ KALLSYMS_SEED_BLOB := $(KERNEL_OUTPUT)/hyper.kallsyms.seed
 KALLSYMS_BLOB := $(KERNEL_OUTPUT)/hyper.kallsyms
 KALLSYMS_ELF := $(KERNEL_OUTPUT)/hyper.with-kallsyms
 HOST_TEST_MANIFEST := tests/host/Cargo.toml
+HOST_TEST_OUTPUT ?= $(KERNEL_BUILD_ROOT)/host-tests
+HOST_TEST_FEATURES ?=
+HOST_TEST_FILTER ?=
 CONCURRENCY_TEST_MANIFEST := tests/concurrency/Cargo.toml
 GUEST_OUTPUT := target/guest/$(ARCH)
 ifeq ($(ARCH),aarch64)
@@ -174,7 +177,7 @@ check: prepare-config
 	$(KERNEL_CONFIG_ENV) $(CARGO) check --bins --target $(TARGET) $(KERNEL_CARGO_FEATURES)
 	$(KERNEL_CONFIG_ENV) $(CARGO) clippy --target $(TARGET) $(KERNEL_CARGO_FEATURES) -- -D warnings
 	$(KERNEL_CONFIG_ENV) $(CARGO) clippy --target $(TARGET) $(KERNEL_CARGO_FEATURES) --features kernel-test,kernel-self-test -- -D warnings
-	$(KERNEL_CONFIG_ENV) $(CARGO) clippy --manifest-path $(HOST_TEST_MANIFEST) --target $(HOST_TARGET) --all-targets -- -D warnings
+	$(KERNEL_CONFIG_ENV) $(CARGO) clippy --manifest-path $(HOST_TEST_MANIFEST) --target $(HOST_TARGET) --target-dir "$(HOST_TEST_OUTPUT)" --all-targets -- -D warnings
 	$(KERNEL_CONFIG_ENV) $(CARGO) clippy --manifest-path $(CONCURRENCY_TEST_MANIFEST) --target $(HOST_TARGET) --all-targets --locked -- -D warnings
 	$(CARGO) clippy --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET) -- -D warnings
 	$(CARGO) clippy --manifest-path $(KALLSYMS_MANIFEST) --target $(HOST_TARGET) -- -D warnings
@@ -182,8 +185,12 @@ check: prepare-config
 doc: prepare-config
 	$(KERNEL_CONFIG_ENV) $(CARGO) doc --no-deps --package hyper --package hyper-core --package hyper-hal --package hyper-trace --package hyper-platform --package hyper-drivers --package hyper-vm-models --package hyper-abi --document-private-items --locked --target $(TARGET) $(KERNEL_CARGO_FEATURES)
 
-test: prepare-config
-	$(KERNEL_CONFIG_ENV) $(CARGO) test --manifest-path $(HOST_TEST_MANIFEST) --target $(HOST_TARGET)
+test-host: prepare-config
+	$(KERNEL_CONFIG_ENV) $(CARGO) test --manifest-path $(HOST_TEST_MANIFEST) --target $(HOST_TARGET) --target-dir "$(HOST_TEST_OUTPUT)" $(if $(strip $(HOST_TEST_FEATURES)),--features "$(HOST_TEST_FEATURES)") $(HOST_TEST_FILTER)
+
+.PHONY: test-host
+
+test: test-host
 	$(KERNEL_CONFIG_ENV) $(CARGO) test --manifest-path $(CONCURRENCY_TEST_MANIFEST) --target $(HOST_TARGET) --release --locked
 	$(CARGO) test --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET)
 	$(CARGO) test --manifest-path $(KALLSYMS_MANIFEST) --target $(HOST_TARGET)
