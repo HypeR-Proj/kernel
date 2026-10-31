@@ -37,10 +37,8 @@ case "${1:-}" in
         cargo fmt --manifest-path tools/kallsyms/Cargo.toml -- --check
         make test ARCH=aarch64
         # Exercise actual allocator code with optional accounting compiled in.
-        cargo test --manifest-path tests/host/Cargo.toml --features heap-profiling \
-            --target "$(rustc -vV | sed -n 's/^host: //p')" runtime_allocators::
-        cargo test --manifest-path tests/host/Cargo.toml --features kernel-trace \
-            --target "$(rustc -vV | sed -n 's/^host: //p')" trace
+        make test-host ARCH=aarch64 HOST_TEST_FEATURES=heap-profiling HOST_TEST_FILTER=runtime_allocator_tests::
+        make test-host ARCH=aarch64 HOST_TEST_FEATURES=kernel-trace HOST_TEST_FILTER=trace
         ;;
     scripts)
         python3 -B tests/ci/test-features.py

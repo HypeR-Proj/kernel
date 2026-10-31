@@ -1,0 +1,258 @@
+# SPDX-FileCopyrightText: 2026 roolrz
+# SPDX-License-Identifier: Apache-2.0
+
+include mk/platform.mk
+TARGET := $(KERNEL_TARGET)
+DEFCONFIG := configs/qemu_$(ARCH)_defconfig
+ifeq ($(ARCH),aarch64)
+QEMU_TEST_SCRIPT := tests/qemu/verify-smp.sh
+else ifeq ($(ARCH),riscv64)
+QEMU_TEST_SCRIPT := tests/qemu/verify-riscv64.sh
+else ifeq ($(ARCH),x86_64)
+QEMU_DTB_ARG = -dtb $(X86_HOST_DTB)
+QEMU_RUN_PREREQUISITES = $(X86_HOST_DTB)
+QEMU_TEST_SCRIPT := tests/qemu/verify-x86_64.sh
+endif
+CARGO_PROFILE := --profile $(KERNEL_PROFILE)
+CARGO ?= cargo
+export HYPER_BUILD_GIT_STATE := $(shell python3 -B tools/build-version.py --state)
+DEFAULT_CONFIG_FILE := $(if $(HYPER_BUILD_OUTPUT),$(HYPER_BUILD_OUTPUT)/config/$(ARCH)/modules/kernel.config,.config)
+CONFIG_FILE ?= $(DEFAULT_CONFIG_FILE)
+CONFIG_PATH := $(shell python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$(CONFIG_FILE)")
+KERNEL_CONFIG_ENV := HYPER_CONFIG="$(CONFIG_PATH)"
+KERNEL_BUILD_ROOT ?= $(or $(CARGO_TARGET_DIR),target)
+CARGO_KERNEL = CARGO_TARGET_DIR="$(abspath $(KERNEL_BUILD_ROOT))" $(KERNEL_CONFIG_ENV) $(CARGO) build --target $(TARGET) $(CARGO_PROFILE) $(KERNEL_CARGO_FEATURES)
+INITRAMFS ?=
+HOST_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
+RUST_HOST := $(shell rustc -vV | sed -n 's/^host: //p')
+LLVM_BIN := $(shell rustc --print sysroot)/lib/rustlib/$(RUST_HOST)/bin
+OBJCOPY ?= $(LLVM_BIN)/llvm-objcopy
+READOBJ ?= $(LLVM_BIN)/llvm-readobj
+NM ?= $(LLVM_BIN)/llvm-nm
+OBJDUMP ?= $(LLVM_BIN)/llvm-objdump
+DTC ?= dtc
+
+CARGO_FEATURES ?=
+# Kconfig owns the saved selection. Explicit feature arguments remain available
+# for isolated CI fixtures. Resolve lazily after prepare-config, once per Make,
+# without making clean/configuration targets compile the host configurator.
+ifeq ($(origin KERNEL_FEATURES),undefined)
+KERNEL_CONFIG_MATCH = $(shell grep -l '^CONFIG_ARCH_$(shell echo $(ARCH) | tr a-z A-Z)=y$$' "$(CONFIG_FILE)" 2>/dev/null)
+KERNEL_FEATURE_CONFIG = $(if $(filter $(DEFAULT_CONFIG_FILE),$(CONFIG_FILE)),$(if $(KERNEL_CONFIG_MATCH),$(CONFIG_PATH),$(DEFCONFIG)),$(CONFIG_PATH))
+define resolve_config_features
+$(shell $(CARGO) run --quiet --offline --locked --manifest-path tools/kconfig/Cargo.toml \
+    --target $(HOST_TARGET) -- cargo-features "$(KERNEL_FEATURE_CONFIG)" $(ARCH) \
+    || printf '__INVALID_KERNEL_FEATURES__')
+endef
+KERNEL_FEATURES = $(eval KERNEL_FEATURES := $(resolve_config_features))$(KERNEL_FEATURES)
+endif
+KERNEL_CARGO_FEATURES = --no-default-features $(if $(strip $(KERNEL_FEATURES)),--features "$(KERNEL_FEATURES)") $(CARGO_FEATURES)
+# Evaluate in the recipe's target context: test targets add feature arguments
+# inherited by their image prerequisites. The helper sees the same shell argv
+# as Cargo, including quoted lists and joined short options.
+KERNEL_FEATURE_SELECTION = $(shell python3 -B tools/kernel-features.py $(KERNEL_CARGO_FEATURES) || printf '__INVALID_KERNEL_FEATURES__')
+KERNEL_ENABLED_FEATURES = $(if $(filter __INVALID_KERNEL_FEATURES__,$(KERNEL_FEATURE_SELECTION)),$(error invalid kernel feature selection),$(KERNEL_FEATURE_SELECTION))
+KERNEL_RUNTIME_SYMBOLS = $(if $(filter runtime-symbols,$(KERNEL_ENABLED_FEATURES)),1,0)
+KERNEL_SELF_TEST_IMAGE = $(if $(filter kernel-self-test,$(KERNEL_ENABLED_FEATURES)),1,0)
+
+ifeq ($(shell uname -s),Darwin)
+UPSTREAM_CLANG := /opt/homebrew/opt/llvm/bin/clang
+ifneq ($(wildcard $(UPSTREAM_CLANG)),)
+export CLANG ?= $(UPSTREAM_CLANG)
+endif
+endif
+CLANG ?= clang
+
+KERNEL_OUTPUT := $(KERNEL_BUILD_ROOT)/$(TARGET)/$(KERNEL_PROFILE)
+KERNEL_ELF := $(KERNEL_OUTPUT)/hyper
+KERNEL_IMAGE := $(KERNEL_OUTPUT)/hyper.img
+KERNEL_STRIPPED_ELF := $(KERNEL_OUTPUT)/hyper.stripped
+KERNEL_STRIPPED_IMAGE := $(KERNEL_OUTPUT)/hyper.stripped.img
+X86_SETUP_OBJECT := $(KERNEL_OUTPUT)/x86-setup.o
+X86_SETUP_IMAGE := $(KERNEL_OUTPUT)/x86-setup.bin
+X86_PAYLOAD_IMAGE := $(KERNEL_OUTPUT)/hyper.payload
+X86_HOST_DTB := $(KERNEL_OUTPUT)/x86_64-host.dtb
+KCONFIG_MANIFEST := tools/kconfig/Cargo.toml
+KALLSYMS_MANIFEST := tools/kallsyms/Cargo.toml
+KALLSYMS_SEED_TARGET := $(abspath $(KERNEL_BUILD_ROOT)/kallsyms-seed)
+KALLSYMS_SEED_ELF := $(KALLSYMS_SEED_TARGET)/$(TARGET)/$(KERNEL_PROFILE)/hyper
+KALLSYMS_SEED_BLOB := $(KERNEL_OUTPUT)/hyper.kallsyms.seed
+KALLSYMS_BLOB := $(KERNEL_OUTPUT)/hyper.kallsyms
+KALLSYMS_ELF := $(KERNEL_OUTPUT)/hyper.with-kallsyms
+HOST_TEST_MANIFEST := tests/host/Cargo.toml
+HOST_TEST_OUTPUT ?= $(KERNEL_BUILD_ROOT)/host-tests
+HOST_TEST_FEATURES ?=
+HOST_TEST_FILTER ?=
+CONCURRENCY_TEST_MANIFEST := tests/concurrency/Cargo.toml
+GUEST_OUTPUT := target/guest/$(ARCH)
+ifeq ($(ARCH),aarch64)
+GUEST_FETCH := tools/guest/fetch-alpine-aarch64.sh
+GUEST_ASSET_STAMP := $(GUEST_OUTPUT)/.alpine-3.23.5.stamp
+else ifeq ($(ARCH),riscv64)
+GUEST_FETCH := tools/guest/fetch-alpine-riscv64.sh
+GUEST_ASSET_STAMP := $(GUEST_OUTPUT)/.alpine-3.24.1.stamp
+else
+GUEST_FETCH := tools/guest/fetch-alpine-x86_64.sh
+GUEST_ASSET_STAMP := $(GUEST_OUTPUT)/.alpine-3.23.5.stamp
+endif
+
+.PHONY: all prepare-config config menuconfig defconfig olddefconfig \
+	guest-assets clean-guest-assets build image release check test doc \
+	test-image test-qemu test-vhe-required run clean
+
+all: image
+
+prepare-config:
+	@if [ "$(CONFIG_FILE)" != "$(DEFAULT_CONFIG_FILE)" ]; then \
+		test -f "$(CONFIG_FILE)"; \
+	elif ! grep -q '^CONFIG_ARCH_$(shell echo $(ARCH) | tr a-z A-Z)=y$$' "$(CONFIG_FILE)" 2>/dev/null; then \
+		mkdir -p "$(dir $(CONFIG_FILE))"; \
+		$(CARGO) run --quiet --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET) -- defconfig $(DEFCONFIG) "$(CONFIG_FILE)"; \
+	fi
+
+defconfig:
+	$(CARGO) run --quiet --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET) -- defconfig $(DEFCONFIG) "$(CONFIG_FILE)"
+
+olddefconfig:
+	$(CARGO) run --quiet --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET) -- olddefconfig "$(CONFIG_FILE)" "$(CONFIG_FILE)"
+
+config: prepare-config
+	$(CARGO) run --quiet --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET) -- config "$(CONFIG_FILE)" "$(CONFIG_FILE)"
+
+# Unlike prepare-config, merely opening the menu must not create or reset the
+# destination. An absent input starts from this architecture's defconfig.
+menuconfig:
+	$(CARGO) run --quiet --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET) -- menuconfig "$(CONFIG_FILE)" "$(CONFIG_FILE)" "$(DEFCONFIG)"
+
+$(GUEST_ASSET_STAMP): $(GUEST_FETCH) tools/guest/init tools/guest/prepare-rootfs.py
+	sh $(GUEST_FETCH)
+
+guest-assets: $(GUEST_ASSET_STAMP)
+	@if [ ! -s $(GUEST_OUTPUT)/Image ] || [ ! -s $(GUEST_OUTPUT)/initramfs.cpio.gz ] || [ ! -s $(GUEST_OUTPUT)/rootfs.tar ]; then sh $(GUEST_FETCH); fi
+
+$(X86_HOST_DTB): tests/qemu/x86_64-host.dts
+	mkdir -p $(KERNEL_OUTPUT)
+	$(DTC) -q -I dts -O dtb -o $@ $<
+
+clean-guest-assets:
+	rm -f $(GUEST_OUTPUT)/Image $(GUEST_OUTPUT)/initramfs.cpio.gz $(GUEST_OUTPUT)/rootfs.tar $(GUEST_ASSET_STAMP)
+
+# Keep the bare and embedded passes in separate Cargo caches. Their cfg and
+# environment inputs remain stable across invocations, including no-op builds.
+build: prepare-config
+	@set -eu; \
+	if [ "$(KERNEL_RUNTIME_SYMBOLS)" = 1 ]; then \
+		HYPER_KALLSYMS_BLOB= $(CARGO_KERNEL) --target-dir "$(KALLSYMS_SEED_TARGET)"; \
+		mkdir -p $(KERNEL_OUTPUT); \
+		$(CARGO) run --quiet --manifest-path $(KALLSYMS_MANIFEST) --target $(HOST_TARGET) -- $(NM) $(KALLSYMS_SEED_ELF) $(KALLSYMS_SEED_BLOB); \
+		HYPER_KALLSYMS_BLOB=$(abspath $(KALLSYMS_SEED_BLOB)) $(CARGO_KERNEL); \
+		$(CARGO) run --quiet --manifest-path $(KALLSYMS_MANIFEST) --target $(HOST_TARGET) -- $(NM) $(KERNEL_ELF) $(KALLSYMS_BLOB); \
+		test "$$(wc -c < $(KALLSYMS_SEED_BLOB))" -eq "$$(wc -c < $(KALLSYMS_BLOB))"; \
+		$(OBJCOPY) --update-section=.kallsyms=$(KALLSYMS_BLOB) $(KERNEL_ELF) $(KALLSYMS_ELF); \
+		if cmp -s $(KALLSYMS_ELF) $(KERNEL_ELF); then rm $(KALLSYMS_ELF); else mv $(KALLSYMS_ELF) $(KERNEL_ELF); fi; \
+	else \
+		HYPER_KALLSYMS_BLOB= $(CARGO_KERNEL); \
+		rm -f $(KALLSYMS_BLOB); \
+	fi
+
+image: build $(QEMU_RUN_PREREQUISITES)
+	$(if $(filter x86_64,$(ARCH)),$(OBJCOPY) --output-target=binary $(KERNEL_ELF) $(X86_PAYLOAD_IMAGE),$(OBJCOPY) --output-target=binary $(KERNEL_ELF) $(KERNEL_IMAGE).tmp)
+	$(if $(filter x86_64,$(ARCH)),$(CLANG) -target i386-none-elf -c hal/src/arch/x86_64/setup.S -o $(X86_SETUP_OBJECT),true)
+	$(if $(filter x86_64,$(ARCH)),$(OBJCOPY) --only-section=.setup --output-target=binary $(X86_SETUP_OBJECT) $(X86_SETUP_IMAGE),true)
+	$(if $(filter x86_64,$(ARCH)),cp $(X86_SETUP_IMAGE) $(KERNEL_IMAGE).tmp,true)
+	$(if $(filter x86_64,$(ARCH)),dd if=$(X86_PAYLOAD_IMAGE) of=$(KERNEL_IMAGE).tmp bs=2560 seek=1 conv=notrunc status=none,true)
+	@if cmp -s $(KERNEL_IMAGE).tmp $(KERNEL_IMAGE); then rm $(KERNEL_IMAGE).tmp; else mv $(KERNEL_IMAGE).tmp $(KERNEL_IMAGE); fi
+
+# The distributable ELF is a debug-section-stripped copy of the canonical ELF.
+# No separate release compilation or link exists, and allocated bytes must
+# therefore produce an identical raw Image.
+release: image
+	$(OBJCOPY) --strip-debug $(KERNEL_ELF) $(KERNEL_STRIPPED_ELF)
+	$(if $(filter x86_64,$(ARCH)),$(OBJCOPY) --output-target=binary $(KERNEL_STRIPPED_ELF) $(X86_PAYLOAD_IMAGE),$(OBJCOPY) --output-target=binary $(KERNEL_STRIPPED_ELF) $(KERNEL_STRIPPED_IMAGE))
+	$(if $(filter x86_64,$(ARCH)),cp $(X86_SETUP_IMAGE) $(KERNEL_STRIPPED_IMAGE),true)
+	$(if $(filter x86_64,$(ARCH)),dd if=$(X86_PAYLOAD_IMAGE) of=$(KERNEL_STRIPPED_IMAGE) bs=2560 seek=1 conv=notrunc status=none,true)
+	cmp $(KERNEL_IMAGE) $(KERNEL_STRIPPED_IMAGE)
+
+check: prepare-config
+	$(KERNEL_CONFIG_ENV) $(CARGO) check --bins --target $(TARGET) $(KERNEL_CARGO_FEATURES)
+	$(KERNEL_CONFIG_ENV) $(CARGO) clippy --target $(TARGET) $(KERNEL_CARGO_FEATURES) -- -D warnings
+	$(KERNEL_CONFIG_ENV) $(CARGO) clippy --target $(TARGET) $(KERNEL_CARGO_FEATURES) --features kernel-test,kernel-self-test -- -D warnings
+	$(KERNEL_CONFIG_ENV) $(CARGO) clippy --manifest-path $(HOST_TEST_MANIFEST) --target $(HOST_TARGET) --target-dir "$(HOST_TEST_OUTPUT)" --all-targets -- -D warnings
+	$(KERNEL_CONFIG_ENV) $(CARGO) clippy --manifest-path $(CONCURRENCY_TEST_MANIFEST) --target $(HOST_TARGET) --all-targets --locked -- -D warnings
+	$(CARGO) clippy --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET) -- -D warnings
+	$(CARGO) clippy --manifest-path $(KALLSYMS_MANIFEST) --target $(HOST_TARGET) -- -D warnings
+
+doc: prepare-config
+	$(KERNEL_CONFIG_ENV) $(CARGO) doc --no-deps --package hyper --package hyper-core --package hyper-hal --package hyper-trace --package hyper-platform --package hyper-drivers --package hyper-vm-models --package hyper-abi --document-private-items --locked --target $(TARGET) $(KERNEL_CARGO_FEATURES)
+
+test-host: prepare-config
+	$(KERNEL_CONFIG_ENV) $(CARGO) test --manifest-path $(HOST_TEST_MANIFEST) --target $(HOST_TARGET) --target-dir "$(HOST_TEST_OUTPUT)" $(if $(strip $(HOST_TEST_FEATURES)),--features "$(HOST_TEST_FEATURES)") $(HOST_TEST_FILTER)
+
+.PHONY: test-host
+
+test: test-host
+	$(KERNEL_CONFIG_ENV) $(CARGO) test --manifest-path $(CONCURRENCY_TEST_MANIFEST) --target $(HOST_TARGET) --release --locked
+	$(CARGO) test --manifest-path $(KCONFIG_MANIFEST) --target $(HOST_TARGET)
+	$(CARGO) test --manifest-path $(KALLSYMS_MANIFEST) --target $(HOST_TARGET)
+
+test-image:
+	KERNEL_SELF_TEST_IMAGE=$(KERNEL_SELF_TEST_IMAGE) \
+	KERNEL_RUNTIME_SYMBOLS=$(KERNEL_RUNTIME_SYMBOLS) \
+		sh tests/image/verify-image.sh $(ARCH) $(READOBJ) $(NM) $(OBJDUMP) $(KERNEL_ELF) $(KERNEL_IMAGE) $(KALLSYMS_BLOB)
+
+test-qemu: image
+	QEMU_CPUS=$(QEMU_CPUS) sh $(QEMU_TEST_SCRIPT) $(QEMU) $(KERNEL_IMAGE) $(QEMU_CPU) $(QEMU_MEMORY) "$(QEMU_BOOTARGS)"
+
+test-qemu: CARGO_FEATURES=--features kernel-test,kernel-self-test
+
+ifeq ($(ARCH),aarch64)
+test-smmuv3: image
+	python3 tests/qemu/verify-smmuv3.py $(QEMU) $(KERNEL_IMAGE) --cpus $(QEMU_CPUS)
+	python3 tests/qemu/verify-smmuv3.py $(QEMU) $(KERNEL_IMAGE) --cpus $(QEMU_CPUS) --failure timeout --log target/smmuv3-timeout-qemu.log
+
+test-smmuv3: CARGO_FEATURES=--features kernel-test,kernel-smmuv3-test
+else
+test-smmuv3:
+	@echo "test-smmuv3 requires ARCH=aarch64" >&2; exit 2
+endif
+
+.PHONY: test-smmuv3
+
+# Unsupported CPUs must stop before VHE register setup or Native admission.
+ifeq ($(ARCH),aarch64)
+test-vhe-required: image
+	python3 tests/qemu/verify-vhe-required.py $(QEMU) $(KERNEL_IMAGE) $(KERNEL_ELF) $(NM)
+else
+test-vhe-required:
+	@echo "test-vhe-required requires ARCH=aarch64" >&2; exit 2
+endif
+
+run:
+	@test -f "$(KERNEL_IMAGE)" || { echo "Missing kernel image; run make first" >&2; exit 2; }
+	@for artifact in $(QEMU_RUN_PREREQUISITES); do \
+		test -f "$$artifact" || { echo "Missing $$artifact; build it before run" >&2; exit 2; }; \
+	done
+	@test -n "$(INITRAMFS)" || { \
+		echo "INITRAMFS must name a newc archive containing an executable /init" >&2; \
+		exit 2; \
+	}
+	@test -f "$(INITRAMFS)" || { \
+		echo "INITRAMFS does not exist: $(INITRAMFS)" >&2; \
+		exit 2; \
+	}
+	$(QEMU) \
+		-machine $(QEMU_MACHINE) \
+		-cpu $(QEMU_CPU) \
+		-smp $(QEMU_CPUS) \
+		-m $(QEMU_MEMORY) \
+		-nodefaults \
+		-display none \
+		-serial stdio \
+		-monitor none \
+		-no-reboot \
+		-append "$(QEMU_BOOTARGS)" \
+		-initrd "$(INITRAMFS)" $(QEMU_DTB_ARG) \
+		-kernel $(KERNEL_IMAGE)
+
+clean:
+	CARGO_TARGET_DIR="$(abspath $(KERNEL_BUILD_ROOT))" $(CARGO) clean

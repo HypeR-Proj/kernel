@@ -7,12 +7,13 @@
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get("HYPER_KERNEL_SOURCE", Path(__file__).resolve().parents[1]))
 
 
 def git(root, *args):
@@ -21,6 +22,14 @@ def git(root, *args):
 
 
 def source_state(root):
+    if not (root / '.git').exists():
+        inventory = root.parent / 'source-inventory.json'
+        if inventory.is_file():
+            source = json.loads(inventory.read_bytes()).get('components', {}).get('kernel', {})
+            revision = source.get('commit')
+            if revision:
+                return revision, json.dumps(source.get('files', {}), sort_keys=True).encode() if source.get('dirty') else b''
+        return 'unknown', b''
     revision = git(root, "rev-parse", "HEAD")
     if revision is None:
         return "unknown", b""
@@ -41,11 +50,12 @@ def build_timestamp():
 def cargo_metadata(root):
     revision, status = source_state(root)
     print("cargo:rerun-if-env-changed=HYPER_BUILD_GIT_STATE")
+    print("cargo:rerun-if-env-changed=HYPER_KERNEL_SOURCE")
     print("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH")
     print("cargo:rerun-if-changed=tools/build-version.py")
     if revision == "unknown":
         print("cargo:warning=Git metadata unavailable; kernel revision is unknown")
-    else:
+    elif (root / '.git').exists():
         # Track source edits even while the tree remains dirty. Avoid watching
         # the repository directory, which would recursively include build output.
         paths = git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
@@ -62,6 +72,8 @@ def cargo_metadata(root):
                 path = Path(os.fsdecode(value).strip())
                 if path.exists():
                     print(f"cargo:rerun-if-changed={path}")
+    else:
+        print(f"cargo:rerun-if-changed={root.parent / 'source-inventory.json'}")
     suffix = "-dirty" if status else ""
     print(f"cargo:rustc-env=HYPER_BUILD_REVISION={revision[:12]}{suffix}")
     print(f"cargo:rustc-env=HYPER_BUILD_TIMESTAMP={build_timestamp()}")

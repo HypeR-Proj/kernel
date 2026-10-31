@@ -34,6 +34,18 @@ pub(super) fn run(arguments: &[String], output: &Path) -> Result<(), Box<dyn Err
 /// A rejected edit leaves the working copy untouched. Never pass the user's
 /// actual output here: saving is an explicit frontend commit, not an edit.
 pub(super) fn state(schema: &Schema, arguments: &[String]) -> Result<(), Box<dyn Error>> {
+    state_with_policy(schema, arguments, true)
+}
+
+pub(super) fn state_generic(schema: &Schema, arguments: &[String]) -> Result<(), Box<dyn Error>> {
+    state_with_policy(schema, arguments, false)
+}
+
+fn state_with_policy(
+    schema: &Schema,
+    arguments: &[String],
+    kernel_policy: bool,
+) -> Result<(), Box<dyn Error>> {
     let input = arguments.get(2).ok_or("missing menu working copy")?;
     if !matches!(arguments.len(), 3 | 5) {
         return Err("usage: menuconfig-state WORKING_COPY [NAME VALUE]".into());
@@ -86,7 +98,9 @@ pub(super) fn state(schema: &Schema, arguments: &[String]) -> Result<(), Box<dyn
     }
     removed.extend(inactive);
     let configuration = resolve(schema, values)?;
-    validate_kernel_configuration(&configuration, None)?;
+    if kernel_policy {
+        validate_kernel_configuration(&configuration, None)?;
+    }
     let mut entries = Vec::new();
     for symbol in &schema.symbols {
         if !dependency_is_met(symbol, &configuration) {
