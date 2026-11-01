@@ -69,6 +69,11 @@ SYMBOLS = (
     'vfs7resolve4walk',
     'vfs7resolve12prepare_walk',
     'vfs7resolve13restore_start',
+    '18FilesystemInstance8ancestry',
+    '8RemoteFs8ancestry',
+    '4View17assemble_ancestry',
+    'vfs6remote4node',
+    '10FileRecord7try_new',
     'vfs7resolve15walk_components',
     'vfs7resolve11finish_walk',
     '9Transport8exchange',
@@ -275,7 +280,7 @@ class ProcessStackTests(unittest.TestCase):
             self.check()
 
     def test_vfs_outlining_cannot_hide_live_frame_growth(self):
-        for phase, frame in (('15walk_components', 896), ('13restore_start', 1664)):
+        for phase, frame in (('15walk_components', 896), ('13restore_start', 1152)):
             with self.subTest(phase=phase):
                 self.setUp()
                 self.functions['vfs7resolve4walk'] = function(
@@ -284,6 +289,19 @@ class ProcessStackTests(unittest.TestCase):
                     'vfs7resolve' + phase, f'sub sp, sp, #{frame}\nret')
                 with self.assertRaisesRegex(ValueError, 'VFS .*live frames'):
                     self.check()
+
+    def test_ancestry_backend_frames_are_bounded_together(self):
+        for symbol, frame in (('vfs7resolve4walk', 192), ('vfs7resolve13restore_start', 1152),
+                              ('18FilesystemInstance8ancestry', 640), ('8RemoteFs8ancestry', 896)):
+            self.functions[symbol] = function(symbol, f'sub sp, sp, #{frame}\nret')
+        with self.assertRaisesRegex(ValueError, 'VFS ancestry lookup: live frames 2880'):
+            self.check()
+
+    def test_balance_selection_cannot_copy_full_thread_observations(self):
+        symbol = '9Scheduler21select_balance_target'
+        self.functions[symbol] = function(symbol, 'sub sp, sp, #528\nret')
+        with self.assertRaisesRegex(ValueError, 'entry frame 528 exceeds'):
+            self.check()
 
     def test_unrecognized_frame_cannot_silently_pass(self):
         symbol = '15PreparedProcess7try_new'

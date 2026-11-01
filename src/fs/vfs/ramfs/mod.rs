@@ -498,18 +498,20 @@ impl Ramfs {
             .index(name)
             .map(|index| children.entries[index].node.clone()))
     }
-    pub(super) fn ancestry(
+    pub(super) fn ancestry<T>(
         &self,
         root: &FallibleArc<Node>,
         start: &FallibleArc<Node>,
         budget: &ScratchBudget,
-    ) -> Result<ScratchVec<(FallibleArc<Node>, ScratchString)>, Error> {
-        let mut reverse = ScratchVec::new(budget.clone());
-        reverse.try_reserve_exact(1)?;
+        output: &mut ScratchVec<(T, ScratchString)>,
+        wrap: impl Fn(FallibleArc<Node>) -> T,
+    ) -> Result<(), Error> {
+        let begin = output.len();
+        output.try_reserve(1)?;
         let mut current = start.clone();
         let mut path_bytes = 0usize;
         while current.id != root.id {
-            if reverse.len() == MAX_PATH_COMPONENTS {
+            if output.len() - begin == MAX_PATH_COMPONENTS {
                 return Err(Error::InvalidInput);
             }
             let parent = current
@@ -533,13 +535,13 @@ impl Ramfs {
                 core::str::from_utf8(&entry.name[..entry.length])
                     .map_err(|_| Error::InvalidBackendResult)?,
             )?;
-            reverse.try_reserve(1)?;
-            reverse.push((current.clone(), name))?;
+            output.try_reserve(1)?;
+            output.push((wrap(current.clone()), name))?;
             drop(children);
             current = parent;
         }
-        reverse.reverse();
-        Ok(reverse)
+        output.as_mut_slice()[begin..].reverse();
+        Ok(())
     }
     pub(super) fn entry(
         &self,

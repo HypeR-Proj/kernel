@@ -23,7 +23,6 @@ crash-console = []
 [dependencies]
 
 [dependencies.hyper-abi]
-version = "=0.0.0"
 path = "../../sdk/abi"
 
 [lints]

@@ -47,7 +47,6 @@ kernel-stack-audit = ["hyper-hal/kernel-stack-audit"]
 [dependencies]
 
 [dependencies.hyper-filesystem]
-version = "=0.0.0"
 path = "../stdlib/rust/hyper-filesystem"
 
 [dependencies.hyper]

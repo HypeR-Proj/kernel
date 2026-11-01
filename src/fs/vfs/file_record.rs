@@ -45,12 +45,16 @@ impl FileRecord {
             ))
             .map_err(Error::Resource)?
             .commit();
-        FallibleArc::try_new(Self {
-            id,
-            content: FileContent::new(),
-            _charge: charge,
-        })
-        .map_err(Error::from)
+        // Quota precedes allocation; content state is initialized only in its
+        // final shared allocation, outside the allocator's live call chain.
+        let slot = hyper::mm::UniqueFallibleArc::try_new_uninit()?;
+        Ok(slot
+            .write(Self {
+                id,
+                content: FileContent::new(),
+                _charge: charge,
+            })
+            .into_shared())
     }
 
     pub(super) const fn id(&self) -> u64 {

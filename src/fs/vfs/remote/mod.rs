@@ -712,12 +712,14 @@ impl RemoteFs {
         Ok(())
     }
     #[inline(never)]
-    pub(super) fn ancestry(
+    pub(super) fn ancestry<T>(
         &self,
         root: &FallibleArc<Node>,
         start: &FallibleArc<Node>,
         budget: &ScratchBudget,
-    ) -> Result<ScratchVec<(FallibleArc<Node>, ScratchString)>, Error> {
+        output: &mut ScratchVec<(T, ScratchString)>,
+        wrap: impl Fn(FallibleArc<Node>) -> T,
+    ) -> Result<(), Error> {
         let mut state = self.state.lock().map_err(Error::Lock)?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES * 5)?;
         let root_path = state.path(root)?;
@@ -725,7 +727,6 @@ impl RemoteFs {
         if root_path != start_path && !within(&start_path, &root_path) {
             return Err(Error::Missing);
         }
-        let mut output = ScratchVec::new(budget.clone());
         let mut path = copy(&root_path)?;
         for component in start_path[root_path.len()..]
             .split('/')
@@ -737,9 +738,9 @@ impl RemoteFs {
             name.try_reserve_exact(component.len())?;
             name.push_str(component)?;
             output.try_reserve(1)?;
-            output.push((node, name))?;
+            output.push((wrap(node), name))?;
         }
-        Ok(output)
+        Ok(())
     }
 }
 impl State {
@@ -904,14 +905,19 @@ fn node(
         ))
         .map_err(Error::Resource)?
         .commit();
-    FallibleArc::try_new(Node {
-        mount_pins: AtomicU64::new(0),
-        directory_revision: AtomicU64::new(0),
-        locks: super::locks::FileLocks::new(),
-        record,
-        _charge: charge,
-    })
-    .map_err(Error::from)
+    // Reserve final storage before constructing lock and accounting state. A
+    // lookup can be interrupted by IRQ-tail scheduling below this allocation;
+    // it must not retain copies of the complete node through the allocator.
+    let slot = hyper::mm::UniqueFallibleArc::try_new_uninit()?;
+    Ok(slot
+        .write(Node {
+            mount_pins: AtomicU64::new(0),
+            directory_revision: AtomicU64::new(0),
+            locks: super::locks::FileLocks::new(),
+            record,
+            _charge: charge,
+        })
+        .into_shared())
 }
 fn child(parent: &str, name: Name<'_>) -> Result<String, Error> {
     join(
