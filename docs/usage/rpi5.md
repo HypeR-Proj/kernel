@@ -46,7 +46,7 @@ device-assignment description. The lock selects separate QEMU and Pi 5 build
 profiles. The Pi profile includes the upstream storage drivers; its package
 hardware-qualification status is separate from the recorded development runs. See
 the [I/O VM contract](https://hyper-proj.github.io/io-vm/docs/hyper-integration.html) and
-[board storage deployment](https://hyper-proj.github.io/build/docs/deployment/board-storage.html).
+[board storage deployment](https://hyper-proj.github.io/HypeR/docs/usage/board-storage.html).
 
 The Native I/O runtime validates the C0/D0 SDIO1 dependency graph and runs a
 separate userspace MMIO/IRQ worker. The kernel supplies immutable firmware
@@ -315,7 +315,7 @@ On 2026-10-06, the combined deployment using the published I/O VM pin completed
 provided reference data. These were single-round exploratory measurements;
 same-boot readback can hit caches and does not prove power-loss durability.
 See the [results](https://hyper-proj.github.io/HypeR/index.html#exploratory-pi-5-io-measurements) and
-[manual test image/tools](https://github.com/HypeR-Proj/ci/blob/main/hardware/storage/README.md).
+[manual test image/tools](https://github.com/HypeR-Proj/system-tests/blob/main/hardware/storage/README.md).
 The tools are absent from default builds and images.
 
 Stress, power-cut and physical retirement trials remain deferred and
@@ -421,7 +421,7 @@ The 2026-10-06 physical survey exercised guest TCP in both directions with one
 and four connections, using the Mac as client and the Alpine guest as server.
 Native Raspbian was measured separately with the same client. See the
 [results and limits](https://hyper-proj.github.io/HypeR/index.html#exploratory-pi-5-io-measurements) and
-[manual network exercise](https://github.com/HypeR-Proj/ci/blob/main/hardware/network/README.md).
+[manual network exercise](https://github.com/HypeR-Proj/system-tests/blob/main/hardware/network/README.md).
 This does not qualify simultaneous disk/network load, link recovery or faults.
 
 For manual functional checks, connect Ethernet to a network with DHCP, wait
