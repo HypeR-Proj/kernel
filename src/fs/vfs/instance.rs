@@ -846,18 +846,25 @@ impl FilesystemInstance {
         start: &NodeLease,
         budget: &ScratchBudget,
     ) -> Result<ScratchVec<(NodeLease, ScratchString)>, Error> {
+        // Backends fill the final node-lease collection directly. An intermediate
+        // backend vector duplicated both allocations and quota-owner stack copies
+        // below relative path lookup and its possible IRQ-tail scheduling.
         let mut result = ScratchVec::new(budget.clone());
         match &self.backend {
-            Backend::RamFs(fs) => {
-                for (node, name) in fs.ancestry(root.ramfs()?, start.ramfs()?, budget)? {
-                    result.push((NodeLease::from_ramfs(node), name))?;
-                }
-            }
-            Backend::Remote(fs) => {
-                for (node, name) in fs.ancestry(root.remote()?, start.remote()?, budget)? {
-                    result.push((NodeLease::from_remote(node), name))?;
-                }
-            }
+            Backend::RamFs(fs) => fs.ancestry(
+                root.ramfs()?,
+                start.ramfs()?,
+                budget,
+                &mut result,
+                NodeLease::from_ramfs,
+            )?,
+            Backend::Remote(fs) => fs.ancestry(
+                root.remote()?,
+                start.remote()?,
+                budget,
+                &mut result,
+                NodeLease::from_remote,
+            )?,
         }
         Ok(result)
     }

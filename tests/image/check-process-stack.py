@@ -98,7 +98,7 @@ def check(disassembly, *, self_test=False):
         # IRQ-tail balancing must not retain complete thread observations
         # through every migration frame. Selection and mutation keep one lock.
         '^_RNC.*24with_cpu_schedule_stored.*16balance_ready_in0E0': 192,
-        '9Scheduler21select_balance_target$': 640,
+        '9Scheduler21select_balance_target$': 256,
         '9Scheduler14migrate_thread$': 256,
         '9Scheduler17request_migration$': 256,
         '9Scheduler17move_ready_thread$': 320,
@@ -132,7 +132,12 @@ def check(disassembly, *, self_test=False):
         # backend lookup waits, which may nest IRQ-tail placement repair.
         'vfs7resolve4walk': 256,
         'vfs7resolve12prepare_walk': 1280,
-        'vfs7resolve13restore_start': 1664,
+        'vfs7resolve13restore_start': 1152,
+        '18FilesystemInstance8ancestry': 640,
+        '8RemoteFs8ancestry': 896,
+        '4View17assemble_ancestry': 1408,
+        'vfs6remote4node$': 512,
+        '10FileRecord7try_new$': 448,
         'vfs7resolve15walk_components': 896,
         'vfs7resolve11finish_walk': 512,
         # RPC publication excludes reply-wait preparation; waiter construction
@@ -184,8 +189,8 @@ def check(disassembly, *, self_test=False):
     # caller. Bound each separate phase together with its live coordinator.
     balance = measured['^_RNC.*24with_cpu_schedule_stored.*16balance_ready_in0E0']
     selection = balance + measured['9Scheduler21select_balance_target$']
-    if selection > 768:
-        raise ValueError(f'balance selection: live frames {selection} exceed 768')
+    if selection > 448:
+        raise ValueError(f'balance selection: live frames {selection} exceed 448')
     migration = balance + sum(measured[name] for name in (
         '9Scheduler14migrate_thread$', '9Scheduler17request_migration$',
         '9Scheduler17move_ready_thread$'))
@@ -239,11 +244,19 @@ def check(disassembly, *, self_test=False):
     if file_mapping > 1536:
         raise ValueError(f'file mapping publication: live frames {file_mapping} exceed 1536')
 
-    for phase, budget in (('12prepare_walk', 1536), ('13restore_start', 1792),
+    for phase, budget in (('12prepare_walk', 1536), ('13restore_start', 1344),
                           ('15walk_components', 1024)):
         live = measured['vfs7resolve4walk'] + measured['vfs7resolve' + phase]
         if live > budget:
             raise ValueError(f'VFS {phase}: live frames {live} exceed {budget}')
+
+    ancestry = measured['vfs7resolve4walk'] + measured['vfs7resolve13restore_start']
+    backend = ancestry + measured['18FilesystemInstance8ancestry'] + measured['8RemoteFs8ancestry']
+    if backend > 2816:
+        raise ValueError(f'VFS ancestry lookup: live frames {backend} exceed 2816')
+    assembly = ancestry + measured['4View17assemble_ancestry']
+    if assembly > 2560:
+        raise ValueError(f'VFS ancestry assembly: live frames {assembly} exceed 2560')
 
     finish = (measured['vfs7resolve4walk'] + measured['vfs7resolve15walk_components']
               + measured['vfs7resolve11finish_walk'])

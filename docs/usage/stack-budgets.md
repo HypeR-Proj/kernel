@@ -50,8 +50,9 @@ not bound the complete call graph or every preemption point. No unstable compile
 flags or `.stack_sizes` metadata are required.
 
 IRQ-tail load balancing projects only the thread fields needed by each migration
-phase. Candidate-selection snapshots retire before queue mutation while the same
-source CPU lock remains held. These boundaries reduce the common scheduling cost
+phase. Candidate selection borrows scheduling fields under the source CPU lock and
+returns only a destination; complete wait/queue snapshots do not cross the call.
+The same source CPU lock remains held through queue mutation. These boundaries reduce the common scheduling cost
 below interrupted syscalls without changing placement or migration semantics.
 
 Capability sends separate input admission from receiver matching and publication.
@@ -66,6 +67,12 @@ bounded allocation charged to the requesting domain and released with the reques
 Preparation temporaries retire before backend lookup RPC; image checks bound each
 phase and its live sum with the traversal coordinator.
 This preserves space for IRQ-tail scheduling on an interrupted VFS syscall.
+Relative ancestry is written directly into the final node-lease collection,
+without an intermediate backend vector. Mount-edge assembly runs after backend
+lookup in a separate phase; optimized checks bound both phases and their live
+call chains. Remote node and file-content identities reserve their final shared
+allocation before initializing payload state, retaining the same quota and
+allocation-failure ownership.
 RAM and remote filesystem construction also finish before mount-point traversal,
 so backend initialization scratch does not survive below namespace lookup RPC.
 
@@ -113,7 +120,7 @@ system-root handoff and guest startup on that
 image. IRQ and emergency stacks retain their default capacities. This catches
 overflow in long-lived services which do not contribute retired-thread samples.
 
-If `board-storage-media` fails, CI also performs a bounded diagnostic boot using
+If the storage stack audit fails, its testcase also performs a bounded diagnostic boot using
 QEMU GDB write watchpoints over the lowest 4 KiB of the first 256 stack slots.
 It records new low-reserve observations and stops below the 4096-byte threshold.
 The diagnostic replays the storage probe and a cross-filesystem copy on its disk

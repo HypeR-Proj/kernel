@@ -205,20 +205,9 @@ impl Scheduler {
         excluded: ThreadId,
         loads: &[CpuLoad; hyper::cpu::MAX_CPUS],
     ) -> Result<Option<(CpuIndex, bool)>, Error> {
-        let thread = self.thread(id)?;
         if id == excluded
-            || thread.state() != ThreadState::Ready
             || !matches!(
-                thread.scheduling_policy(),
-                SchedulingPolicy::Fair | SchedulingPolicy::Budget
-            )
-            || self
-                .thread_mut(id)?
-                .apply_schedule(|schedule| schedule.auto_migrated)
-            || thread.placement_policy() != PlacementPolicy::Movable
-            || thread.pending_migration().is_some()
-            || !matches!(
-                thread.execution_kind(),
+                self.registry.with_thread(id, Thread::execution_kind)?,
                 ExecutionKind::Kernel | ExecutionKind::User | ExecutionKind::Vcpu
             )
             || self
@@ -227,34 +216,49 @@ impl Scheduler {
         {
             return Ok(None);
         }
-        let target = least_loaded(
-            source.get(),
-            (0..hyper::cpu::MAX_CPUS)
-                .filter_map(CpuIndex::new)
-                .filter(|cpu| {
-                    *cpu != source
-                        && self.cpu_is_schedulable(*cpu)
-                        && thread.can_run_on(*cpu)
-                        && thread.wait_record().permits_assignment(*cpu)
-                        && loads[cpu.get()].realtime == 0
-                        && improves_balance(loads[source.get()].runnable, loads[cpu.get()].runnable)
-                })
-                .map(|cpu| {
-                    (
-                        cpu.get(),
-                        loads[cpu.get()]
-                            .runnable
-                            .saturating_mul(4)
-                            .saturating_add(loads[cpu.get()].budget.saturating_mul(2)),
-                    )
-                }),
-        )
-        .and_then(CpuIndex::new);
-        Ok(target.map(|target| {
-            (
-                target,
-                thread.scheduling_policy() == SchedulingPolicy::Budget,
+        let schedulable = self.schedulable_cpus;
+        // Borrow scheduling fields under the existing source CPU lock. Return
+        // only the destination, without copying wait/queue snapshots onto the
+        // interrupted caller's stack. The same lock remains held for migration.
+        Ok(self.thread_mut(id)?.apply_schedule(|schedule| {
+            if schedule.state != ThreadState::Ready
+                || !matches!(
+                    schedule.scheduling,
+                    SchedulingPolicy::Fair | SchedulingPolicy::Budget
+                )
+                || schedule.auto_migrated
+                || schedule.placement.policy() != PlacementPolicy::Movable
+                || schedule.pending_migration.is_some()
+            {
+                return None;
+            }
+            let target = least_loaded(
+                source.get(),
+                (0..hyper::cpu::MAX_CPUS)
+                    .filter_map(CpuIndex::new)
+                    .filter(|cpu| {
+                        *cpu != source
+                            && schedulable.contains(*cpu)
+                            && schedule.placement.affinity().contains(*cpu)
+                            && schedule.wait.permits_assignment(*cpu)
+                            && loads[cpu.get()].realtime == 0
+                            && improves_balance(
+                                loads[source.get()].runnable,
+                                loads[cpu.get()].runnable,
+                            )
+                    })
+                    .map(|cpu| {
+                        (
+                            cpu.get(),
+                            loads[cpu.get()]
+                                .runnable
+                                .saturating_mul(4)
+                                .saturating_add(loads[cpu.get()].budget.saturating_mul(2)),
+                        )
+                    }),
             )
+            .and_then(CpuIndex::new);
+            target.map(|target| (target, schedule.scheduling == SchedulingPolicy::Budget))
         }))
     }
 

@@ -7,7 +7,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use hyper::mm::FallibleArc;
 use hyper::sync::SpinLock;
 
-use super::instance::{Error, FilesystemInstance, Location, Mount, MountPin};
+use super::instance::{Error, FilesystemInstance, Location, Mount, MountPin, NodeLease};
 use super::scratch::{ScratchBudget, ScratchString, ScratchVec};
 use {
     crate::accounting::CommittedCharge, crate::accounting::ResourceDomain,
@@ -15,6 +15,8 @@ use {
 };
 
 mod root_switch;
+
+type AncestrySegment = (FallibleArc<Mount>, ScratchVec<(NodeLease, ScratchString)>);
 
 const MAX_MOUNTS: usize = 128;
 pub(super) const MAX_ROOT_MOVES: usize =
@@ -122,29 +124,7 @@ impl View {
                         .filesystem()
                         .ancestry(root.node(), cursor.node(), budget)?;
                 segments.push((cursor.mount().clone(), local))?;
-                let mut result: ScratchVec<(Location, ScratchString)> =
-                    ScratchVec::new(budget.clone());
-                for (index, (mount, local)) in segments.into_iter().rev().enumerate() {
-                    if index != 0 {
-                        // Cross only the mount edge actually present in the
-                        // retained start location's ancestry. Re-entering every
-                        // covered node would redirect pre-mount cwd capabilities.
-                        let attachment = self
-                            .entries()
-                            .iter()
-                            .find(|entry| entry.mounted.id() == mount.id())
-                            .ok_or(Error::InvalidInput)?;
-                        let (location, _) = result.last_mut().ok_or(Error::InvalidInput)?;
-                        if *location != attachment.covered {
-                            return Err(Error::InvalidInput);
-                        }
-                        *location = Location::new(mount.clone(), mount.root())?;
-                    }
-                    for (node, name) in local {
-                        result.push((Location::new(mount.clone(), node)?, name))?;
-                    }
-                }
-                return Ok(result);
+                return self.assemble_ancestry(&mut segments, budget);
             }
             let attachment = self
                 .entries()
@@ -160,6 +140,39 @@ impl View {
             cursor = attachment.covered.clone();
         }
         Err(Error::InvalidInput)
+    }
+
+    // Result assembly has no backend lookups. Keep its iterator and output
+    // ownership out of the ancestry walk's live filesystem/allocator stack.
+    #[inline(never)]
+    fn assemble_ancestry(
+        &self,
+        segments: &mut ScratchVec<AncestrySegment>,
+        budget: &ScratchBudget,
+    ) -> Result<ScratchVec<(Location, ScratchString)>, Error> {
+        let mut result: ScratchVec<(Location, ScratchString)> = ScratchVec::new(budget.clone());
+        let mut first = true;
+        while let Some((mount, local)) = segments.pop() {
+            if !first {
+                // Cross only the mount edge in the retained start ancestry.
+                // Entering every covered node would redirect pre-mount cwd.
+                let attachment = self
+                    .entries()
+                    .iter()
+                    .find(|entry| entry.mounted.id() == mount.id())
+                    .ok_or(Error::InvalidInput)?;
+                let (location, _) = result.last_mut().ok_or(Error::InvalidInput)?;
+                if *location != attachment.covered {
+                    return Err(Error::InvalidInput);
+                }
+                *location = Location::new(mount.clone(), mount.root())?;
+            }
+            first = false;
+            for (node, name) in local {
+                result.push((Location::new(mount.clone(), node)?, name))?;
+            }
+        }
+        Ok(result)
     }
 }
 
