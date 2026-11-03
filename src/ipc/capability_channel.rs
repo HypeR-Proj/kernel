@@ -184,6 +184,9 @@ pub(crate) struct CapabilityDeliveryInfo {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CapabilityReceiveOutcome {
     Delivered(CapabilityDeliveryInfo),
+    /// An exact matched transaction ended before committing any authority.
+    Rejected(CapabilityChannelError),
+    /// Receiver-local admission, endpoint or wait failure; no matched rejection.
     Failed(CapabilityChannelError),
 }
 
@@ -1001,7 +1004,7 @@ impl CapabilityReceiveClaim {
 
     /// Completes both sides' precommit error path without publishing authority.
     pub(crate) fn reject(mut self, error: CapabilityChannelError) {
-        self.finish(CapabilityReceiveOutcome::Failed(error));
+        self.finish(CapabilityReceiveOutcome::Rejected(error));
     }
 
     fn registration(&self) -> &ReceiveRegistration {

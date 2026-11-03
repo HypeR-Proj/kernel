@@ -170,7 +170,7 @@ fn verify_capacity_rejection(domain: &ResourceDomain) -> Result<(), Error> {
         return Err(Error::State(8));
     }
     claim.reject(error);
-    if pending.outcome() != Some(CapabilityReceiveOutcome::Failed(error)) {
+    if pending.outcome() != Some(CapabilityReceiveOutcome::Rejected(error)) {
         return Err(Error::State(9));
     }
     Ok(())
