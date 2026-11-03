@@ -111,24 +111,28 @@ qualification. Cross-run lazy ownership caching is not implemented.
 
 ## Layer and module boundaries
 
-The intended production layout is:
+The public schema lives in the workspace's `sdk/abi/` repository. The current
+implementation paths below are relative to the `kernel/` repository:
 
 ```text
-sdk/abi/                    compiler-checked schema and public interfaces
+core/src/abi/                 public ABI re-exports and fixed-width vocabulary
+core/src/hal/user.rs          architecture-neutral user-world machine contract
+src/entry/user/mod.rs         upward user-entry adapter
+src/abi/native/               invocation validation, dispatch and status translation
+src/authority.rs             operation and propagation rights vocabulary
+src/capability/              process-local handles and transfer transactions
+src/object/                  object identity, signals, events and wait sets
+src/process/                 process images, lifecycle and user threads
+src/ipc/                     byte/capability channels and matched transactions
+src/mm/user_space/           VMO/VMAR mappings and safe user-copy ownership
 
-src/entry/user/mod.rs    one upward user-entry adapter
-src/abi/             ABI values and Native dispatch
-src/process/         process image, handle table, user threads
-src/capability/      object header, rights, handles, transactions
-src/ipc/             channels, events, wait sets, backend sessions
-src/mm/user_space/   VMO, VMAR, mappings, safe user-copy ownership
-
-hal/src/hal/user.rs         selected user-world machine capability
-hal/src/arch/*/user.rs       private frames, roots, registers, entry and return
+hal/src/hal/user.rs           selected user-world machine adapter
+hal/src/arch/aarch64/user/    private AArch64 frames, roots, registers and entry
+hal/src/arch/riscv64/user/    private RISC-V frames, roots, registers and entry
 ```
 
-Dependencies flow downward. `kernel::abi` contains fixed-width values and
-dispatch policy but no architecture register offsets. `kernel::capability`
+Dependencies flow downward. `hyper-core` exposes the schema-owned values;
+`kernel::abi` owns dispatch policy but no architecture register offsets. `kernel::capability`
 does not depend on Channel or VM policy. IPC composes capability transactions;
 object-specific behavior remains in its owning subsystem. HAL knows address-
 space activation and user entry mechanisms but never Process, object operation selectors,
