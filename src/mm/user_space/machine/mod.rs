@@ -544,7 +544,7 @@ impl NativeAddressSpace {
     pub(crate) fn atomic_wait_key(
         &self,
         address: UserAddress,
-    ) -> Result<super::MappingToken, Error> {
+    ) -> Result<super::AtomicWaitKey, Error> {
         self.logical
             .atomic_wait_key(address)
             .map_err(Error::Logical)

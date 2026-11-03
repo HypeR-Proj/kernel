@@ -135,6 +135,27 @@ pub(crate) struct MappingToken {
     generation: u64,
 }
 
+/// One process-private word in a mapping lineage, independent of range fragments.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AtomicWaitKey {
+    address_space: AddressSpaceId,
+    mapping: u64,
+    address: UserAddress,
+}
+
+impl AtomicWaitKey {
+    /// Mix every identity component before selecting a condition-lock shard.
+    /// Equality still compares the complete key; this hash grants no authority.
+    pub(crate) fn hash(self) -> u64 {
+        fn mix(mut value: u64) -> u64 {
+            value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            value ^ (value >> 31)
+        }
+        mix(mix(mix(self.address_space.get()) ^ self.mapping) ^ self.address.get())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MappingSnapshot {
     pub(crate) token: MappingToken,
@@ -209,6 +230,7 @@ struct MappingOwnership<Charge> {
 struct Mapping<Backend: PageBackend, Account: MemoryAccount> {
     owner_vmar: u64,
     snapshot: MappingSnapshot,
+    wait_mapping_id: u64,
     maximum_permissions: Permissions,
     object: MappingObject<Backend, Account>,
     ownership: FallibleArc<MappingOwnership<Account::Charge>>,
@@ -216,11 +238,22 @@ struct Mapping<Backend: PageBackend, Account: MemoryAccount> {
     locks: Option<FallibleArc<residency::LockedPages<Account>>>,
 }
 
+impl<Backend: PageBackend, Account: MemoryAccount> Mapping<Backend, Account> {
+    fn atomic_wait_key(&self, address: UserAddress) -> AtomicWaitKey {
+        AtomicWaitKey {
+            address_space: self.snapshot.token.address_space,
+            mapping: self.wait_mapping_id,
+            address,
+        }
+    }
+}
+
 impl<Backend: PageBackend, Account: MemoryAccount> Clone for Mapping<Backend, Account> {
     fn clone(&self) -> Self {
         Self {
             owner_vmar: self.owner_vmar,
             snapshot: self.snapshot,
+            wait_mapping_id: self.wait_mapping_id,
             maximum_permissions: self.maximum_permissions,
             object: self.object.clone(),
             ownership: self.ownership.clone(),
@@ -950,6 +983,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
         let replacement = snapshot.mappings.records.insert(
             Mapping {
                 owner_vmar: vmar.id,
+                wait_mapping_id: id,
                 snapshot: MappingSnapshot {
                     token,
                     range,
@@ -1399,14 +1433,14 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
     }
 
     /// Resolves process-private wait identity without touching or pinning data.
-    /// A concurrent unmap may retire this mapping, but its never-reused token
-    /// can only match waiters on that same old mapping, never its replacement.
+    /// Fragments retain their original mapping identity. An unmap/remap receives
+    /// a fresh identity and cannot match waiters on the retired mapping.
     pub(crate) fn atomic_wait_key(
         &self,
         address: UserAddress,
-    ) -> SpaceResult<Backend, Account, MappingToken> {
+    ) -> SpaceResult<Backend, Account, AtomicWaitKey> {
         let snapshot = self.snapshot();
-        Ok(Self::atomic_mapping(&snapshot, address)?.snapshot.token)
+        Ok(Self::atomic_mapping(&snapshot, address)?.atomic_wait_key(address))
     }
 
     fn atomic_mapping(
@@ -1433,7 +1467,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
     }
 
     /// Pins one writable atomic word without ordinary byte copies. The mapping
-    /// token never aliases a replacement mapping at the same virtual address.
+    /// identity never aliases a replacement mapping at the same virtual address.
     pub(crate) fn pin_atomic_u32(
         &self,
         address: UserAddress,
@@ -1457,7 +1491,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
             })
             .map_err(AddressSpaceError::Account)?;
         Ok(PinnedAtomicWord {
-            token: mapping.snapshot.token,
+            key: mapping.atomic_wait_key(address),
             physical: physical.get() + offset % PAGE_SIZE,
             _backing: match mapping.object.pin_private_page(offset)? {
                 Some(page) => PinnedWordBacking::Private { _page: page },
@@ -2414,6 +2448,7 @@ fn append_fragments<Backend: PageBackend, Account: MemoryAccount>(
         *output = output.insert(
             Mapping {
                 owner_vmar: original.owner_vmar,
+                wait_mapping_id: original.wait_mapping_id,
                 snapshot: MappingSnapshot {
                     token: MappingToken {
                         address_space: space.id,
@@ -2538,7 +2573,7 @@ fn prune_private_views<'a, B: PageBackend + 'a, A: MemoryAccount + 'a>(
 
 /// Retains the writable lease and backing independently of mapping replacement.
 pub(crate) struct PinnedAtomicWord<Backend: PageBackend, Account: MemoryAccount> {
-    pub(crate) token: MappingToken,
+    pub(crate) key: AtomicWaitKey,
     pub(crate) physical: u64,
     _backing: PinnedWordBacking<Backend, Account>,
     _charge: Account::Charge,

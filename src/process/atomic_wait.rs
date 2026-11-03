@@ -27,7 +27,7 @@ use {
     crate::accounting::ResourceKind,
 };
 use {
-    crate::mm::user_space::MappingToken, crate::mm::user_space::NativePinnedAtomicWord,
+    crate::mm::user_space::AtomicWaitKey, crate::mm::user_space::NativePinnedAtomicWord,
     crate::mm::user_space::UserAddress,
 };
 use {crate::object::TimedWaitPreparation, crate::object::prepare_timed_wait};
@@ -40,6 +40,8 @@ type Bucket = InterruptSpinLock<State, crate::hal::irq::LocalMask>;
 struct State {
     queue: WaitQueue,
     waiters: Option<WaitTicket>,
+    #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+    scanned_waiters: u64,
 }
 
 /// One condition registration owned by the scheduler Thread, including its
@@ -47,7 +49,6 @@ struct State {
 /// identities, never pointers into a suspended continuation.
 struct Waiter {
     word: NativePinnedAtomicWord,
-    address: u64,
     ticket: WaitTicket,
     next: Option<WaitTicket>,
     _charge: CommittedCharge,
@@ -55,8 +56,7 @@ struct Waiter {
 
 #[derive(Clone, Copy)]
 struct WaiterSnapshot {
-    key: MappingToken,
-    address: u64,
+    key: AtomicWaitKey,
     next: Option<WaitTicket>,
 }
 
@@ -93,8 +93,7 @@ impl ThreadWaiter {
         self.node.with(|node| {
             let waiter = Self::matching(node, ticket);
             WaiterSnapshot {
-                key: waiter.word.token,
-                address: waiter.address,
+                key: waiter.word.key,
                 next: waiter.next,
             }
         })
@@ -179,10 +178,12 @@ static BUCKETS: [Bucket; BUCKET_COUNT] = [const {
     Bucket::new(State {
         queue: WaitQueue::new(),
         waiters: None,
+        #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+        scanned_waiters: 0,
     })
 }; BUCKET_COUNT];
-fn bucket(address: u64) -> &'static Bucket {
-    &BUCKETS[(address as usize >> 2) % BUCKET_COUNT]
+fn bucket(key: AtomicWaitKey) -> &'static Bucket {
+    &BUCKETS[key.hash() as usize % BUCKET_COUNT]
 }
 
 pub(crate) fn wait(
@@ -220,10 +221,9 @@ pub(crate) fn wait(
         TimedWaitPreparation::Armed(prepared) => prepared,
     };
     let ticket = prepared.ticket();
-    let bucket = bucket(address);
+    let bucket = bucket(word.key);
     let mut candidate = Some(Waiter {
         word,
-        address,
         ticket,
         next: None,
         _charge: charge,
@@ -275,17 +275,20 @@ pub(crate) fn wake(process: &Process, address: u64, count: u32) -> Result<u64, E
     }
     let key =
         process.retry_user_memory(|space| space.atomic_wait_key(UserAddress::new(address)))?;
-    bucket(address).with(|state| {
+    bucket(key).with(|state| {
         let mut woke = 0;
         let mut current = state.waiters;
         while let Some(ticket) = current {
+            #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+            {
+                state.scanned_waiters = state.scanned_waiters.wrapping_add(1);
+            }
             let waiter = with_waiter(ticket, |slot| slot.snapshot(ticket));
             current = waiter.next;
             if woke == u64::from(count) {
                 break;
             }
             if waiter.key == key
-                && waiter.address == address
                 && scheduler::notify_registered_with(ticket, || {})
                     .map_err(ProcessError::from)?
                     .won
@@ -299,6 +302,28 @@ pub(crate) fn wake(process: &Process, address: u64, count: u32) -> Result<u64, E
 
 fn invariant() -> ! {
     crate::diagnostics::crash::fatal(format_args!("HypeR: atomic wait lost registration"))
+}
+
+#[cfg(all(
+    feature = "kernel-test",
+    feature = "kernel-self-test",
+    CONFIG_ARCH_AARCH64
+))]
+pub(crate) fn bucket_index_for_test(process: &Process, address: u64) -> Result<usize, Error> {
+    let key =
+        process.retry_user_memory(|space| space.atomic_wait_key(UserAddress::new(address)))?;
+    Ok(key.hash() as usize % BUCKET_COUNT)
+}
+
+#[cfg(all(
+    feature = "kernel-test",
+    feature = "kernel-self-test",
+    CONFIG_ARCH_AARCH64
+))]
+pub(crate) fn scanned_waiters_for_test() -> u64 {
+    BUCKETS.iter().fold(0u64, |total, bucket| {
+        total.wrapping_add(bucket.with(|state| state.scanned_waiters))
+    })
 }
 
 pub(crate) fn sleep(
@@ -333,13 +358,13 @@ pub(crate) fn sleep(
 pub(crate) fn waiter_count(process: &Process, address: u64) -> Result<usize, Error> {
     let word =
         process.retry_user_memory(|space| space.pin_atomic_u32(UserAddress::new(address)))?;
-    Ok(bucket(address).with(|state| {
+    Ok(bucket(word.key).with(|state| {
         let mut count = 0;
         let mut current = state.waiters;
         while let Some(ticket) = current {
             let waiter = with_waiter(ticket, |slot| slot.snapshot(ticket));
             current = waiter.next;
-            if waiter.key == word.token && waiter.address == address {
+            if waiter.key == word.key {
                 count += 1;
             }
         }
@@ -368,12 +393,11 @@ pub(crate) fn verify_exit_guard(process: &Process, address: u64) -> Result<bool,
         scheduler::begin_wait(crate::task::WaitMobility::Migratable).map_err(ProcessError::from)?;
     let ticket = registration.ticket();
     let _ = scheduler::finish_wait(registration).map_err(ProcessError::from)?;
-    let bucket = bucket(address);
+    let bucket = bucket(word.key);
     bucket.with(|state| {
         with_waiter(ticket, |slot| {
             slot.install(Waiter {
                 word,
-                address,
                 ticket,
                 next: state.waiters,
                 _charge: charge,

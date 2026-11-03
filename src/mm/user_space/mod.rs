@@ -33,9 +33,11 @@ pub(crate) use transaction::retry_stale;
 #[cfg(not(test))]
 pub(crate) use vmo::{ExclusiveHardwareWriteLease, WritableMappingLease};
 
+#[cfg(test)]
+pub(crate) use address_space::MappingToken;
 pub(crate) use address_space::{
-    AddressSpaceError, CrashMapping, CrashMappingKind, CrashMemory, CrashReadError, MappingChange,
-    MappingToken, PreparedMappingChange, PreparedUserRead, PreparedUserWrite, UserAddressSpace,
+    AddressSpaceError, AtomicWaitKey, CrashMapping, CrashMappingKind, CrashMemory, CrashReadError,
+    MappingChange, PreparedMappingChange, PreparedUserRead, PreparedUserWrite, UserAddressSpace,
     Vmar,
 };
 #[cfg(not(test))]

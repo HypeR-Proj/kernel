@@ -855,8 +855,11 @@ The scheduler's `WaitRecord` remains in CPU-owned scheduling state; the stable
 resource context does not change scheduler lock ownership or migration rules.
 
 Native atomic wait/wake currently use process-private aligned writable u32
-words. The key contains the address-space, non-reused mapping token, and virtual
-byte address. The kernel retains a writable backing lease through each admitted
+words. The key contains the address-space, non-reused mapping lineage, and virtual
+byte address. Range fragmentation and permission changes retain that lineage;
+management tokens still change to invalidate stale mapping observations. Unmapping
+and mapping again creates a fresh lineage, even for the same VMO and address.
+The kernel retains a writable backing lease through each admitted
 wait and performs the value check and wait publication under the same sharded
 condition lock used by wake. Scheduler tickets arbitrate wake, timeout and
 cancellation exactly once. The condition registration lives in a slot embedded in the
@@ -869,11 +872,16 @@ the same invariant. CPU migration preserves the Thread-owned slot. Thread/Proces
 stop resumes cancellation cleanup rather than discarding a parked continuation.
 Finite deadlines still allocate and charge a timeout timer;
 infinite deadlines do not require timer storage. The 64 hash buckets are not a
-limit on waiter count.
+limit on waiter count. Bucket selection mixes the complete key so equal page
+offsets across mappings and Processes do not all select one condition lock.
 
 A replaced mapping cannot wake an old wait; callers
 must keep mappings live until their waits finish. Aliases and other Processes
-have separate wait domains. Shared VMO keys, requeue and priority inheritance
+have separate wait domains. Removing write permission prevents new wait/wake
+operations on that range; restoring it on the same live mapping preserves the
+wait domain. Neither unmap nor protect synchronously cancels an admitted wait:
+timeout and Thread/Process stop retain their normal cleanup paths. Shared VMO
+keys, requeue and priority inheritance
 remain separately specified extensions, not implemented contracts.
 
 ## Process, memory, and user-copy safety

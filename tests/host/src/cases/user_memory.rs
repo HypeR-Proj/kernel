@@ -1954,7 +1954,7 @@ fn atomic_word_pin_rejects_invalid_access_and_distinguishes_remapping() {
     ));
     complete(crate::require_ok(map.commit_for_test()));
     let replacement = crate::require_ok(space.pin_atomic_u32(UserAddress::new(0x4000)));
-    assert_ne!(pin.token, replacement.token);
+    assert_ne!(pin.key, replacement.key);
     assert_eq!(pin.physical, replacement.physical);
     drop(replacement);
     drop(space);
@@ -1962,6 +1962,152 @@ fn atomic_word_pin_rejects_invalid_access_and_distinguishes_remapping() {
     assert_eq!(usage.pages.load(Ordering::Relaxed), 1);
     drop(pin);
     assert_eq!(usage.pages.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn atomic_wait_identity_survives_mapping_fragments() {
+    let (backend, account) = fixtures();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x4000, PAGE_SIZE * 3),
+        backend.clone(),
+        account.clone(),
+    ));
+    let storage = crate::require_ok(WritableVmo::try_new(PAGE_SIZE * 3, backend, account));
+    crate::require_ok(storage.populate(0, PAGE_SIZE * 3));
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_map_writable(
+            space.root_vmar(),
+            slice(0x4000, PAGE_SIZE * 3),
+            storage.clone(),
+            0,
+            Permissions::read_write(),
+            Permissions::read_write(),
+        ))
+        .commit_for_test(),
+    ));
+    let first = crate::require_ok(space.atomic_wait_key(UserAddress::new(0x4000)));
+    let middle = crate::require_ok(space.atomic_wait_key(UserAddress::new(0x5000)));
+    let last = crate::require_ok(space.atomic_wait_key(UserAddress::new(0x6000)));
+    for (base, permissions) in [
+        (0x5000, Permissions::read_write()),
+        (0x5000, Permissions::read_only()),
+        (0x5000, Permissions::read_write()),
+        (0x4000, Permissions::read_write()),
+    ] {
+        complete(crate::require_ok(
+            crate::require_ok(space.prepare_protect(
+                space.root_vmar(),
+                slice(base, PAGE_SIZE),
+                permissions,
+            ))
+            .commit_for_test(),
+        ));
+        assert_eq!(
+            crate::require_ok(space.atomic_wait_key(UserAddress::new(0x4000))),
+            first
+        );
+        assert_eq!(
+            crate::require_ok(space.atomic_wait_key(UserAddress::new(0x6000))),
+            last
+        );
+    }
+    assert_eq!(
+        crate::require_ok(space.atomic_wait_key(UserAddress::new(0x5000))),
+        middle
+    );
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x5000, PAGE_SIZE)))
+            .commit_for_test(),
+    ));
+    assert_eq!(
+        crate::require_ok(space.atomic_wait_key(UserAddress::new(0x4000))),
+        first
+    );
+    assert_eq!(
+        crate::require_ok(space.atomic_wait_key(UserAddress::new(0x6000))),
+        last
+    );
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_map_writable(
+            space.root_vmar(),
+            slice(0x5000, PAGE_SIZE),
+            storage,
+            PAGE_SIZE,
+            Permissions::read_write(),
+            Permissions::read_write(),
+        ))
+        .commit_for_test(),
+    ));
+    assert_ne!(
+        crate::require_ok(space.atomic_wait_key(UserAddress::new(0x5000))),
+        middle
+    );
+}
+
+#[test]
+fn atomic_wait_hash_spreads_same_offsets_across_pages_and_spaces() {
+    const SAMPLES: usize = 64;
+    let (backend, account) = fixtures();
+    let range = slice(0x4000, PAGE_SIZE * SAMPLES as u64);
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        range,
+        backend.clone(),
+        account.clone(),
+    ));
+    let storage = crate::require_ok(WritableVmo::try_new(
+        range.length(),
+        backend.clone(),
+        account.clone(),
+    ));
+    crate::require_ok(storage.populate(0, range.length()));
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_map_writable(
+            space.root_vmar(),
+            range,
+            storage.clone(),
+            0,
+            Permissions::read_write(),
+            Permissions::read_write(),
+        ))
+        .commit_for_test(),
+    ));
+    let mut page_buckets = [false; 64];
+    let mut space_buckets = [false; 64];
+    let first = crate::require_ok(space.atomic_wait_key(range.base()));
+    for index in 0..SAMPLES {
+        let address = UserAddress::new(0x4000 + PAGE_SIZE * index as u64);
+        let key = crate::require_ok(space.atomic_wait_key(address));
+        page_buckets[key.hash() as usize % 64] = true;
+        if index != 0 {
+            assert_ne!(key, first);
+        }
+        let other = crate::require_ok(UserAddressSpace::try_new(
+            window(),
+            slice(0x4000, PAGE_SIZE),
+            backend.clone(),
+            account.clone(),
+        ));
+        complete(crate::require_ok(
+            crate::require_ok(other.prepare_map_writable(
+                other.root_vmar(),
+                slice(0x4000, PAGE_SIZE),
+                storage.clone(),
+                0,
+                Permissions::read_write(),
+                Permissions::read_write(),
+            ))
+            .commit_for_test(),
+        ));
+        let other_key = crate::require_ok(other.atomic_wait_key(UserAddress::new(0x4000)));
+        assert_ne!(other_key, first);
+        space_buckets[other_key.hash() as usize % 64] = true;
+    }
+    // The old low-address-bit selector places all samples in one bucket.
+    // Check dispersion rather than wall-clock timing in the portable test.
+    assert!(page_buckets.into_iter().filter(|used| *used).count() > 16);
+    assert!(space_buckets.into_iter().filter(|used| *used).count() > 16);
 }
 
 #[test]
@@ -1987,11 +2133,12 @@ fn atomic_wake_identity_needs_no_page_pin_or_cow_materialization() {
         PAGE_SIZE,
         user::PrivateMappingMode::CopyOnWrite,
     );
+    let key = crate::require_ok(space.atomic_wait_key(UserAddress::new(0x1000)));
     let calls = account.0.charge_calls.load(Ordering::Relaxed);
     account.0.fail_next.store(true, Ordering::Relaxed);
     assert_eq!(
         crate::require_ok(space.atomic_wait_key(UserAddress::new(0x1000))),
-        token
+        key
     );
     assert_eq!(account.0.charge_calls.load(Ordering::Relaxed), calls);
     assert!(matches!(
@@ -2009,8 +2156,12 @@ fn atomic_wake_identity_needs_no_page_pin_or_cow_materialization() {
     account.0.fail_next.store(false, Ordering::Relaxed);
     materialize(&space, slice(0x1000, 4));
     assert_eq!(
-        crate::require_ok(space.atomic_wait_key(UserAddress::new(0x1000))),
+        crate::require_ok(space.mapping_snapshot(token)).token,
         token
+    );
+    assert_eq!(
+        crate::require_ok(space.atomic_wait_key(UserAddress::new(0x1000))),
+        key
     );
     complete(crate::require_ok(
         crate::require_ok(space.prepare_protect(
@@ -2380,7 +2531,7 @@ fn private_cow_shares_then_isolates_and_preserves_mapping_identity() {
     assert_eq!(byte, [0x51]);
     materialize(&space, slice(0x2000, 1));
     let pin_after = crate::require_ok(space.pin_atomic_u32(UserAddress::new(0x1000)));
-    assert_eq!(pin.token, pin_after.token);
+    assert_eq!(pin.key, pin_after.key);
     assert_eq!(pin.physical, pin_after.physical);
     drop(pin_after);
     drop(pin);
@@ -2596,7 +2747,7 @@ fn fragmented_private_view_preserves_other_pages_and_futex_identity() {
     let pin = crate::require_ok(space.pin_atomic_u32(UserAddress::new(0x1000)));
     materialize(&space, slice(0x3000, 1));
     let after = crate::require_ok(space.pin_atomic_u32(UserAddress::new(0x1000)));
-    assert_eq!(after.token, pin.token);
+    assert_eq!(after.key, pin.key);
     assert_eq!(after.physical, pin.physical);
     let mut byte = [0];
     crate::require_ok(space.copy_from_user(slice(0x1000, 1), &mut byte));
@@ -2756,7 +2907,11 @@ fn reserved_output_allows_unrelated_cow_but_still_excludes_authority_changes() {
     complete(crate::require_ok(other_write.commit_for_test()));
     let new_pin = crate::require_ok(space.pin_atomic_u32(UserAddress::new(0x1000)));
     assert_eq!(old_pin.physical, new_pin.physical);
-    assert_eq!(new_pin.token, token);
+    assert_eq!(new_pin.key, old_pin.key);
+    assert_eq!(
+        crate::require_ok(space.mapping_snapshot(token)).token,
+        token
+    );
     crate::require_ok(space.copy_to_user(slice(0x2000, 1), &[0x77]));
     crate::require_ok(space.write_user_reservation_for_test(&output, &[0xa5]));
     for change in [
