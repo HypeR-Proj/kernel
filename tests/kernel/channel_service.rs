@@ -21,9 +21,9 @@ use {
 use {
     crate::ipc::ByteChannelError, crate::ipc::ByteChannelReadOutcome,
     crate::ipc::ByteChannelServiceError, crate::ipc::CapabilityChannel,
-    crate::ipc::CapabilityChannelServiceError, crate::ipc::CapabilityDeliveryInfo,
-    crate::ipc::CapabilityReceiveOutcome, crate::ipc::byte_channel_create,
-    crate::ipc::byte_channel_read, crate::ipc::byte_channel_write,
+    crate::ipc::CapabilityChannelError, crate::ipc::CapabilityChannelServiceError,
+    crate::ipc::CapabilityDeliveryInfo, crate::ipc::CapabilityReceiveOutcome,
+    crate::ipc::byte_channel_create, crate::ipc::byte_channel_read, crate::ipc::byte_channel_write,
     crate::ipc::capability_channel_receive, crate::ipc::capability_channel_try_send,
 };
 use {
@@ -345,6 +345,7 @@ struct CapabilityReceiveContext {
     endpoint: HandleValue,
     byte_output: UserSlice,
     slot_output: UserSlice,
+    expected: CapabilityReceiveOutcome,
     status: AtomicUsize,
 }
 
@@ -412,60 +413,131 @@ fn verify_cross_process_capability_transfer(
     }
     drop(receiver_invocation);
 
-    let context = Box::new(CapabilityReceiveContext {
-        process: destination.clone(),
-        endpoint: receiver,
-        byte_output: destination_bytes,
-        slot_output: destination_record,
-        status: AtomicUsize::new(0),
-    });
-    let context = Box::into_raw(context);
-    let worker = match crate::task::scheduler::kthread_create(
-        "capability-receiver",
-        capability_receive_worker,
-        context.expose_provenance(),
-    ) {
-        Ok(worker) => worker,
-        Err(error) => {
-            // SAFETY: no Thread received the pointer when construction failed.
-            drop(unsafe { Box::from_raw(context) });
-            return Err(error.into());
+    // Reject several exact matched MOVE transactions, then reuse the same
+    // listener and source owner for a successful transfer. No failed attempt
+    // may install a destination capability or leak its reserved handle slot.
+    for rejected in [
+        Some(CapabilityChannelError::BufferTooSmall {
+            required_bytes: CAPABILITY_MESSAGE.len(),
+            required_handles: 1,
+        }),
+        Some(CapabilityChannelError::WrongObjectType),
+        Some(CapabilityChannelError::AccessDenied),
+        Some(CapabilityChannelError::UserMemoryFault),
+        None,
+    ] {
+        let receive_bytes = if matches!(
+            rejected,
+            Some(CapabilityChannelError::BufferTooSmall { .. })
+        ) {
+            scratch(0x380, 2)?
+        } else {
+            destination_bytes
+        };
+        let mut slot = receive_slot(if rejected == Some(CapabilityChannelError::AccessDenied) {
+            transferred_rights.union(Rights::WRITE)
+        } else {
+            transferred_rights
+        });
+        if rejected == Some(CapabilityChannelError::WrongObjectType) {
+            slot[16..20]
+                .copy_from_slice(&hyper::abi::native::HYPER_NATIVE_OBJECT_VMO.to_ne_bytes());
         }
-    };
-    crate::task::scheduler::thread_ready(worker)?;
+        destination.copy_to_user(destination_record, &slot)?;
+        destination.copy_to_user(destination_bytes, &[0xa5; 32])?;
+        let expected = rejected.map_or(
+            CapabilityReceiveOutcome::Delivered(CapabilityDeliveryInfo {
+                bytes: CAPABILITY_MESSAGE.len(),
+                handles: 1,
+            }),
+            CapabilityReceiveOutcome::Rejected,
+        );
+        let context = Box::new(CapabilityReceiveContext {
+            process: destination.clone(),
+            endpoint: receiver,
+            byte_output: receive_bytes,
+            slot_output: destination_record,
+            expected,
+            status: AtomicUsize::new(0),
+        });
+        let context = Box::into_raw(context);
+        let worker = match crate::task::scheduler::kthread_create(
+            "capability-receiver",
+            capability_receive_worker,
+            context.expose_provenance(),
+        ) {
+            Ok(worker) => worker,
+            Err(error) => {
+                // SAFETY: no Thread received the pointer when construction failed.
+                drop(unsafe { Box::from_raw(context) });
+                return Err(error.into());
+            }
+        };
+        crate::task::scheduler::thread_ready(worker)?;
 
-    let sender_object = source.resolve_handle::<CapabilityChannel>(sender, Rights::WRITE)?;
-    if !crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
-        Ok::<_, Error>(
-            sender_object.object().signal_level_for_test()
-                & CapabilityChannel::PEER_RECEIVING.bits()
-                != 0,
-        )
-    })? {
-        return Err(Error::State(23));
-    }
-    capability_channel_try_send(
-        source,
-        &source.resolve_invocation(sender)?,
-        Some(source_bytes),
-        Some(source_record),
-    )?;
+        let sender_object = source.resolve_handle::<CapabilityChannel>(sender, Rights::WRITE)?;
+        if !crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+            Ok::<_, Error>(
+                sender_object.object().signal_level_for_test()
+                    & CapabilityChannel::PEER_RECEIVING.bits()
+                    != 0,
+            )
+        })? {
+            return Err(Error::State(23));
+        }
+        if rejected == Some(CapabilityChannelError::UserMemoryFault) {
+            fail_exposed_write_after_copy_for_test(2);
+        }
+        let send_result = capability_channel_try_send(
+            source,
+            &source.resolve_invocation(sender)?,
+            Some(source_bytes),
+            Some(source_record),
+        );
+        match (send_result, rejected) {
+            (Ok(()), None) => {}
+            (Err(CapabilityChannelServiceError::Channel(actual)), Some(expected))
+                if actual == expected => {}
+            _ => return Err(Error::State(105)),
+        }
 
-    // SAFETY: the allocation remains owned by this test until worker
-    // quiescence, and all shared observations use atomics or immutable fields.
-    let receive_status = unsafe { &(*context).status };
-    if !crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
-        Ok::<_, Error>(receive_status.load(Ordering::Acquire) != 0)
-    })? {
-        return Err(Error::State(24));
-    }
-    super::support::quiesce_workers()?;
-    let status = receive_status.load(Ordering::Acquire);
-    // SAFETY: scheduler quiescence proves the worker returned and its exit
-    // trampoline can no longer access the boxed context.
-    drop(unsafe { Box::from_raw(context) });
-    if status != 1 {
-        return Err(Error::State(25));
+        // SAFETY: the allocation remains owned by this test until worker
+        // quiescence, and all shared observations use atomics or immutable fields.
+        let receive_status = unsafe { &(*context).status };
+        if !crate::task::wait_for_test_progress(crate::task::TEST_PROGRESS_TIMEOUT_NS, || {
+            Ok::<_, Error>(receive_status.load(Ordering::Acquire) != 0)
+        })? {
+            return Err(Error::State(24));
+        }
+        super::support::quiesce_workers()?;
+        let status = receive_status.load(Ordering::Acquire);
+        // SAFETY: scheduler quiescence proves the worker returned and its exit
+        // trampoline can no longer access the boxed context.
+        drop(unsafe { Box::from_raw(context) });
+        if status != 1 {
+            return Err(Error::State(25));
+        }
+        if rejected.is_some() {
+            source.handle_info(event, Rights::NONE)?;
+            if domain.usage().total(ResourceKind::Handles) != handle_count {
+                return Err(Error::State(106));
+            }
+            let mut output = [0; CAPABILITY_RECORD_BYTES];
+            destination.copy_from_user(destination_record, &mut output)?;
+            if rejected != Some(CapabilityChannelError::UserMemoryFault) {
+                let mut bytes = [0; 32];
+                destination.copy_from_user(destination_bytes, &mut bytes)?;
+                if output != slot || bytes != [0xa5; 32] {
+                    return Err(Error::State(108));
+                }
+            }
+            let raw = read_u64(&output, 0)?;
+            if let Ok(value) = handle_wire::from_abi(raw)
+                && destination.handle_info(value, Rights::NONE).is_ok()
+            {
+                return Err(Error::State(107));
+            }
+        }
     }
     if source.handle_info(event, Rights::NONE).is_ok() {
         return Err(Error::State(26));
@@ -550,13 +622,10 @@ extern "C" fn capability_receive_worker(context: usize) {
                 || false,
             )
         });
-    let status = match outcome {
-        Ok(CapabilityReceiveOutcome::Delivered(CapabilityDeliveryInfo { bytes, handles: 1 }))
-            if bytes == CAPABILITY_MESSAGE.len() =>
-        {
-            1
-        }
-        _ => 2,
+    let status = if matches!(outcome, Ok(actual) if actual == context.expected) {
+        1
+    } else {
+        2
     };
     context.status.store(status, Ordering::Release);
 }

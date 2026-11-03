@@ -9,7 +9,8 @@ use crate::abi::native::Arguments;
 use crate::capability::InvocationReceiver;
 use hyper::abi::native::{
     HYPER_NATIVE_STATUS_BUFFER_TOO_SMALL, HYPER_NATIVE_STATUS_INTERNAL,
-    HYPER_NATIVE_STATUS_INVALID_ARGUMENT, HyperNativeStatus, NativeOperation, NativeResult,
+    HYPER_NATIVE_STATUS_INVALID_ARGUMENT, HYPER_NATIVE_STATUS_TRANSACTION_REJECTED,
+    HyperNativeStatus, NativeOperation, NativeResult,
 };
 use {crate::abi::native::services::IpcServices, crate::abi::native::services::NativeAction};
 use {
@@ -139,7 +140,7 @@ pub(in crate::abi::native) fn capability_receive_result(
                 _ => failure(HYPER_NATIVE_STATUS_INTERNAL),
             }
         }
-        Ok(CapabilityReceiveOutcome::Failed(CapabilityChannelError::BufferTooSmall {
+        Ok(CapabilityReceiveOutcome::Rejected(CapabilityChannelError::BufferTooSmall {
             required_bytes,
             required_handles,
         })) => match (
@@ -153,6 +154,11 @@ pub(in crate::abi::native) fn capability_receive_result(
             ),
             _ => failure(HYPER_NATIVE_STATUS_INTERNAL),
         },
+        Ok(CapabilityReceiveOutcome::Rejected(error)) => NativeResult::for_operation(
+            NativeOperation::CapabilityChannelReceive,
+            HYPER_NATIVE_STATUS_TRANSACTION_REJECTED,
+            [status_from_capability_channel_error(error) as u64, 0],
+        ),
         Ok(CapabilityReceiveOutcome::Failed(error)) => {
             failure(status_from_capability_channel_error(error))
         }

@@ -2096,7 +2096,7 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
     {
         return Err(SelfTestError::CapabilityChannelErrorMapping);
     }
-    if capability_receive_result(Ok(CapabilityReceiveOutcome::Failed(
+    if capability_receive_result(Ok(CapabilityReceiveOutcome::Rejected(
         CapabilityChannelError::BufferTooSmall {
             required_bytes: 4096,
             required_handles: 16,
@@ -2107,6 +2107,27 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
         [4096, 16],
     ) {
         return Err(SelfTestError::CapabilityChannelErrorMapping);
+    }
+    // Identical causes retain their receiver-local versus matched origin.
+    for error in [
+        CapabilityChannelError::InvalidHandle,
+        CapabilityChannelError::AccessDenied,
+        CapabilityChannelError::UserMemoryFault,
+        CapabilityChannelError::Internal,
+    ] {
+        let status = status_from_capability_channel_error(error);
+        if capability_receive_result(Ok(CapabilityReceiveOutcome::Rejected(error)))
+            != NativeResult::for_operation(
+                NativeOperation::CapabilityChannelReceive,
+                hyper::abi::native::HYPER_NATIVE_STATUS_TRANSACTION_REJECTED,
+                [status as u64, 0],
+            )
+            || capability_receive_result(Ok(CapabilityReceiveOutcome::Failed(error)))
+                != failure(status)
+            || capability_receive_result(Err(status)) != failure(status)
+        {
+            return Err(SelfTestError::CapabilityChannelErrorMapping);
+        }
     }
     if status_from_console_service_error(ConsoleServiceError::Io(
         crate::device::console::IoError::WouldBlock,
