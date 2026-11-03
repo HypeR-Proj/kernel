@@ -247,7 +247,12 @@ pub(in crate::abi::native) fn sys_vmar_lock_memory(
     receiver: &InvocationReceiver,
     arguments: &Arguments,
 ) -> NativeAction {
-    memory_residency(services, receiver, arguments, true)
+    memory_residency(
+        services,
+        receiver,
+        arguments,
+        crate::mm::user_space::ResidencyAction::Lock,
+    )
 }
 
 #[inline(never)]
@@ -256,28 +261,36 @@ pub(in crate::abi::native) fn sys_vmar_unlock_memory(
     receiver: &InvocationReceiver,
     arguments: &Arguments,
 ) -> NativeAction {
-    memory_residency(services, receiver, arguments, false)
+    memory_residency(
+        services,
+        receiver,
+        arguments,
+        crate::mm::user_space::ResidencyAction::Unlock,
+    )
 }
 
 fn memory_residency(
     services: &impl MemoryServices,
     receiver: &InvocationReceiver,
     arguments: &Arguments,
-    lock: bool,
+    action: crate::mm::user_space::ResidencyAction,
 ) -> NativeAction {
     let result = (|| {
         require_zero(&arguments[3..])?;
-        let current = match arguments[2] {
-            0 => false,
+        let scope = match arguments[2] {
+            0 => crate::mm::user_space::ResidencyScope::Range {
+                address: arguments[0],
+                size: arguments[1],
+            },
             hyper::abi::native::HYPER_NATIVE_VMAR_MEMORY_CURRENT
                 if arguments[0] == 0 && arguments[1] == 0 =>
             {
-                true
+                crate::mm::user_space::ResidencyScope::CurrentMappings
             }
             _ => return Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT),
         };
         services
-            .set_memory_residency(receiver, arguments[0], arguments[1], current, lock)
+            .set_memory_residency(receiver, scope, action)
             .map_err(status_from_memory_service_error)
     })();
     NativeAction::Return(status_only(result))

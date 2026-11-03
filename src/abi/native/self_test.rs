@@ -683,10 +683,8 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
         fn set_memory_residency(
             &self,
             _: &InvocationReceiver,
-            _: u64,
-            _: u64,
-            _: bool,
-            _: bool,
+            _: crate::mm::user_space::ResidencyScope,
+            _: crate::mm::user_space::ResidencyAction,
         ) -> Result<(), MemoryServiceError> {
             self.calls.set(self.calls.get().saturating_add(1));
             Err(MemoryServiceError::Process(ProcessError::Allocation))
@@ -2824,13 +2822,11 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
             != NativeAction::Return(failure(HYPER_NATIVE_STATUS_INVALID_ARGUMENT))
         || !matches!(
             same_rights_builder_handle,
-            Ok((
-                _,
-                _,
-                _,
-                None,
-                crate::capability::HandleTransferOperation::Move
-            ))
+            Ok(super::wire::ProcessBuilderHandleRequest {
+                requested_rights: None,
+                operation: crate::capability::HandleTransferOperation::Move,
+                ..
+            })
         )
     {
         return Err(SelfTestError::ProcessBuilderValidation);

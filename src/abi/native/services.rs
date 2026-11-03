@@ -1052,10 +1052,8 @@ pub(crate) trait MemoryServices {
     fn set_memory_residency(
         &self,
         vmar: &InvocationReceiver,
-        address: u64,
-        size: u64,
-        current: bool,
-        lock: bool,
+        scope: crate::mm::user_space::ResidencyScope,
+        action: crate::mm::user_space::ResidencyAction,
     ) -> Result<(), MemoryServiceError>;
     fn allocate_vmar(
         &self,

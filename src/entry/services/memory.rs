@@ -69,19 +69,10 @@ impl MemoryServices for ProcessServices<'_> {
     fn set_memory_residency(
         &self,
         vmar: &InvocationReceiver,
-        address: u64,
-        size: u64,
-        current: bool,
-        lock: bool,
+        scope: crate::mm::user_space::ResidencyScope,
+        action: crate::mm::user_space::ResidencyAction,
     ) -> Result<(), crate::mm::user_space::MemoryServiceError> {
-        crate::mm::user_space::set_memory_residency(
-            self.process,
-            vmar,
-            address,
-            size,
-            current,
-            lock,
-        )
+        crate::mm::user_space::set_memory_residency(self.process, vmar, scope, action)
     }
     fn allocate_vmar(
         &self,

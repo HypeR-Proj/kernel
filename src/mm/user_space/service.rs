@@ -729,10 +729,8 @@ const fn vmar_rights() -> Rights {
 pub(crate) fn set_memory_residency(
     process: &Process,
     handle: &InvocationReceiver,
-    address: u64,
-    size: u64,
-    current: bool,
-    lock: bool,
+    scope: super::ResidencyScope,
+    action: super::ResidencyAction,
 ) -> Result<(), ServiceError> {
     let vmar = handle
         .resolve::<VmarObject>(Rights::LOCK_MEMORY)
@@ -742,18 +740,18 @@ pub(crate) fn set_memory_residency(
     if !core::ptr::eq(space, &*owner) {
         return Err(ServiceError::Vfs(VfsError::AccessDenied));
     }
-    let range = if current {
-        if address != 0 || size != 0 {
-            return Err(ServiceError::InvalidInput);
-        }
-        None
-    } else {
-        Some(aligned_range(address, size)?)
+    let range = match scope {
+        super::ResidencyScope::CurrentMappings => None,
+        super::ResidencyScope::Range { address, size } => Some(aligned_range(address, size)?),
     };
     retry_mapping_transaction(process, || {
         let prepared = space
             .logical()
-            .prepare_residency(vmar.object().token(), range, lock)
+            .prepare_residency(
+                vmar.object().token(),
+                range,
+                matches!(action, super::ResidencyAction::Lock),
+            )
             .map_err(MachineError::Logical)?;
         space.prepare_change(prepared)?.commit()?;
         Ok(())

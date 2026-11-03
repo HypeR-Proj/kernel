@@ -118,3 +118,9 @@ RISC-V QEMU and x86-64 images. All must pass the `module` gate. Run one locally
 with `KERNEL_CI_SUITE=aarch64-qemu python3 project.py test kernel`. The QEMU shard
 builds its own self-test image; no job depends on another runner's local files.
 These kernel-only checks are not part of system verification.
+
+Native process-builder wire decoding returns named source, purpose, kind, rights
+and transfer-operation fields. Residency requests carry `ResidencyScope` and
+`ResidencyAction` through the service boundary; the current-mappings variant
+cannot carry a contradictory address range. Wire selectors and validation remain
+those defined by the ABI schema.

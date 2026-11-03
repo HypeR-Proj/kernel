@@ -7,6 +7,19 @@ use core::fmt::Debug;
 
 use hyper::mm::PhysicalAddress;
 
+/// Select all current mappings or one explicit address range.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ResidencyScope {
+    CurrentMappings,
+    Range { address: u64, size: u64 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ResidencyAction {
+    Lock,
+    Unlock,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AddressError {
     Overflow,

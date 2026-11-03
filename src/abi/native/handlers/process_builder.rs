@@ -89,20 +89,18 @@ pub(in crate::abi::native) fn sys_process_builder_add_handle(
     receiver: &InvocationReceiver,
     arguments: &Arguments,
 ) -> NativeAction {
-    let result = parse_builder_handle(arguments).and_then(
-        |(source, purpose, expected_kind, requested_rights, operation)| {
-            services
-                .add_process_builder_handle(
-                    receiver,
-                    source,
-                    purpose,
-                    expected_kind,
-                    requested_rights,
-                    operation,
-                )
-                .map_err(status_from_process_builder_service_error)
-        },
-    );
+    let result = parse_builder_handle(arguments).and_then(|request| {
+        services
+            .add_process_builder_handle(
+                receiver,
+                request.source,
+                request.purpose,
+                request.expected_kind,
+                request.requested_rights,
+                request.operation,
+            )
+            .map_err(status_from_process_builder_service_error)
+    });
     NativeAction::Return(status_only(result))
 }
 
