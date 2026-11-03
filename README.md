@@ -77,6 +77,24 @@ KASLR selection without a cryptographic dependency or periodic IRQ work.
 [Static tracepoints](docs/design/tracepoints.md) provide opt-in, one-line event
 instrumentation with runtime category flags and bounded per-CPU capture.
 
+## Resource accounting
+
+Resource-domain limits follow retained owners. A WaitSet registration consumes
+one subscription in the adding Process's domain, including any delivery still
+in flight after removal. A claimed physical device consumes one device lease;
+an assignment authority does not. One prepared DMA backing binding consumes one
+DMA mapping, shared by its physical runs and retained hardware aliases. Initial
+DMA-backed guest RAM regions and later backend-memory mappings each prepare
+their own bindings. Closing a source handle does not release hardware ownership.
+
+VMO read/write scratch buffers consume the invoking Process's kernel-memory
+budget while reclaim, page-in or user copying is in progress. Unpublished
+preparation releases its reservations on failure; published object credits
+return only after safe retirement, which can be asynchronous. See the
+[Native resource contract](https://hyper-proj.github.io/abi/native/) for the
+public units and attribution rules. Kernel self-tests exercise exhaustion,
+independent domains, failed preparation and retained-owner retirement.
+
 ## Workspace tests
 
 Use the [HypeR workspace](https://github.com/HypeR-Proj/HypeR) to resolve dependencies:

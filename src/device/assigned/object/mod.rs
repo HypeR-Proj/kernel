@@ -26,11 +26,14 @@ pub(crate) use assignment::Assignment;
 
 type Lock<T> = InterruptSpinLock<T, crate::hal::irq::LocalMask>;
 
-fn charge<T: KernelObject>(domain: &ResourceDomain) -> Result<CommittedCharge, Error> {
+fn charge<T: KernelObject>(
+    domain: &ResourceDomain,
+    resources: ResourceAmount,
+) -> Result<CommittedCharge, Error> {
     let bytes = crate::object::object_allocation_size::<T>().ok_or(Error::Resource)?;
     domain
         .reserve(
-            ResourceAmount::ZERO
+            resources
                 .with(ResourceKind::KernelObjects, 1)
                 .with(ResourceKind::KernelMemoryBytes, bytes as u64),
         )
@@ -48,7 +51,7 @@ impl DeviceAssignmentAuthority {
     )]
     pub(crate) fn try_new(domain: &ResourceDomain) -> Result<Self, Error> {
         Ok(Self {
-            _charge: charge::<Self>(domain)?,
+            _charge: charge::<Self>(domain, ResourceAmount::ZERO)?,
         })
     }
 }
@@ -93,7 +96,7 @@ impl PhysicalDevice {
         if !crate::hal::vm::supports_guest_device_assignment() {
             return Err(Error::Unsupported);
         }
-        let charge = charge::<Self>(domain)?;
+        let charge = Self::claim_charge(domain)?;
         let claim = super::super::platform_bus::claim(index).ok_or(Error::BadState)?;
         Self::try_claimed(claim, charge, domain)
     }
@@ -103,7 +106,7 @@ impl PhysicalDevice {
         identity: &str,
         domain: &ResourceDomain,
     ) -> Result<Box<Self>, super::service::MatchError> {
-        let charge = charge::<Self>(domain).map_err(super::service::classify)?;
+        let charge = Self::claim_charge(domain).map_err(super::service::classify)?;
         let claim = super::super::platform_bus::claim_matching(profile, identity_kind, identity)?;
         Self::try_claimed(claim, charge, domain)
             .map_err(|error| super::service::classify(error).into())
@@ -116,9 +119,16 @@ impl PhysicalDevice {
         if !crate::hal::vm::supports_guest_device_assignment() {
             return Err(Error::Unsupported);
         }
-        let charge = charge::<Self>(domain)?;
+        let charge = Self::claim_charge(domain)?;
         let claim = super::super::platform_bus::claim_bundle(entries, irq_node)?;
         Self::try_claimed(claim, charge, domain)
+    }
+
+    fn claim_charge(domain: &ResourceDomain) -> Result<CommittedCharge, Error> {
+        charge::<Self>(
+            domain,
+            ResourceAmount::ZERO.with(ResourceKind::DeviceLeases, 1),
+        )
     }
 
     /// Keep the register and interrupt arrays in their final object storage.

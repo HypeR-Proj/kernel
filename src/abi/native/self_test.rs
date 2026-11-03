@@ -2888,6 +2888,7 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
     .map_err(|_| SelfTestError::RecordEncoding)?;
     crate::object::test_delivery_rollback(&inspection_domain)
         .map_err(|_| SelfTestError::RecordEncoding)?;
+    crate::mm::user_space::test_transfer_budget().map_err(|_| SelfTestError::RecordEncoding)?;
     let event = Event::try_new(&inspection_domain).map_err(|_| SelfTestError::RecordEncoding)?;
     let service = PublishableRef::try_new(event).map_err(|_| SelfTestError::RecordEncoding)?;
     let active = service

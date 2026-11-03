@@ -26,6 +26,8 @@ mod machine;
 mod objects;
 #[cfg(not(test))]
 mod service;
+#[cfg(all(not(test), feature = "kernel-test", feature = "kernel-self-test"))]
+pub(crate) use service::test_transfer_budget;
 mod transaction;
 mod vmo;
 #[cfg(test)]
