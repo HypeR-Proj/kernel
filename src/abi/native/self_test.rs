@@ -3,6 +3,9 @@
 
 //! Boot-time Native ABI contract self-test.
 
+#[path = "self_test/memory_contract.rs"]
+mod memory_contract;
+
 use crate::capability::handle_wire;
 
 use hyper::abi::native::{
@@ -2889,6 +2892,7 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
     crate::object::test_delivery_rollback(&inspection_domain)
         .map_err(|_| SelfTestError::RecordEncoding)?;
     crate::mm::user_space::test_transfer_budget().map_err(|_| SelfTestError::RecordEncoding)?;
+    memory_contract::run().map_err(|_| SelfTestError::RecordEncoding)?;
     let event = Event::try_new(&inspection_domain).map_err(|_| SelfTestError::RecordEncoding)?;
     let service = PublishableRef::try_new(event).map_err(|_| SelfTestError::RecordEncoding)?;
     let active = service

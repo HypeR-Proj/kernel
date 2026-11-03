@@ -355,7 +355,10 @@ pub(in crate::abi::native) fn sys_file_sync(
 ) -> NativeAction {
     let result = (|| {
         require_zero(&arguments[1..])?;
-        if arguments[0] > 1 {
+        if !matches!(
+            arguments[0],
+            abi::HYPER_NATIVE_FILE_SYNC_DATA | abi::HYPER_NATIVE_FILE_SYNC_ALL
+        ) {
             return Err(INVALID);
         }
         services
@@ -374,8 +377,8 @@ pub(in crate::abi::native) fn sys_file_lock(
     let result = (|| {
         require_zero(&arguments[2..])?;
         let mode = match arguments[0] {
-            0 => crate::fs::vfs::locks::LockMode::Shared,
-            1 => crate::fs::vfs::locks::LockMode::Exclusive,
+            abi::HYPER_NATIVE_FILE_LOCK_SHARED => crate::fs::vfs::locks::LockMode::Shared,
+            abi::HYPER_NATIVE_FILE_LOCK_EXCLUSIVE => crate::fs::vfs::locks::LockMode::Exclusive,
             _ => return Err(INVALID),
         };
         services

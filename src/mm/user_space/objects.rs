@@ -179,12 +179,7 @@ impl VmoObject {
         size: u64,
         sponsor: &ResourceDomain,
     ) -> Result<Self, MemoryObjectError> {
-        if size < hyper::mm::PAGE_SIZE
-            || !size.is_power_of_two()
-            || size > hyper::abi::native::HYPER_NATIVE_VMO_MAX_CONTIGUOUS_SIZE_BYTES
-        {
-            return Err(MemoryObjectError::AllocationSize);
-        }
+        super::kernel_adapter::contiguous_page_count(size)?;
         let layout = NativeWritableVmo::metadata_layout(size)?;
         let pages = crate::mm::cache_memory::allocation_page_bound(layout)
             .ok_or(MemoryObjectError::AllocationSize)?;

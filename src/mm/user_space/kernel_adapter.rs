@@ -129,18 +129,24 @@ impl KernelUserPage {
     }
 }
 
+/// Reject caller geometry before charging or allocating physical backing.
+pub(super) fn contiguous_page_count(size: u64) -> Result<usize, super::MemoryObjectError> {
+    use super::{MemoryObjectError, VmoError};
+    if size < PAGE_SIZE
+        || !size.is_power_of_two()
+        || size > hyper::abi::native::HYPER_NATIVE_VMO_MAX_CONTIGUOUS_SIZE_BYTES
+    {
+        return Err(MemoryObjectError::Vmo(VmoError::InvalidRange));
+    }
+    usize::try_from(size / PAGE_SIZE).map_err(|_| MemoryObjectError::Vmo(VmoError::InvalidRange))
+}
+
 pub(super) fn contiguous_pages(
     size: u64,
     domain: &ResourceDomain,
 ) -> Result<(alloc::vec::Vec<KernelUserPage>, CommittedCharge), super::MemoryObjectError> {
     use super::MemoryObjectError;
-    if size < PAGE_SIZE
-        || !size.is_power_of_two()
-        || size > hyper::abi::native::HYPER_NATIVE_VMO_MAX_CONTIGUOUS_SIZE_BYTES
-    {
-        return Err(MemoryObjectError::AllocationSize);
-    }
-    let count = usize::try_from(size / PAGE_SIZE).map_err(|_| MemoryObjectError::AllocationSize)?;
+    let count = contiguous_page_count(size)?;
     let charge = domain
         .reserve(
             ResourceAmount::ZERO
@@ -159,7 +165,7 @@ pub(super) fn contiguous_pages(
         .commit();
     let mut pages = alloc::vec::Vec::new();
     crate::mm::reclaim::reserve_exact(&mut pages, count)
-        .map_err(|_| MemoryObjectError::AllocationSize)?;
+        .map_err(|_| MemoryObjectError::Vmo(super::VmoError::Allocation))?;
     let order = count.trailing_zeros() as usize;
     let block = crate::mm::reclaim::retry_prepare(
         crate::mm::reclaim::Target::PhysicalOrder(order),
@@ -181,7 +187,7 @@ pub(super) fn contiguous_pages(
         _block: block,
         _charge: charge,
     })
-    .map_err(|_| MemoryObjectError::AllocationSize)?;
+    .map_err(|_| MemoryObjectError::Vmo(super::VmoError::Allocation))?;
     for index in 0..count {
         pages.push(KernelUserPage {
             storage: PageStorage::Contiguous {
