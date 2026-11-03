@@ -124,3 +124,15 @@ and transfer-operation fields. Residency requests carry `ResidencyScope` and
 `ResidencyAction` through the service boundary; the current-mappings variant
 cannot carry a contradictory address range. Wire selectors and validation remain
 those defined by the ABI schema.
+
+### Native boundary ownership
+
+`src/abi/native/services/` groups service traits and their errors by kernel
+responsibility. Its parent module composes those contracts for dispatch without
+owning domain state. `src/abi/native/wire/` keeps domain record codecs beside each
+other; shared extensible-record validation and copyout remain in `wire/mod.rs`.
+
+`src/mm/user_space/address_space/copy.rs` owns resident user-copy plans and
+transactional output reservations, including their backing, temporary charges,
+and explicit release. Mapping publication and retirement continue to belong to
+the address space; splitting the copy path does not create another state owner.
