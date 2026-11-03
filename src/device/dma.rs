@@ -15,7 +15,10 @@ use {
 
 /// The lifetime shared by CPU mappings and IOMMU mappings. Closing a source
 /// handle, removing a CPU mapping, or dropping a caller's reference cannot
-/// release pages still held by a DMA domain. No hardware operation runs in Drop.
+/// release pages still held by a DMA domain. One logical DMA backing binding is
+/// charged here; derived physical runs and cloned hardware owners retain that
+/// same charge until final retirement, including failed hardware rollback.
+/// No hardware operation runs in Drop.
 pub(crate) struct BackendMemoryLease {
     pages: Vec<u64>,
     _backing: GuestMemoryBacking,
@@ -62,6 +65,7 @@ impl BackendMemoryLease {
             .reserve(
                 ResourceAmount::ZERO
                     .with(ResourceKind::KernelObjects, 1)
+                    .with(ResourceKind::DmaMappings, 1)
                     .with(ResourceKind::KernelMemoryBytes, bytes as u64),
             )?
             .commit();

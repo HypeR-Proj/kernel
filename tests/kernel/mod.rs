@@ -29,6 +29,8 @@ mod reaper_retry;
 #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_X86_64))]
 mod reschedule_ipi;
 mod reserved_timer;
+#[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
+mod resource_lifetime;
 #[cfg(CONFIG_ARCH_AARCH64)]
 mod scheduler_algorithms;
 mod scheduler_balance;
@@ -96,6 +98,8 @@ pub(crate) fn run() {
     run_case("kernel stack-model tests", stack_model::run);
     run_case("kernel thread-sleep tests", thread_sleep::run);
     run_case("owned reserved timer lifetime tests", reserved_timer::run);
+    #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
+    run_case("resource quota lifetime tests", resource_lifetime::run);
     run_case("kernel callout lifecycle tests", callout::run);
     run_case("kernel callout delivery-claim tests", callout_ready::run);
     #[cfg(CONFIG_ARCH_AARCH64)]

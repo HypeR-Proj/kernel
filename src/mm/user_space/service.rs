@@ -22,6 +22,37 @@ use {crate::process::Process, crate::process::ProcessError};
 const MAXIMUM_VMO_SIZE: u64 = hyper::abi::native::HYPER_NATIVE_VMO_MAX_SIZE_BYTES;
 const MAXIMUM_TRANSFER: usize = hyper::abi::native::HYPER_NATIVE_VMO_MAX_TRANSFER_BYTES as usize;
 
+/// Caller-owned copy storage survives reclaim/page-in with its quota. Field
+/// order releases the allocation before returning its accounting credit.
+struct TransferBuffer {
+    bytes: Vec<u8>,
+    _charge: crate::accounting::CommittedCharge,
+}
+
+impl TransferBuffer {
+    fn new(
+        length: usize,
+        domain: &crate::accounting::ResourceDomain,
+    ) -> Result<Self, ServiceError> {
+        use crate::accounting::{ResourceAmount, ResourceKind};
+        if length > MAXIMUM_TRANSFER {
+            return Err(ServiceError::InvalidInput);
+        }
+        let charge = domain
+            .reserve(ResourceAmount::ZERO.with(ResourceKind::KernelMemoryBytes, length as u64))
+            .map_err(ProcessError::from)?
+            .commit();
+        let mut bytes = Vec::new();
+        crate::mm::reclaim::reserve_exact(&mut bytes, length)
+            .map_err(|_| ProcessError::Allocation)?;
+        bytes.resize(length, 0);
+        Ok(Self {
+            bytes,
+            _charge: charge,
+        })
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum ServiceError {
     InvalidInput,
@@ -30,6 +61,47 @@ pub(crate) enum ServiceError {
     Process(ProcessError),
     Scheduler(crate::task::scheduler::Error),
     Vfs(VfsError),
+}
+
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+pub(crate) fn test_transfer_budget() -> Result<(), ServiceError> {
+    use crate::accounting::{ResourceDomain, ResourceKind, ResourceLimits};
+    let make_domain = || {
+        ResourceDomain::try_new_root(
+            ResourceLimits::UNLIMITED.with(ResourceKind::KernelMemoryBytes, 8),
+        )
+        .map_err(ProcessError::from)
+    };
+    let first = make_domain()?;
+    let second = make_domain()?;
+    let held = TransferBuffer::new(8, &first)?;
+    if first.usage().total(ResourceKind::KernelMemoryBytes) != 8
+        || !matches!(
+            TransferBuffer::new(1, &first),
+            Err(ServiceError::Process(ProcessError::Resource(_)))
+        )
+    {
+        return Err(ServiceError::InvalidInput);
+    }
+    let independent = TransferBuffer::new(8, &second)?;
+    drop(held);
+    if first.usage().total(ResourceKind::KernelMemoryBytes) != 0
+        || second.usage().total(ResourceKind::KernelMemoryBytes) != 8
+        || !matches!(
+            TransferBuffer::new(MAXIMUM_TRANSFER + 1, &first),
+            Err(ServiceError::InvalidInput)
+        )
+    {
+        return Err(ServiceError::InvalidInput);
+    }
+    let reused = TransferBuffer::new(8, &first)?;
+    drop((reused, independent));
+    if first.usage().total(ResourceKind::KernelMemoryBytes) != 0
+        || second.usage().total(ResourceKind::KernelMemoryBytes) != 0
+    {
+        return Err(ServiceError::InvalidInput);
+    }
+    Ok(())
 }
 
 impl From<MachineError> for ServiceError {
@@ -317,11 +389,9 @@ pub(crate) fn read_vmo(
     let vmo = value
         .resolve::<VmoObject>(Rights::READ)
         .map_err(crate::process::ProcessError::from)?;
-    let mut bytes = Vec::new();
-    crate::mm::reclaim::reserve_exact(&mut bytes, length).map_err(|_| ProcessError::Allocation)?;
-    bytes.resize(length, 0);
-    vmo.object().read(offset, &mut bytes)?;
-    process.copy_to_user(destination, &bytes)?;
+    let mut buffer = TransferBuffer::new(length, &process.resource_domain())?;
+    vmo.object().read(offset, &mut buffer.bytes)?;
+    process.copy_to_user(destination, &buffer.bytes)?;
     Ok(())
 }
 
@@ -338,11 +408,9 @@ pub(crate) fn write_vmo(
     let vmo = value
         .resolve::<VmoObject>(Rights::WRITE)
         .map_err(crate::process::ProcessError::from)?;
-    let mut bytes = Vec::new();
-    crate::mm::reclaim::reserve_exact(&mut bytes, length).map_err(|_| ProcessError::Allocation)?;
-    bytes.resize(length, 0);
-    process.copy_from_user(source, &mut bytes)?;
-    vmo.object().write(offset, &bytes)?;
+    let mut buffer = TransferBuffer::new(length, &process.resource_domain())?;
+    process.copy_from_user(source, &mut buffer.bytes)?;
+    vmo.object().write(offset, &buffer.bytes)?;
     Ok(())
 }
 

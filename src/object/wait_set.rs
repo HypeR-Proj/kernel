@@ -63,6 +63,7 @@ pub(super) struct Registration {
     queue: WeakFallibleArc<ReadyQueue>,
     active: AtomicBool,
     pending: AtomicBool,
+    // An in-flight Delivery can retain a removed registration and its credit.
     _charge: CommittedCharge,
 }
 
@@ -266,7 +267,11 @@ impl WaitSet {
         let bytes = FallibleArc::<Registration>::allocation_size()
             + core::mem::size_of::<PersistentObserver>();
         let charge = domain
-            .reserve(ResourceAmount::ZERO.with(ResourceKind::KernelMemoryBytes, bytes as u64))
+            .reserve(
+                ResourceAmount::ZERO
+                    .with(ResourceKind::KernelMemoryBytes, bytes as u64)
+                    .with(ResourceKind::Subscriptions, 1),
+            )
             .map_err(WaitSetError::Resource)?
             .commit();
         let registration = FallibleArc::try_new(Registration {
@@ -434,6 +439,7 @@ fn invariant() -> ! {
 /// Exercises the copyout transaction without architecture-specific user mappings.
 #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub(crate) fn test_delivery_rollback(domain: &ResourceDomain) -> Result<(), WaitSetError> {
+    test_subscription_budget(domain)?;
     let set = WaitSet::try_new(1, domain)?;
     let charge = domain
         .reserve(ResourceAmount::ZERO.with(
@@ -518,4 +524,93 @@ pub(crate) fn test_delivery_rollback(domain: &ResourceDomain) -> Result<(), Wait
         return Err(WaitSetError::InvalidInput);
     }
     Ok(())
+}
+
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+fn test_subscription_budget(parent: &ResourceDomain) -> Result<(), WaitSetError> {
+    use crate::accounting::ResourceLimits;
+    use crate::capability::{HandleFlags, HandleTable, HandleTableStoragePlan, PreparedHandle};
+    use crate::object::{Event, ObjectPublication};
+    let make_domain = || {
+        parent
+            .try_new_child(ResourceLimits::UNLIMITED.with(ResourceKind::Subscriptions, 1))
+            .map_err(WaitSetError::Resource)
+    };
+    let first = make_domain()?;
+    let second = make_domain()?;
+    let rejected = make_domain()?;
+    let event = Event::try_new(parent).map_err(|_| WaitSetError::Allocation)?;
+    let publication = ObjectPublication::try_new(event).map_err(|_| WaitSetError::Allocation)?;
+    let prepared =
+        PreparedHandle::try_from_new_object(publication, Rights::WAIT, HandleFlags::NONE)
+            .map_err(|_| WaitSetError::Allocation)?;
+    let mut table = HandleTable::new(0x7315_248a_6cf0_2b19);
+    let snapshot = table
+        .reservation_storage_snapshot_for(1)
+        .map_err(|_| WaitSetError::Allocation)?;
+    let mut plan =
+        Some(HandleTableStoragePlan::try_new(snapshot).map_err(|_| WaitSetError::Allocation)?);
+    let reservation = table
+        .reserve_with_plan::<1>(&mut plan)
+        .map_err(|_| WaitSetError::Allocation)?;
+    let [handle] = reservation.publish(&mut table, [prepared]);
+    // Every fallible test path leaves the active handle through explicit removal.
+    let result = (|| {
+        let source = || {
+            table
+                .resolve_waitable(handle, Rights::WAIT)
+                .map_err(|_| WaitSetError::InvalidInput)
+        };
+        let mask = Event::SIGNALED.bits();
+        // Level-ready insertion gives deterministic delivery order without
+        // depending on the signal observer list's traversal order.
+        table
+            .resolve::<Event>(handle, Rights::WAIT)
+            .map_err(|_| WaitSetError::InvalidInput)?
+            .object()
+            .signal(0, mask)
+            .map_err(|_| WaitSetError::InvalidInput)?;
+        let set = WaitSet::try_new(2, parent)?;
+        let id = set.add(source()?, mask, &first)?;
+        if first.usage().total(ResourceKind::Subscriptions) != 1
+            || !matches!(
+                set.add(source()?, mask, &first),
+                Err(WaitSetError::Resource(_))
+            )
+        {
+            return Err(WaitSetError::InvalidInput);
+        }
+        set.add(source()?, mask, &second)?;
+        if !matches!(set.add(source()?, mask, &rejected), Err(WaitSetError::Full))
+            || rejected.usage().total(ResourceKind::Subscriptions) != 0
+        {
+            return Err(WaitSetError::InvalidInput);
+        }
+        let delivery = set.wait(0, parent, || false)?;
+        if delivery.record()[..8] != id.to_le_bytes() {
+            return Err(WaitSetError::InvalidInput);
+        }
+        set.remove(id)?;
+        if first.usage().total(ResourceKind::Subscriptions) != 1 {
+            return Err(WaitSetError::InvalidInput);
+        }
+        drop(delivery);
+        if first.usage().total(ResourceKind::Subscriptions) != 0 {
+            return Err(WaitSetError::InvalidInput);
+        }
+        let reused = set.add(source()?, mask, &first)?;
+        set.remove(reused)?;
+        drop(set);
+        if first.usage().total(ResourceKind::Subscriptions) != 0
+            || second.usage().total(ResourceKind::Subscriptions) != 0
+        {
+            return Err(WaitSetError::InvalidInput);
+        }
+        Ok(())
+    })();
+    table
+        .remove(handle)
+        .map_err(|_| WaitSetError::InvalidInput)?
+        .complete();
+    result
 }
