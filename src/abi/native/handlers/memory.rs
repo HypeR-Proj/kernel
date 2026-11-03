@@ -212,24 +212,8 @@ pub(in crate::abi::native) fn sys_vmar_map_private(
         require_zero(&arguments[3..])?;
         let vmar = receiver;
         let snapshot = parse_handle(arguments[0])?;
-        let record = crate::abi::native::wire::copy_extensible_input_record::<48>(
-            services,
-            arguments[1],
-            arguments[2],
-            48,
-        )?;
-        use {
-            crate::abi::native::wire::read_record_u32, crate::abi::native::wire::read_record_u64,
-        };
-        let request = crate::mm::user_space::PrivateMappingRequest {
-            source_offset: read_record_u64(&record, 0),
-            source_length: read_record_u64(&record, 8),
-            address: read_record_u64(&record, 16),
-            size: read_record_u64(&record, 24),
-            data_offset: read_record_u64(&record, 32),
-            permissions: read_record_u32(&record, 40),
-            mode: read_record_u32(&record, 44),
-        };
+        let request =
+            crate::abi::native::wire::decode_private_mapping(services, arguments[1], arguments[2])?;
         services
             .map_private(vmar, snapshot, request)
             .map_err(status_from_memory_service_error)
@@ -248,24 +232,8 @@ pub(in crate::abi::native) fn sys_vmar_map_file(
         let vmar = receiver;
         let file = parse_handle(arguments[0])?;
         let protection = parse_handle(arguments[1])?;
-        let record = crate::abi::native::wire::copy_extensible_input_record::<48>(
-            services,
-            arguments[2],
-            arguments[3],
-            48,
-        )?;
-        use {
-            crate::abi::native::wire::read_record_u32, crate::abi::native::wire::read_record_u64,
-        };
-        let request = crate::mm::user_space::PrivateMappingRequest {
-            source_offset: read_record_u64(&record, 0),
-            source_length: read_record_u64(&record, 8),
-            address: read_record_u64(&record, 16),
-            size: read_record_u64(&record, 24),
-            data_offset: read_record_u64(&record, 32),
-            permissions: read_record_u32(&record, 40),
-            mode: read_record_u32(&record, 44),
-        };
+        let request =
+            crate::abi::native::wire::decode_private_mapping(services, arguments[2], arguments[3])?;
         services
             .map_file(vmar, file, protection, request)
             .map_err(status_from_memory_service_error)

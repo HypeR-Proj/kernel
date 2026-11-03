@@ -3,6 +3,8 @@
 
 //! Native wire-record decoding, validation, and byte encoding.
 
+mod memory;
+pub(super) use memory::decode_private_mapping;
 pub(super) mod memory_statistics;
 mod object_details;
 pub(super) use object_details::encode_object_details;

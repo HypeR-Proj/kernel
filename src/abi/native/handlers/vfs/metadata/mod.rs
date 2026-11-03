@@ -34,7 +34,7 @@ const INVALID: Status = abi::HYPER_NATIVE_STATUS_INVALID_ARGUMENT;
 fn parse_follow_symlinks(options: u64) -> Result<bool, Status> {
     match options {
         0 => Ok(true),
-        1 => Ok(false),
+        abi::HYPER_NATIVE_METADATA_LOOKUP_NOFOLLOW => Ok(false),
         _ => Err(INVALID),
     }
 }
@@ -123,12 +123,18 @@ fn encode_metadata(value: Metadata) -> [u8; METADATA_SIZE] {
             core::mem::offset_of!(MetadataRecord, changed_nanoseconds),
         ),
     ];
+    let timestamp_bits = [
+        abi::HYPER_NATIVE_FILE_TIME_ACCESSED,
+        abi::HYPER_NATIVE_FILE_TIME_MODIFIED,
+        abi::HYPER_NATIVE_FILE_TIME_CREATED,
+        abi::HYPER_NATIVE_FILE_TIME_CHANGED,
+    ];
     for (index, timestamp) in [value.accessed, value.modified, value.created, value.changed]
         .into_iter()
         .enumerate()
     {
         if let Some(timestamp) = timestamp {
-            valid |= 1 << index;
+            valid |= timestamp_bits[index] as u32;
             put_u64(&mut bytes, offsets[index].0, timestamp.seconds() as u64);
             put_u32(&mut bytes, offsets[index].1, timestamp.nanoseconds());
         }
@@ -159,11 +165,15 @@ fn decode_metadata_update(
     };
     let mask = word(core::mem::offset_of!(UpdateRecord, mask))?;
     let mode = word(core::mem::offset_of!(UpdateRecord, mode))?;
-    if mask & !7 != 0
+    if mask
+        & !(abi::HYPER_NATIVE_FILE_UPDATE_MODE
+            | abi::HYPER_NATIVE_FILE_UPDATE_ACCESSED
+            | abi::HYPER_NATIVE_FILE_UPDATE_MODIFIED) as u32
+        != 0
         || mode & !0o777 != 0
         || word(core::mem::offset_of!(UpdateRecord, accessed_reserved))? != 0
         || word(core::mem::offset_of!(UpdateRecord, modified_reserved))? != 0
-        || (mask & 1 == 0 && mode != 0)
+        || (mask & abi::HYPER_NATIVE_FILE_UPDATE_MODE as u32 == 0 && mode != 0)
     {
         return Err(INVALID);
     }
@@ -182,16 +192,16 @@ fn decode_metadata_update(
             Timestamp::new(seconds, nanos).map(Some).ok_or(INVALID)
         };
     Ok(MetadataUpdate {
-        mode: (mask & 1 != 0).then_some(mode),
+        mode: (mask & abi::HYPER_NATIVE_FILE_UPDATE_MODE as u32 != 0).then_some(mode),
         accessed: time(
             core::mem::offset_of!(UpdateRecord, accessed_seconds),
             core::mem::offset_of!(UpdateRecord, accessed_nanoseconds),
-            mask & 2 != 0,
+            mask & abi::HYPER_NATIVE_FILE_UPDATE_ACCESSED as u32 != 0,
         )?,
         modified: time(
             core::mem::offset_of!(UpdateRecord, modified_seconds),
             core::mem::offset_of!(UpdateRecord, modified_nanoseconds),
-            mask & 4 != 0,
+            mask & abi::HYPER_NATIVE_FILE_UPDATE_MODIFIED as u32 != 0,
         )?,
     })
 }
