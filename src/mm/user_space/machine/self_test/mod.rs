@@ -8,6 +8,25 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 #[cfg(CONFIG_ARCH_AARCH64)]
+impl NativeAddressSpace {
+    /// Replaces mapping records through the real machine commit while preserving
+    /// permissions, so a parked wait must retain its original wake identity.
+    pub(crate) fn reprotect_atomic_wait_page_for_test(
+        &self,
+        address: UserAddress,
+    ) -> Result<(), Error> {
+        let range = UserSlice::new(address, PAGE_SIZE)?;
+        let change = self.logical.prepare_protect(
+            self.logical.root_vmar(),
+            range,
+            Permissions::read_write(),
+        )?;
+        self.prepare_change(change)?.commit()?;
+        Ok(())
+    }
+}
+
+#[cfg(CONFIG_ARCH_AARCH64)]
 mod busy_detach;
 #[cfg(CONFIG_ARCH_AARCH64)]
 pub(super) use busy_detach::{after_cut, observe_busy};

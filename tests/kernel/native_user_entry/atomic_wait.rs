@@ -3,10 +3,12 @@
 
 //! Thread-owned waiter lifetime across collision, migration, timeout and cancellation.
 
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use hyper::cpu::CpuIndex;
 use hyper::mm::PAGE_SIZE;
 use hyper::sync::InterruptSpinLock;
+
+mod contention;
 
 use super::{Error, IMAGE_BASE, prepare_process, retire_process};
 use {
@@ -24,13 +26,17 @@ use {
 use {crate::task::scheduler, crate::task::scheduler::CpuMask};
 
 const ADDRESS: u64 = IMAGE_BASE + PAGE_SIZE * 2;
-const COLLISION: u64 = ADDRESS + 256;
+static COLLISION: AtomicU64 = AtomicU64::new(ADDRESS + 256);
 const WORKERS: usize = 8;
 static PROCESS: InterruptSpinLock<Option<Process>, crate::hal::irq::LocalMask> =
     InterruptSpinLock::new(None);
 static CANCEL: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicUsize = AtomicUsize::new(0);
 static FAILED: AtomicBool = AtomicBool::new(false);
+
+fn collision() -> u64 {
+    COLLISION.load(Ordering::Acquire)
+}
 
 pub(super) fn run(domain: &ResourceDomain, group: &TaskGroup, program: &[u8]) -> Result<(), Error> {
     // Isolate accounting from deferred reclamation of earlier Native probes.
@@ -52,7 +58,7 @@ pub(super) fn run(domain: &ResourceDomain, group: &TaskGroup, program: &[u8]) ->
     // Cancellation before publication and wake under the bucket lock jointly
     // cover workers which have not entered wait() yet, as well as parked ones.
     CANCEL.store(true, Ordering::Release);
-    for address in [ADDRESS, COLLISION] {
+    for address in [ADDRESS, collision()] {
         atomic_wait::wake(&process, address, u32::MAX)
             .map_err(|_| Error::AtomicWait("cleanup wake"))?;
     }
@@ -62,6 +68,7 @@ pub(super) fn run(domain: &ResourceDomain, group: &TaskGroup, program: &[u8]) ->
     process.request_stop(TerminalReason::Requested);
     retire_process(&process)?;
     result?;
+    contention::run(&domain, group, program)?;
     crate::pr_info!(
         "HypeR test: Thread-owned atomic waiters retired after collision, migration and timeout"
     );
@@ -124,6 +131,23 @@ fn verify_cleanup_blocks_reuse() -> Result<(), Error> {
 
 fn exercise(process: &Process) -> Result<(), Error> {
     exercise_source_cleanup()?;
+    let primary_bucket = atomic_wait::bucket_index_for_test(process, ADDRESS)
+        .map_err(|_| Error::AtomicWait("primary bucket"))?;
+    let mut found = false;
+    for offset in (256..PAGE_SIZE).step_by(4) {
+        let address = ADDRESS + offset;
+        if atomic_wait::bucket_index_for_test(process, address)
+            .map_err(|_| Error::AtomicWait("collision bucket"))?
+            == primary_bucket
+        {
+            COLLISION.store(address, Ordering::Release);
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        return Err(Error::AtomicWait("no collision in test page"));
+    }
     // The test image's writable stack page starts zero-filled. Warm the backing
     // lease before comparing accounting so fault materialization is excluded.
     if atomic_wait::wait(process, ADDRESS, 1, u64::MAX, || false)
@@ -176,7 +200,7 @@ fn exercise(process: &Process) -> Result<(), Error> {
         scheduler::thread_ready(id).map_err(|_| Error::Scheduler)?;
     }
     if !wait_for_test_progress(TEST_PROGRESS_TIMEOUT_NS, || {
-        Ok::<_, Error>([ADDRESS, COLLISION].into_iter().all(|address| {
+        Ok::<_, Error>([ADDRESS, collision()].into_iter().all(|address| {
             atomic_wait::waiter_count(process, address).is_ok_and(|count| count == WORKERS / 2)
         }))
     })? {
@@ -189,6 +213,11 @@ fn exercise(process: &Process) -> Result<(), Error> {
     {
         return Err(Error::AtomicWait("active waiter accounting"));
     }
+    process
+        .address_space_owner()
+        .map_err(|_| Error::AddressSpace)?
+        .reprotect_atomic_wait_page_for_test(crate::mm::user_space::UserAddress::new(ADDRESS))
+        .map_err(|_| Error::AtomicWait("reprotect while parked"))?;
     if crate::cpu::online_cpu_count() > 1 {
         for id in ids.into_iter().flatten() {
             scheduler::set_thread_affinity(
@@ -214,10 +243,10 @@ fn exercise(process: &Process) -> Result<(), Error> {
         return Err(Error::AtomicWait("remaining count"));
     }
     wait_done(WORKERS / 2)?;
-    if atomic_wait::waiter_count(process, COLLISION)
+    if atomic_wait::waiter_count(process, collision())
         .map_err(|_| Error::AtomicWait("collision registration count"))?
         != WORKERS / 2
-        || atomic_wait::wake(process, COLLISION, u32::MAX)
+        || atomic_wait::wake(process, collision(), u32::MAX)
             .map_err(|_| Error::AtomicWait("collision wake"))?
             != (WORKERS / 2) as u64
     {
@@ -248,7 +277,7 @@ extern "C" fn worker(index: usize) {
     let address = if index.is_multiple_of(2) {
         ADDRESS
     } else {
-        COLLISION
+        collision()
     };
     if !matches!(
         atomic_wait::wait(&process, address, 0, u64::MAX, || {
