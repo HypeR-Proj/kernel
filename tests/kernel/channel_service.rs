@@ -211,10 +211,8 @@ fn verify_memory_authority_attenuation(
     ) || set_memory_residency(
         process,
         &process.resolve_invocation(child)?,
-        0,
-        0,
-        true,
-        true,
+        crate::mm::user_space::ResidencyScope::CurrentMappings,
+        crate::mm::user_space::ResidencyAction::Lock,
     )
     .is_ok()
     {
@@ -240,19 +238,15 @@ fn verify_memory_authority_attenuation(
     set_memory_residency(
         process,
         &process.resolve_invocation(lock_only)?,
-        0,
-        0,
-        true,
-        true,
+        crate::mm::user_space::ResidencyScope::CurrentMappings,
+        crate::mm::user_space::ResidencyAction::Lock,
     )
     .map_err(|_| Error::State(83))?;
     set_memory_residency(
         process,
         &process.resolve_invocation(lock_only)?,
-        0,
-        0,
-        true,
-        false,
+        crate::mm::user_space::ResidencyScope::CurrentMappings,
+        crate::mm::user_space::ResidencyAction::Unlock,
     )
     .map_err(|_| Error::State(84))?;
     // A Native address space publishes its canonical root object only once.

@@ -78,13 +78,13 @@ pub(super) const HANDLE_INFO_SIZE: usize = core::mem::size_of::<HyperNativeHandl
 pub(super) const OBJECT_BASIC_INFO_SIZE: usize = core::mem::size_of::<HyperNativeObjectBasicInfo>();
 pub(super) const PROCESS_INFO_SIZE: usize = core::mem::size_of::<HyperNativeProcessInfo>();
 
-pub(super) type ProcessBuilderHandleRequest = (
-    HandleValue,
-    u32,
-    crate::object::ObjectKind,
-    Option<Rights>,
-    crate::capability::HandleTransferOperation,
-);
+pub(super) struct ProcessBuilderHandleRequest {
+    pub source: HandleValue,
+    pub purpose: u32,
+    pub expected_kind: crate::object::ObjectKind,
+    pub requested_rights: Option<Rights>,
+    pub operation: crate::capability::HandleTransferOperation,
+}
 
 pub(super) fn parse_u32(value: u64) -> Result<u32, HyperNativeStatus> {
     u32::try_from(value).map_err(|_| HYPER_NATIVE_STATUS_INVALID_ARGUMENT)
@@ -425,13 +425,13 @@ pub(super) fn parse_builder_handle(
         }
         _ => return Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT),
     };
-    Ok((
-        parse_handle(arguments[0])?,
+    Ok(ProcessBuilderHandleRequest {
+        source: parse_handle(arguments[0])?,
         purpose,
         expected_kind,
         requested_rights,
         operation,
-    ))
+    })
 }
 
 pub(super) fn parse_object_kind(raw: u32) -> Result<crate::object::ObjectKind, HyperNativeStatus> {

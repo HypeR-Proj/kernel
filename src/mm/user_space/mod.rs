@@ -47,7 +47,8 @@ pub(crate) use authority::ExecutableAuthority;
 #[cfg(all(not(test), all(feature = "kernel-test", feature = "kernel-self-test")))]
 pub(crate) use authority::ExecutableAuthorityError;
 pub(crate) use contract::{
-    Access, AddressError, MemoryAccount, MemoryCharge, Permissions, UserAddress, UserSlice,
+    Access, AddressError, MemoryAccount, MemoryCharge, Permissions, ResidencyAction,
+    ResidencyScope, UserAddress, UserSlice,
 };
 #[cfg(not(test))]
 pub(crate) use kernel_adapter::address_window;
