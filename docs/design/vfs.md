@@ -562,3 +562,12 @@ access and modification times, including times before the Unix epoch.
 The [UTC clock](time.md) is independent of filesystem policy. Filesystems
 choose timestamp resolution and persistence; ramfs retains supplied timestamp
 precision in memory.
+
+### Block transport payload concurrency
+
+The Native block pump has four command heads and seven 128 KiB payload spans
+inside the existing 1 MiB transport mapping. Payload ownership is independent of
+command-head ownership: a 512 KiB merged command can coexist with a second command
+using the remaining spans. Each command still transfers at most 512 KiB; queue
+and resource-domain limits remain in effect. This uses the existing published
+I/O VM transport without increasing its queue count or shared-memory extent.

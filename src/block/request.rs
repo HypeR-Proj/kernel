@@ -80,7 +80,7 @@ impl Transport {
         read: bool,
     ) -> Result<Flight, Error> {
         if slot >= wire::REQUEST_QUEUES
-            || data_span.first + data_span.count > wire::REQUEST_QUEUES
+            || data_span.first + data_span.count > wire::DATA_SLOTS
             || length > wire::DATA_BYTES * data_span.count
         {
             return Err(Error::InvalidRange);
