@@ -26,7 +26,8 @@ impl NodeIdentity {
     }
 }
 
-/// A content generation advanced before every potentially mutating operation.
+/// A content generation advanced before direct mutation or truncation.
+/// Cache-managed writes replace individual page versions within this generation.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct ContentRevision(NonZeroU64);
 
@@ -36,7 +37,7 @@ impl ContentRevision {
     }
 }
 
-/// Identity of one immutable view protected by the caller's content lock.
+/// Identity of a file-data generation protected by the caller's content lock.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct FileIdentity {
     filesystem: FilesystemGeneration,

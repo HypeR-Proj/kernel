@@ -10,14 +10,12 @@ use {
 };
 
 pub(super) enum WriteSource<'a> {
-    #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
     Bytes(&'a [u8]),
     User(&'a NativeUserRead, &'a crate::accounting::ResourceDomain),
 }
 impl WriteSource<'_> {
     pub(super) fn len(&self) -> usize {
         match self {
-            #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
             Self::Bytes(bytes) => bytes.len(),
             Self::User(input, _) => input.len() as usize,
         }
@@ -30,7 +28,6 @@ impl WriteSource<'_> {
     ) -> Result<(), crate::block::QueueError> {
         use crate::block::QueueError;
         match self {
-            #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
             Self::Bytes(bytes) => memory
                 .write_exposed(
                     0,
@@ -44,9 +41,31 @@ impl WriteSource<'_> {
                 .map_err(|_| QueueError::Invalid),
         }
     }
+    pub(super) fn copy_range(
+        &self,
+        offset: usize,
+        output: &mut [u8],
+    ) -> Result<(), super::instance::Error> {
+        match self {
+            Self::Bytes(bytes) => {
+                let end = offset
+                    .checked_add(output.len())
+                    .ok_or(super::instance::Error::InvalidInput)?;
+                output.copy_from_slice(
+                    bytes
+                        .get(offset..end)
+                        .ok_or(super::instance::Error::InvalidInput)?,
+                );
+                Ok(())
+            }
+            Self::User(input, _) => input
+                .copy_to_slice(offset as u64, output)
+                .map_err(|_| super::instance::Error::InvalidInput),
+        }
+    }
+
     pub(super) fn copy_to(&self, output: &mut [u8]) -> Result<(), super::instance::Error> {
         match self {
-            #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
             Self::Bytes(bytes) => {
                 if bytes.len() != output.len() {
                     return Err(super::instance::Error::InvalidInput);
@@ -68,7 +87,6 @@ impl WriteSource<'_> {
     ) -> Result<(), crate::block::QueueError> {
         use crate::block::QueueError;
         match self {
-            #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
             Self::Bytes(bytes) => lease
                 .write_exposed(
                     0,

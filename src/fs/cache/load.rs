@@ -55,6 +55,22 @@ impl<Page> PendingPage<'_, Page> {
         &mut self.page.value
     }
 
+    pub(super) fn publish_dirty(
+        self,
+        admission: super::write::DirtyAdmission,
+    ) -> Result<super::write::DirtyPage<Page>, CacheError> {
+        self.page.retain_mapping();
+        let shared = self.page.into_shared();
+        let pin = super::MappedPage {
+            inner: shared.clone(),
+        };
+        self.reservation.publish(shared)?;
+        Ok(super::write::DirtyPage {
+            page: pin,
+            _admission: admission,
+        })
+    }
+
     pub(crate) fn publish(self) -> Result<CachedPage<Page>, CacheError> {
         self.reservation.publish(self.page.into_shared())
     }

@@ -73,6 +73,12 @@ pub(crate) enum Error {
     Remote(hyper_filesystem::protocol::Error),
 }
 
+impl From<crate::fs::cache::CacheError> for Error {
+    fn from(_: crate::fs::cache::CacheError) -> Self {
+        Self::Allocation
+    }
+}
+
 impl From<AllocationError> for Error {
     fn from(_: AllocationError) -> Self {
         Self::Allocation
@@ -295,12 +301,14 @@ impl FilesystemInstance {
         );
         let filesystem =
             super::remote::RemoteFs::mount(device, sponsor.clone(), generation, cache)?;
-        FallibleArc::try_new(Self {
+        let filesystem = FallibleArc::try_new(filesystem)?;
+        let instance = FallibleArc::try_new(Self {
             _charge: Some(charge),
             id,
-            backend: Backend::Remote(FallibleArc::try_new(filesystem)?),
-        })
-        .map_err(Error::from)
+            backend: Backend::Remote(filesystem.clone()),
+        })?;
+        super::remote::RemoteFs::start_writeback(&filesystem)?;
+        Ok(instance)
     }
     pub(super) fn with_namespace_stable<T>(
         &self,
@@ -787,10 +795,9 @@ impl FilesystemInstance {
 
     /// Writes at an explicit offset, or appends when `offset` is `None`.
     ///
-    /// Returns the byte count and resulting offset. Advance the content
-    /// revision before entering the backend: even an error may follow a partial
-    /// mutation. The shared content gate also serializes append positioning
-    /// against other opens of the file.
+    /// Returns the byte count and resulting offset. Direct writes retire the
+    /// content revision before backend mutation; buffered writes replace cache
+    /// page versions. The content gate serializes append across independent opens.
     pub(super) fn write_at(
         &self,
         node: &NodeLease,
@@ -798,27 +805,34 @@ impl FilesystemInstance {
         input: &super::write_source::WriteSource<'_>,
     ) -> Result<(usize, u64), Error> {
         let mut content = node.content().lock()?;
-        content.begin_mutation()?;
+        content.check_writable()?;
         match &self.backend {
-            Backend::RamFs(fs) => match input {
-                #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
-                super::write_source::WriteSource::Bytes(bytes) => {
-                    fs.write(node.ramfs()?, offset, bytes)
+            Backend::RamFs(fs) => {
+                content.begin_mutation()?;
+                match input {
+                    super::write_source::WriteSource::Bytes(bytes) => {
+                        fs.write(node.ramfs()?, offset, bytes)
+                    }
+                    super::write_source::WriteSource::User(_, domain) => {
+                        let mut bytes = super::scratch::ScratchVec::new(
+                            super::scratch::ScratchBudget::new(domain),
+                        );
+                        super::scratch::resize_bytes(&mut bytes, input.len())?;
+                        input.copy_to(&mut bytes)?;
+                        fs.write(node.ramfs()?, offset, &bytes)
+                    }
                 }
-                super::write_source::WriteSource::User(_, domain) => {
-                    let mut bytes =
-                        super::scratch::ScratchVec::new(super::scratch::ScratchBudget::new(domain));
-                    super::scratch::resize_bytes(&mut bytes, input.len())?;
-                    input.copy_to(&mut bytes)?;
-                    fs.write(node.ramfs()?, offset, &bytes)
-                }
-            },
-            Backend::Remote(fs) => fs.write(node.remote()?, offset, input),
+            }
+            Backend::Remote(fs) => fs.write(node.remote()?, offset, input, &mut content),
         }
     }
 
     pub(super) fn resize(&self, node: &NodeLease, length: u64) -> Result<(), Error> {
         let mut content = node.content().lock()?;
+        content.check_writable()?;
+        if let Backend::Remote(fs) = &self.backend {
+            fs.flush_writeback()?;
+        }
         content.begin_mutation()?;
         match &self.backend {
             Backend::RamFs(fs) => fs.resize(node.ramfs()?, length),
@@ -921,6 +935,10 @@ impl FilesystemInstance {
     ) -> Result<R, E> {
         let mut content = node.content().lock()?;
         if truncate {
+            content.check_writable()?;
+            if let Backend::Remote(fs) = &self.backend {
+                fs.flush_writeback()?;
+            }
             content.begin_mutation()?;
         }
         // The callback prepares an object from the supplied attributes; it

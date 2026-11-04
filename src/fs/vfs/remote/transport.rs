@@ -437,6 +437,16 @@ impl Transport {
         }
         Ok(done)
     }
+    pub(super) fn take_writeback(&mut self) -> Result<u64, Error> {
+        if self.read_only {
+            return Ok(0);
+        }
+        match self.call(Operation::TakeWriteback, "", "", 0, 0, [None; 2]) {
+            Err(Error::Unsupported) => Ok(0),
+            result => result,
+        }
+    }
+
     pub(super) fn write_at(
         &mut self,
         path: &str,

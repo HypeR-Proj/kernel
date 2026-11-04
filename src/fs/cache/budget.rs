@@ -10,6 +10,7 @@ use hyper::mm::FallibleArc;
 pub(super) struct Budget {
     capacity: AtomicUsize,
     used: AtomicUsize,
+    pub(super) dirty: AtomicUsize,
 }
 
 impl Budget {
@@ -17,6 +18,7 @@ impl Budget {
         Self {
             capacity: AtomicUsize::new(capacity),
             used: AtomicUsize::new(0),
+            dirty: AtomicUsize::new(0),
         }
     }
 
