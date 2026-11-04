@@ -101,6 +101,35 @@ publication.
 
 ## File-data cache
 
+
+Recoverable filesystem services may accept `TakeWriteback` during mount. The
+reply transfers periodic synchronization ownership and supplies a 1–3600 second
+interval. Zero or Unsupported leaves writes synchronous; FAT does not opt in.
+Buffered writes replace immutable pages in the same cache used by reads. Older
+read pins retain their version; independent opens immediately see accepted dirty
+bytes and size. Partial writes preserve existing bytes, while complete pages
+avoid a backend read. Sparse extension and admission pressure drain earlier dirty
+pages before using the direct write path.
+
+Each writable-back mount owns at most 2,048 dirty pages (8 MiB) within the shared
+cache budget. Dirty pins prevent eviction and index detachment. Payloads and
+in-flight read pins remain charged even after replacement. Pressure causes
+bounded foreground submission rather than admitting an unbounded backlog.
+Submission groups adjacent pages of one file into at most 512 KiB requests. The
+backend retires data staging before replying; the same pages then become clean
+and reclaimable in VFS. F2FS retains its metadata, block allocation, GC and
+checkpoint implementation.
+
+A dedicated weakly owned worker per participating mount checks its fixed deadline
+and memory pressure once per second. It never runs in the allocator's reclaim
+path and does not serialize unrelated mounts. The volume gate orders cache
+publication, data submission and checkpoint: a successful explicit or periodic
+sync drains all earlier accepted writes before asking the backend to synchronize.
+Writes arriving during that fence wait for the volume gate. Truncation, rename,
+removal, metadata changes and unmount drain affected pending state before changing
+its backing identity. Writeback errors are sticky and are reported by subsequent
+writes and sync; a failed writeback never silently releases its dirty owners.
+
 The common VFS layer owns file-content coherence. Ramfs nodes embed one
 `FileContent`; cacheable remote nodes share a `FileRecord` which owns it. Independent
 opens and aliases therefore use the same content gate and identity. Its
@@ -120,7 +149,7 @@ binding cleanup. Cache admission remains paused through that retry; neither
 backend mutations nor handle-publication callbacks are replayed.
 
 Reads, writes, append, resize, open-with-truncate, content protection
-acquisition and temporary kernel loader reads use this common gate. A mutation advances the revision and forgets the known length
+acquisition and temporary kernel loader reads use this common gate. Direct mutations and truncation advance the revision and forget the known length
 before calling the backend, including attempts that later return an error:
 part of the file may already have changed. Old cache entries remain unreachable
 and are reclaimed by ordinary eviction. Open-with-truncate retains its existing
@@ -255,10 +284,11 @@ Backends provide raw range I/O, metadata, stable node identity and a cheap read
 admission check. Cached data and cached length still honor a failed or closed
 backend once that state is latched; the check does not probe the media on a
 cache hit. Remote filesystems use this common reader; it owns no file-page cache algorithm.
-Writes continue through the existing synchronous backend path and explicit
-`file_sync` durability contract. Dirty-page writeback, external coherence,
-direct I/O and shared writable mappings require separate protocols. Destructors
-perform no fallible storage work.
+Recoverable backends negotiate buffered writes in this same cache; other
+backends keep the synchronous path. Explicit `file_sync` drains accepted data
+before the backend durability fence. External coherence, direct I/O and shared
+writable mappings require separate protocols. Destructors perform no fallible
+storage work.
 
 ## Concurrency and lifecycle
 
@@ -350,9 +380,8 @@ requester-charged copy taken under the file lock. Userland file mappings instead
 retain explicit content protection for as long as they depend on the file.
 
 Ramfs bypasses page retention because its owned bytes are authoritative storage,
-while sharing the common file-content coordination contract. Cached writable
-backends use the same revision and mutation protocol; a clean read cache does
-not require dirty-page writeback. The backend seam
+while sharing the common file-content coordination contract. Synchronous backends retire old cache revisions on mutation. Backends that
+negotiate recoverable writeback instead share the read cache with buffered writes. The backend seam
 in `instance.rs` separates node leases, owned metadata, data operations and
 temporary loader reads from path policy. The generic userspace adapter owns canonical path identities and ordered
 request lifetime/cancellation there. Workers own media parsing and write layout;
@@ -370,7 +399,8 @@ namespace or truncation commit. Failed publication cannot truncate an existing
 file. Hard links share the same canonical node, contents, metadata, and lock
 domain. Directory hard links and cross-filesystem rename/link are rejected.
 Ramfs `file_sync` completes its in-memory operation; it does not promise durable
-storage. Shared writable mappings and persistent writeback remain absent.
+storage. Shared writable mappings remain absent. Recoverable remote backends
+can negotiate the bounded writeback policy described above.
 
 ## Native file transfer batching
 
@@ -391,7 +421,8 @@ not an atomic snapshot across concurrent file mutations. Scratch storage is
 released on return and is not a file-data cache. Writes accept the same request
 limit and accept at most 512 KiB per call, returning a short count for larger
 requests. The kernel resolves and pins the accepted user input before taking
-filesystem locks. Remote writes copy it directly into the mount's kernel-owned
+filesystem locks. Buffered remote writes copy into immutable common-cache pages.
+Direct writes and subsequent writeback copy into the mount's kernel-owned
 read-only source window while holding the transaction lock; no writable user
 alias exists to that window. The worker can submit source ranges only under the
 active operation token. RAM files and other copied paths retain bounded scratch
@@ -399,7 +430,8 @@ storage. Input preparation is not a snapshot against concurrent application
 writes: the stable accepted bytes are those copied into kernel storage. Append
 offset selection and the backend write remain serialized. Callers must handle
 short writes.
-This does not introduce a writeback cache or change `file_sync` semantics.
+Transfer batching is independent of writeback policy; `file_sync` orders both
+buffered and direct writes before returning success.
 
 Machine-visible buffers use the HAL's non-faulting external-memory copy
 contract, not Rust references that assume exclusive access. AArch64 copies
@@ -562,3 +594,12 @@ access and modification times, including times before the Unix epoch.
 The [UTC clock](time.md) is independent of filesystem policy. Filesystems
 choose timestamp resolution and persistence; ramfs retains supplied timestamp
 precision in memory.
+
+### Block transport payload concurrency
+
+The Native block pump has four command heads and seven 128 KiB payload spans
+inside the existing 1 MiB transport mapping. Payload ownership is independent of
+command-head ownership: a 512 KiB merged command can coexist with a second command
+using the remaining spans. Each command still transfers at most 512 KiB; queue
+and resource-domain limits remain in effect. This uses the existing published
+I/O VM transport without increasing its queue count or shared-memory extent.

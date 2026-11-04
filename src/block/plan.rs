@@ -171,6 +171,27 @@ pub(crate) struct DataSlots {
     slots: usize,
     occupied: u64,
 }
+
+#[cfg(test)]
+mod expanded_pool_tests {
+    use super::{DataSlots, DataSpan};
+
+    #[test]
+    fn large_command_leaves_independent_spans_until_its_completion() {
+        let mut pool = DataSlots::new(7);
+        let first = DataSpan { first: 0, count: 4 };
+        let second = DataSpan { first: 4, count: 3 };
+        assert!(pool.claim(first));
+        assert_eq!(pool.largest_free(), Some(second));
+        assert!(pool.claim(second));
+        assert_eq!(pool.largest_free(), None);
+        assert!(!pool.claim(DataSpan { first: 3, count: 2 }));
+        assert!(pool.release(first));
+        assert_eq!(pool.largest_free(), Some(first));
+        assert!(pool.release(second));
+        assert_eq!(pool.largest_free(), Some(DataSpan { first: 0, count: 7 }));
+    }
+}
 impl DataSlots {
     pub(crate) const fn new(slots: usize) -> Self {
         Self { slots, occupied: 0 }

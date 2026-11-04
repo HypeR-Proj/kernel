@@ -283,7 +283,6 @@ impl<Backend: PageBackend, Account: MemoryAccount> Clone
 }
 
 impl<Backend: PageBackend, Account: MemoryAccount> WritableMappingLease<Backend, Account> {
-    #[cfg(any(test, all(feature = "kernel-test", feature = "kernel-self-test")))]
     pub(crate) fn write_exposed(
         &self,
         offset: u64,

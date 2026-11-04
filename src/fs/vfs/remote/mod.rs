@@ -37,6 +37,7 @@ use {
 mod cache;
 mod directory;
 mod records;
+mod writeback;
 use records::{PreparedRecord, Records};
 #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 #[path = "../../../../tests/kernel/vfs_records.rs"]
@@ -81,6 +82,7 @@ struct Record {
 }
 struct State {
     volume: Transport,
+    writeback: writeback::Writeback,
     metadata: Box<Entry>,
     records: Records,
     next_id: u64,
@@ -107,11 +109,11 @@ impl Drop for Mutation<'_> {
 impl RemoteFs {
     #[inline(never)]
     pub(super) fn mount(
-        volume: Transport,
+        mut volume: Transport,
         domain: ResourceDomain,
         generation: FilesystemGeneration,
         cache: FallibleArc<FileDataCache<CachePage>>,
-    ) -> Result<Self, Error> {
+    ) -> Result<FallibleArc<Self>, Error> {
         let persistent = charge(
             &domain,
             FallibleArc::<Self>::allocation_size()
@@ -121,8 +123,10 @@ impl RemoteFs {
         let metadata = metadata_scratch()?;
         let root = node(FileRecord::try_new(0, &domain)?, &domain)?;
         let health = volume.health.clone();
+        let writeback = writeback::Writeback::new(volume.take_writeback().map_err(map)?, &domain)?;
         let mut state = State {
             volume,
+            writeback,
             metadata,
             records: Records::new(),
             next_id: 1,
@@ -141,7 +145,7 @@ impl RemoteFs {
             content: root.record.downgrade(),
             _charge: record_charge(&domain)?,
         })?);
-        Ok(Self {
+        FallibleArc::try_new(Self {
             state: Mutex::new(state),
             root,
             domain,
@@ -149,6 +153,7 @@ impl RemoteFs {
             health,
             _charge: persistent,
         })
+        .map_err(Error::from)
     }
     #[inline(never)]
     /// Serialize the final topology publication with directory renames. The
@@ -187,7 +192,7 @@ impl RemoteFs {
         // Admission is frozen. This lock also drains read-ahead which retains
         // only weak content identity rather than a namespace Location.
         let mut state = self.state.lock().map_err(Error::Lock)?;
-        state.volume.sync().map_err(map)?;
+        state.sync_writeback()?;
         publish()?;
         // No fallible operation follows publication. A late speculative reader
         // sees closed health before it can initiate a new backend transaction.
@@ -304,6 +309,7 @@ impl RemoteFs {
     #[inline(never)]
     pub(super) fn set_metadata(&self, node: &Node, update: MetadataUpdate) -> Result<(), Error> {
         let mut state = self.state.lock().map_err(Error::Lock)?;
+        state.flush_writeback()?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES)?;
         let path = state.path(node)?;
         let entry = state.stat(&path)?;
@@ -431,8 +437,11 @@ impl RemoteFs {
         node: &Node,
         offset: Option<u64>,
         input: &super::write_source::WriteSource<'_>,
+        content: &mut super::file_data::ContentGuard<'_>,
     ) -> Result<(usize, u64), Error> {
+        content.check_writable()?;
         let mut state = self.state.lock().map_err(Error::Lock)?;
+        state.check_writeback()?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES)?;
         let path = state.path(node)?;
         let entry = state.stat(&path)?;
@@ -442,19 +451,40 @@ impl RemoteFs {
         if entry.read_only() {
             return Err(Error::Remote(BackendError::ReadOnly));
         }
-        let offset = offset.unwrap_or(entry.size);
-        // A userspace worker controls stat results. Validate the entire write
-        // before publication, including append positions supplied by that worker.
+        let length = entry.size;
+        let offset = offset.unwrap_or(length);
         offset
             .checked_add(input.len() as u64)
             .ok_or(Error::InvalidInput)?;
+        if input.len() == 0 {
+            return Ok((0, offset));
+        }
+        if state.writeback.enabled() && offset <= length {
+            let identity = FileIdentity::new(
+                state.generation,
+                NodeIdentity::new(NonZeroU64::new(node.id()).ok_or(Error::NotRegularFile)?),
+                content.revision(),
+            );
+            if let Some(written) =
+                state.cache_write(node, &path, identity, length, offset, input)?
+            {
+                content.set_length(length.max(offset + written as u64));
+                return Ok((written, offset + written as u64));
+            }
+        }
+        // Sparse extension and admission pressure use bounded direct I/O after
+        // draining prior dirty versions. No dirty cache key is invalidated.
+        state.flush_writeback()?;
         state.invalidate_metadata()?;
+        content.begin_mutation()?;
         let written = state.volume.write_at(&path, offset, input).map_err(map)?;
+        content.set_length(length.max(offset + written as u64));
         Ok((written, offset + written as u64))
     }
     #[inline(never)]
     pub(super) fn resize(&self, node: &Node, length: u64) -> Result<(), Error> {
         let mut state = self.state.lock().map_err(Error::Lock)?;
+        state.flush_writeback()?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES)?;
         let path = state.path(node)?;
         let entry = state.stat(&path)?;
@@ -472,12 +502,7 @@ impl RemoteFs {
         if scope > 1 {
             return Err(Error::InvalidInput);
         }
-        self.state
-            .lock()
-            .map_err(Error::Lock)?
-            .volume
-            .sync()
-            .map_err(map)
+        self.state.lock().map_err(Error::Lock)?.sync_writeback()
     }
     #[inline(never)]
     pub(super) fn create<R, E: From<Error>>(
@@ -564,6 +589,7 @@ impl RemoteFs {
         epoch: Option<u64>,
     ) -> Result<(), Error> {
         let mut state = self.state.lock().map_err(Error::Lock)?;
+        state.flush_writeback()?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES * 3)?;
         let _mutation = self.mutation(epoch)?;
         let parent = state.path(directory)?;
@@ -621,6 +647,7 @@ impl RemoteFs {
         epoch: u64,
     ) -> Result<(), Error> {
         let mut state = self.state.lock().map_err(Error::Lock)?;
+        state.flush_writeback()?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES * 5)?;
         let _mutation = self.mutation(Some(epoch))?;
         let parent = state.path(source)?;
@@ -823,6 +850,7 @@ impl State {
     }
 
     fn invalidate_metadata(&mut self) -> Result<(), Error> {
+        self.writeback.changed = self.writeback.enabled();
         // Advance before issuing a potentially partially successful write.
         // Old pages remain reclaimable, but can no longer satisfy a lookup.
         self.metadata_revision = self
@@ -846,6 +874,9 @@ impl State {
                 &self.metadata,
                 &self.root_record,
             );
+        }
+        if let Some(record) = self.records.find_path(path) {
+            self.writeback.overlay(record.id, &mut self.metadata);
         }
         Ok(&self.metadata)
     }

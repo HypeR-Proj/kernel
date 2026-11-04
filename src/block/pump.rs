@@ -100,7 +100,7 @@ pub(super) fn start(device: &FallibleArc<Device>, transport: Transport) -> Resul
         transport,
         active,
         commands,
-        data_slots: plan::DataSlots::new(wire::REQUEST_QUEUES),
+        data_slots: plan::DataSlots::new(wire::DATA_SLOTS),
         _charge: charge,
     })
     .map_err(|_| QueueError::NoMemory)?;
@@ -381,7 +381,7 @@ impl Pump {
             if span.count == 0 {
                 return Ok(false);
             }
-            let maximum = span.count * wire::DATA_BYTES;
+            let maximum = (span.count * wire::DATA_BYTES).min(plan::MAX_PAYLOAD);
             let (first, _) = active
                 .cursor
                 .next(&active.request.ranges, maximum)

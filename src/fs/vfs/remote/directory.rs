@@ -70,6 +70,8 @@ impl RemoteFs {
                 metadata,
                 directory_scratch,
                 volume,
+                records,
+                writeback,
                 ..
             } = &mut *state;
             let bytes = if let Some(cached) = &cached {
@@ -100,6 +102,8 @@ impl RemoteFs {
                 identity: lookup_identity,
                 owner: root_record,
                 directory: &path,
+                records,
+                writeback,
             };
             let result = consume_batch(&batch, &mut next, page, metadata, &context);
             if matches!(result, Err(Error::InvalidBackendResult)) {
@@ -119,6 +123,8 @@ struct AttributeAdmission<'a> {
     identity: FileIdentity,
     owner: &'a FallibleArc<FileRecord>,
     directory: &'a str,
+    records: &'a super::Records,
+    writeback: &'a super::writeback::Writeback,
 }
 
 /// Returns true only at EOF. No Entry/Name/Node owner survives this call; the
@@ -142,6 +148,14 @@ fn consume_batch(
             return Err(Error::InvalidBackendResult);
         }
         record.entry_into(scratch);
+        // The backend has not yet seen cached extensions. Canonical bindings
+        // identify the accepted size without flushing data for an ls/stat.
+        if let Some(binding) = admission.records.iter().find(|binding| {
+            let (parent, base) = binding.path.rsplit_once('/').unwrap_or(("", &binding.path));
+            parent == admission.directory && base == name
+        }) {
+            admission.writeback.overlay(binding.id, scratch);
+        }
         let mut name_bytes = [0; MAX_NAME_BYTES];
         name_bytes[..name.len()].copy_from_slice(name.as_bytes());
         output.entries[output.len] = Some(DirectoryEntrySnapshot {

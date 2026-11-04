@@ -29,6 +29,7 @@ SYMBOLS = (
     '18FilesystemInstance15try_empty_ramfs',
     '20sys_filesystem_mount15ProcessServices',
     '18FilesystemInstance15try_from_remote',
+    '8RemoteFs5mount',
     '9Transport7prepare',
     '7Process24reserve_handle_batch_for',
     '7Process26prepare_table_storage_plan',
@@ -399,6 +400,13 @@ class ProcessStackTests(unittest.TestCase):
             symbol = '17KernelPageBackend13DomainAccountE' + method
             self.functions[symbol] = function(symbol, f'sub sp, sp, #{size}\nret')
         with self.assertRaisesRegex(ValueError, 'user write admission: live frames 2560'):
+            self.check()
+
+    def test_outlining_remote_mount_cannot_hide_live_stack_growth(self):
+        for symbol, size in [('18FilesystemInstance15try_from_remote', 1504),
+                             ('8RemoteFs5mount', 2400)]:
+            self.functions[symbol] = function(symbol, f'sub sp, sp, #{size}\nret')
+        with self.assertRaisesRegex(ValueError, 'remote mount construction: live frames 3904'):
             self.check()
 
     def test_filesystem_response_cannot_retain_owned_name_copies(self):

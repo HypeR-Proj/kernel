@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-//! Bounded kernel-owned cache for immutable file data and filesystem metadata.
+//! Bounded kernel-owned cache for versioned file data and filesystem metadata.
 //!
-//! The cache owns only clean, immutable payloads. A miss reserves one slot
+//! Published payload versions are immutable; VFS dirty owners pin pending data
+//! and its key until writeback accepts it. A miss reserves one slot
 //! under the cache lock, but the caller allocates and fills its payload after
 //! that lock has been released. Publication consumes a generation-tagged
 //! reservation, so a stale completion cannot populate a recycled slot.
@@ -36,6 +37,9 @@ pub(crate) mod read_ahead;
 mod read_pages;
 mod state;
 mod storage;
+mod write;
+#[cfg(not(test))]
+pub(crate) use write::DirtyPage;
 
 #[cfg(not(test))]
 pub(crate) mod worker;

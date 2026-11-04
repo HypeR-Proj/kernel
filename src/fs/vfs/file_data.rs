@@ -101,6 +101,14 @@ impl ContentGuard<'_> {
         Ok(length)
     }
 
+    pub(super) fn check_writable(&self) -> Result<(), Error> {
+        if self.protections.writable() {
+            Ok(())
+        } else {
+            Err(Error::Busy)
+        }
+    }
+
     /// Failed backend operations may have changed bytes or length. Retire the
     /// old revision before calling them, and reject exhaustion before mutation.
     pub(super) fn begin_mutation(&mut self) -> Result<(), Error> {

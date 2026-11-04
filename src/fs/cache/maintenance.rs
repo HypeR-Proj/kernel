@@ -143,7 +143,10 @@ impl<Page> FileDataCache<Page> {
     pub(crate) fn maintain_capacity(&self, capacity: usize) -> Result<Maintenance, CacheError> {
         super::state::State::allocation_layouts(capacity)?;
         let parked = self.state.with(|control| {
-            if control.maintenance_running || control.admission_pauses != 0 {
+            if control.maintenance_running
+                || control.admission_pauses != 0
+                || self.budget.dirty.load(Ordering::Acquire) != 0
+            {
                 return Ok(None);
             }
             if control
