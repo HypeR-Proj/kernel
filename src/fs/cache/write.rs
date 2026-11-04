@@ -42,13 +42,15 @@ impl<Owner: Clone> FileDataCache<FilePage<Owner>> {
         owner: &Owner,
         fill: impl FnOnce(Option<&FilePage<Owner>>, &mut FilePage<Owner>) -> Result<(), E>,
     ) -> Result<Option<DirtyPage<FilePage<Owner>>>, E> {
+        // Allocator observation must precede the cache lock. Actual payload
+        // admission is checked again atomically by the allocator below.
+        let allowed = self.admission.load(Ordering::Acquire) && memory::admission_allowed();
         let admission = self.state.with(|control| {
             if control.table.is_none()
                 || control.maintenance_running
                 || control.maintenance_pending
                 || control.admission_pauses != 0
-                || !self.admission.load(Ordering::Acquire)
-                || !memory::admission_allowed()
+                || !allowed
             {
                 return None;
             }

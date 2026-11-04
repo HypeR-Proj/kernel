@@ -301,7 +301,6 @@ impl FilesystemInstance {
         );
         let filesystem =
             super::remote::RemoteFs::mount(device, sponsor.clone(), generation, cache)?;
-        let filesystem = FallibleArc::try_new(filesystem)?;
         let instance = FallibleArc::try_new(Self {
             _charge: Some(charge),
             id,

@@ -55,6 +55,7 @@ def check(disassembly, *, self_test=False):
         '18FilesystemInstance15try_empty_ramfs': 1536,
         '20sys_filesystem_mount.*15ProcessServices': 1024,
         '18FilesystemInstance15try_from_remote': 1664,
+        '8RemoteFs5mount': 2560,
         '9Transport7prepare': 1024,
         # Child startup and capability transfer can grow handle tables under
         # allocator/IRQ paths. Keep scratch admission and final records separate.
@@ -187,6 +188,12 @@ def check(disassembly, *, self_test=False):
 
     # Moving scratch into a callee must shrink the live chain, not just its
     # caller. Bound each separate phase together with its live coordinator.
+    # Returning the shared owner must reduce live stack, not merely move a
+    # by-value backend construction into another simultaneously live frame.
+    mount = measured['18FilesystemInstance15try_from_remote'] + measured['8RemoteFs5mount']
+    if mount > 3584:
+        raise ValueError(f'remote mount construction: live frames {mount} exceed 3584')
+
     balance = measured['^_RNC.*24with_cpu_schedule_stored.*16balance_ready_in0E0']
     selection = balance + measured['9Scheduler21select_balance_target$']
     if selection > 448:

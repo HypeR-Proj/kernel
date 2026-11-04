@@ -113,7 +113,7 @@ impl RemoteFs {
         domain: ResourceDomain,
         generation: FilesystemGeneration,
         cache: FallibleArc<FileDataCache<CachePage>>,
-    ) -> Result<Self, Error> {
+    ) -> Result<FallibleArc<Self>, Error> {
         let persistent = charge(
             &domain,
             FallibleArc::<Self>::allocation_size()
@@ -145,7 +145,7 @@ impl RemoteFs {
             content: root.record.downgrade(),
             _charge: record_charge(&domain)?,
         })?);
-        Ok(Self {
+        FallibleArc::try_new(Self {
             state: Mutex::new(state),
             root,
             domain,
@@ -153,6 +153,7 @@ impl RemoteFs {
             health,
             _charge: persistent,
         })
+        .map_err(Error::from)
     }
     #[inline(never)]
     /// Serialize the final topology publication with directory renames. The
