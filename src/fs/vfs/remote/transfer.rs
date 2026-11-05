@@ -44,8 +44,14 @@ impl Transport {
             .iter()
             .try_fold(0usize, |n, part| n.checked_add(part.len()))
             .ok_or(Error::InvalidInput)?;
+        if total == 0 {
+            return Ok(0);
+        }
         let mut done = 0usize;
         let sponsor = self.domain.clone();
+        if self.block.is_some() && !self.supports_read_extents()? {
+            return self.read_buffered_scatter(path, offset, output, 0);
+        }
         let Some(block) = &self.block else {
             return self.read_buffered_scatter(path, offset, output, 0);
         };

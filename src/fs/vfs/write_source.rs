@@ -12,13 +12,53 @@ use {
 pub(super) enum WriteSource<'a> {
     Bytes(&'a [u8]),
     User(&'a NativeUserRead, &'a crate::accounting::ResourceDomain),
+    UserRange(
+        &'a NativeUserRead,
+        &'a crate::accounting::ResourceDomain,
+        usize,
+        usize,
+    ),
 }
 impl WriteSource<'_> {
     pub(super) fn len(&self) -> usize {
         match self {
             Self::Bytes(bytes) => bytes.len(),
             Self::User(input, _) => input.len() as usize,
+            Self::UserRange(_, _, _, length) => *length,
         }
+    }
+    /// Borrow a checked subrange without copying or resolving user pages again.
+    pub(super) fn slice(
+        &self,
+        offset: usize,
+        length: usize,
+    ) -> Result<WriteSource<'_>, super::instance::Error> {
+        let end = offset
+            .checked_add(length)
+            .filter(|end| *end <= self.len())
+            .ok_or(super::instance::Error::InvalidInput)?;
+        Ok(match self {
+            Self::Bytes(bytes) => WriteSource::Bytes(&bytes[offset..end]),
+            Self::User(input, domain) => WriteSource::UserRange(input, domain, offset, length),
+            Self::UserRange(input, domain, first, _) => WriteSource::UserRange(
+                input,
+                domain,
+                first
+                    .checked_add(offset)
+                    .ok_or(super::instance::Error::InvalidInput)?,
+                length,
+            ),
+        })
+    }
+    fn range_offset(&self, offset: usize, length: usize) -> Option<u64> {
+        offset
+            .checked_add(length)
+            .filter(|end| *end <= self.len())?;
+        let first = match self {
+            Self::UserRange(_, _, first, _) => *first,
+            _ => 0,
+        };
+        u64::try_from(first.checked_add(offset)?).ok()
     }
     pub(super) fn copy_to_vmo(
         &self,
@@ -36,8 +76,14 @@ impl WriteSource<'_> {
                         .ok_or(QueueError::Invalid)?,
                 )
                 .map_err(|_| QueueError::Invalid),
-            Self::User(input, _) => input
-                .copy_to_vmo(memory, offset as u64, 0, length)
+            Self::User(input, _) | Self::UserRange(input, _, _, _) => input
+                .copy_to_vmo(
+                    memory,
+                    self.range_offset(offset, length)
+                        .ok_or(QueueError::Invalid)?,
+                    0,
+                    length,
+                )
                 .map_err(|_| QueueError::Invalid),
         }
     }
@@ -58,25 +104,21 @@ impl WriteSource<'_> {
                 );
                 Ok(())
             }
-            Self::User(input, _) => input
-                .copy_to_slice(offset as u64, output)
+            Self::User(input, _) | Self::UserRange(input, _, _, _) => input
+                .copy_to_slice(
+                    self.range_offset(offset, output.len())
+                        .ok_or(super::instance::Error::InvalidInput)?,
+                    output,
+                )
                 .map_err(|_| super::instance::Error::InvalidInput),
         }
     }
 
     pub(super) fn copy_to(&self, output: &mut [u8]) -> Result<(), super::instance::Error> {
-        match self {
-            Self::Bytes(bytes) => {
-                if bytes.len() != output.len() {
-                    return Err(super::instance::Error::InvalidInput);
-                }
-                output.copy_from_slice(bytes);
-                Ok(())
-            }
-            Self::User(input, _) => input
-                .copy_to_slice(0, output)
-                .map_err(|_| super::instance::Error::InvalidInput),
+        if self.len() != output.len() {
+            return Err(super::instance::Error::InvalidInput);
         }
+        self.copy_range(0, output)
     }
 
     pub(super) fn copy_to_exposed_vmo(
@@ -95,8 +137,14 @@ impl WriteSource<'_> {
                         .ok_or(QueueError::Invalid)?,
                 )
                 .map_err(|_| QueueError::Invalid),
-            Self::User(input, _) => input
-                .copy_to_exposed_vmo(lease, offset as u64, 0, length)
+            Self::User(input, _) | Self::UserRange(input, _, _, _) => input
+                .copy_to_exposed_vmo(
+                    lease,
+                    self.range_offset(offset, length)
+                        .ok_or(QueueError::Invalid)?,
+                    0,
+                    length,
+                )
                 .map_err(|_| QueueError::Invalid),
         }
     }
