@@ -498,11 +498,18 @@ impl RemoteFs {
         state.volume.resize(&path, length).map_err(map)
     }
     #[inline(never)]
-    pub(super) fn sync(&self, _node: &Node, scope: u64) -> Result<(), Error> {
-        if scope > 1 {
-            return Err(Error::InvalidInput);
+    pub(super) fn sync(&self, node: &Node, scope: u64) -> Result<(), Error> {
+        let mode =
+            hyper_filesystem::protocol::SyncMode::decode(scope).ok_or(Error::InvalidInput)?;
+        let mut state = self.state.lock().map_err(Error::Lock)?;
+        state.check_writeback()?;
+        let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES)?;
+        let path = state.path(node)?;
+        if state.stat(&path)?.directory() {
+            state.sync_writeback()
+        } else {
+            state.sync_file_writeback(node.id(), mode)
         }
-        self.state.lock().map_err(Error::Lock)?.sync_writeback()
     }
     #[inline(never)]
     pub(super) fn create<R, E: From<Error>>(

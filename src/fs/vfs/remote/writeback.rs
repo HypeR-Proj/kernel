@@ -283,21 +283,28 @@ impl State {
         Ok(Some(done))
     }
     pub(super) fn flush_writeback(&mut self) -> Result<(), Error> {
+        self.flush_selected(None)
+    }
+    fn flush_selected(&mut self, selected: Option<u64>) -> Result<(), Error> {
         self.check_writeback()?;
         if self.writeback.pages.is_empty() {
             return Ok(());
         }
-        let result = self.submit_writeback();
+        let result = self.submit_writeback(selected);
         if let Err(error) = result {
             self.writeback.failure = Some(error);
         }
         result
     }
-    fn submit_writeback(&mut self) -> Result<(), Error> {
+    fn submit_writeback(&mut self, selected: Option<u64>) -> Result<(), Error> {
         self.invalidate_metadata()?;
         let mut first = 0;
         while first < self.writeback.pages.len() {
             let start = &self.writeback.pages[first];
+            if selected.is_some_and(|node| node != start.node) {
+                first += 1;
+                continue;
+            }
             let (node, offset) = (start.node, start.offset);
             let mut length = 0;
             let mut end = first;
@@ -339,7 +346,26 @@ impl State {
         }
         // Every submitted version has been accepted. Releasing dirty pins keeps
         // those same pages available for clean reads and ordinary reclamation.
-        self.writeback.pages.clear();
+        self.writeback
+            .pages
+            .retain(|page| selected.is_some_and(|node| node != page.node));
+        Ok(())
+    }
+    pub(super) fn sync_file_writeback(
+        &mut self,
+        node: u64,
+        mode: hyper_filesystem::protocol::SyncMode,
+    ) -> Result<(), Error> {
+        self.flush_selected(Some(node))?;
+        if let Err(error) = self
+            .volume
+            .sync_file(self.records.path(node)?, mode)
+            .map_err(map)
+        {
+            self.writeback.failure = Some(error);
+            return Err(error);
+        }
+        // File recovery records do not replace the periodic volume checkpoint.
         Ok(())
     }
     pub(super) fn sync_writeback(&mut self) -> Result<(), Error> {
