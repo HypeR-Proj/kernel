@@ -9,6 +9,9 @@ mod directory;
 #[path = "../../../tests/kernel/vfs_namespace/content.rs"]
 mod content;
 
+#[path = "../../../tests/kernel/vfs_namespace/storage.rs"]
+mod storage;
+
 #[path = "../../../tests/kernel/vfs_namespace/protection.rs"]
 mod protection;
 
@@ -70,6 +73,7 @@ pub(crate) fn run() -> Result<(), TestError> {
     let root = DirectoryObject::try_root(namespace, &domain)?;
     directory::run(&root, &domain, &scratch)?;
     content::run(&root, &domain, &scratch)?;
+    storage::run(&root, &domain, &scratch)?;
     protection::run(&root, &domain, &scratch)?;
     #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
     process_loader::run(&root, &domain, &scratch)?;

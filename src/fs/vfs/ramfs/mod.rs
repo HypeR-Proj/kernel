@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::fs::primitives::ramfs::RamFs;
 use crate::time::queue::Timestamp;
-use hyper::mm::{FallibleArc, WeakFallibleArc};
+use hyper::mm::{FallibleArc, UniqueFallibleArc, WeakFallibleArc};
 use hyper::sync::SpinLock;
 use {
     crate::fs::primitives::MAX_NAME_BYTES, crate::fs::primitives::MAX_PATH_BYTES,
@@ -28,6 +28,7 @@ use {
 use {crate::sync::Mutex, crate::sync::MutexGuard};
 
 pub(super) mod promotion;
+mod storage;
 
 const STORAGE_LIMIT: u64 = 256 * 1024 * 1024;
 
@@ -59,13 +60,11 @@ impl StorageBudget for DataBudget<'_> {
 
     fn reserve(&self, bytes: usize) -> Result<DataCharge, ResourceError> {
         let charge = self.0.reserve(bytes)?;
-        // This is a diagnostic sum of live payload-capacity reservations, not
-        // allocator backing. Failed allocations and replaced buffers release
-        // their reservation through the same owner.
-        DATA_CAPACITY_BYTES.fetch_add(bytes as u64, Ordering::Relaxed);
+        // Indices pay the same storage quota but are not payload capacity in
+        // the public memory observation. reserve_page records payload below.
         Ok(DataCharge {
             _charge: charge,
-            bytes: bytes as u64,
+            bytes: 0,
         })
     }
 }
@@ -108,10 +107,10 @@ pub(super) struct Node {
 }
 
 struct NodeData {
-    contents: FileData<'static, DataCharge>,
+    contents: FileData<'static, storage::DataPage, DataCharge>,
 }
 impl NodeData {
-    const fn new(contents: FileData<'static, DataCharge>) -> Self {
+    const fn new(contents: FileData<'static, storage::DataPage, DataCharge>) -> Self {
         Self { contents }
     }
 }
@@ -229,13 +228,7 @@ impl Node {
         self.id
     }
     pub(super) fn attributes(&self) -> Result<NodeAttributes, Error> {
-        let size = self
-            .data
-            .lock()
-            .map_err(Error::Lock)?
-            .contents
-            .bytes()
-            .len() as u64;
+        let size = self.data.lock().map_err(Error::Lock)?.contents.len() as u64;
         Ok(self
             .metadata
             .with(|metadata| NodeAttributes::new(self.kind, metadata.mode, size)))
@@ -244,7 +237,7 @@ impl Node {
         let data = self.data.lock().map_err(Error::Lock)?;
         Ok(self.metadata.with(|metadata| {
             (
-                NodeAttributes::new(self.kind, metadata.mode, data.contents.bytes().len() as u64),
+                NodeAttributes::new(self.kind, metadata.mode, data.contents.len() as u64),
                 *metadata,
             )
         }))
@@ -303,29 +296,34 @@ impl Ramfs {
         let charge = budget
             .reserve(FallibleArc::<Node>::allocation_size())
             .map_err(Error::Resource)?;
-        let root = FallibleArc::try_new(Node {
-            mount_pins: AtomicU64::new(0),
-            mount_roots: AtomicU64::new(0),
-            id: 0,
-            kind: NodeKind::Directory,
-            topology: SpinLock::new(Topology {
-                links: 1,
-                parent: None,
-            }),
-            metadata: SpinLock::new(NodeMetadata {
-                mode: 0o755,
-                accessed: None,
-                modified: None,
-                created: None,
-                changed: None,
-            }),
-            data: Mutex::new(NodeData::new(FileData::borrowed(&[]))),
-            children: Mutex::new(Children::new()),
-            locks: super::locks::FileLocks::new(),
-            content: super::file_data::FileContent::new(),
-            archive: None,
-            _charge: charge,
-        })?;
+        // Allocate before constructing the complete node so allocator and IRQ
+        // paths do not retain a by-value copy of its locks and page index.
+        let slot = UniqueFallibleArc::try_new_uninit()?;
+        let root = slot
+            .write(Node {
+                mount_pins: AtomicU64::new(0),
+                mount_roots: AtomicU64::new(0),
+                id: 0,
+                kind: NodeKind::Directory,
+                topology: SpinLock::new(Topology {
+                    links: 1,
+                    parent: None,
+                }),
+                metadata: SpinLock::new(NodeMetadata {
+                    mode: 0o755,
+                    accessed: None,
+                    modified: None,
+                    created: None,
+                    changed: None,
+                }),
+                data: Mutex::new(NodeData::new(FileData::borrowed(&[]))),
+                children: Mutex::new(Children::new()),
+                locks: super::locks::FileLocks::new(),
+                content: super::file_data::FileContent::new(),
+                archive: None,
+                _charge: charge,
+            })
+            .into_shared();
         Ok(Self {
             root,
             next_id: AtomicU64::new(1),
@@ -383,31 +381,34 @@ impl Ramfs {
                     .filter(|entry| entry.node.kind == NodeKind::Directory)
                     .map(|entry| entry.node.clone()),
             );
-            let node = FallibleArc::try_new(Node {
-                mount_pins: AtomicU64::new(0),
-                mount_roots: AtomicU64::new(0),
-                id: source.id().get(),
-                kind: source.kind(),
-                topology: SpinLock::new(Topology {
-                    links: 1,
-                    parent: None,
-                }),
-                metadata: SpinLock::new(NodeMetadata {
-                    mode: source.mode() & 0o777,
-                    accessed: None,
-                    modified: source
-                        .modified_seconds()
-                        .and_then(|value| Timestamp::new(i64::from(value), 0)),
-                    created: None,
-                    changed: None,
-                }),
-                data: Mutex::new(NodeData::new(FileData::borrowed(source.data()))),
-                children: Mutex::new(children),
-                locks: super::locks::FileLocks::new(),
-                content: super::file_data::FileContent::new(),
-                archive: backing.clone(),
-                _charge: charge,
-            })?;
+            let slot = UniqueFallibleArc::try_new_uninit()?;
+            let node = slot
+                .write(Node {
+                    mount_pins: AtomicU64::new(0),
+                    mount_roots: AtomicU64::new(0),
+                    id: source.id().get(),
+                    kind: source.kind(),
+                    topology: SpinLock::new(Topology {
+                        links: 1,
+                        parent: None,
+                    }),
+                    metadata: SpinLock::new(NodeMetadata {
+                        mode: source.mode() & 0o777,
+                        accessed: None,
+                        modified: source
+                            .modified_seconds()
+                            .and_then(|value| Timestamp::new(i64::from(value), 0)),
+                        created: None,
+                        changed: None,
+                    }),
+                    data: Mutex::new(NodeData::new(FileData::borrowed(source.data()))),
+                    children: Mutex::new(children),
+                    locks: super::locks::FileLocks::new(),
+                    content: super::file_data::FileContent::new(),
+                    archive: backing.clone(),
+                    _charge: charge,
+                })
+                .into_shared();
             // Startup cannot acquire sleeping locks. These retained children
             // allow parent hints to be completed before publishing the root.
             for child in child_directories {
@@ -600,7 +601,7 @@ impl Ramfs {
     ) -> Result<(usize, u64), Error> {
         node.require(NodeKind::File)?;
         let mut data = node.data.lock().map_err(Error::Lock)?;
-        let offset = offset.unwrap_or(data.contents.bytes().len() as u64);
+        let offset = offset.unwrap_or(data.contents.len() as u64);
         let actual = data
             .contents
             .write(offset, input, &DataBudget(&self.budget))
@@ -635,19 +636,10 @@ impl Ramfs {
                 node.archive.clone(),
             )));
         }
-        let charge = sponsor
-            .reserve(ResourceAmount::ZERO.with(
-                ResourceKind::KernelMemoryBytes,
-                data.contents.bytes().len() as u64,
-            ))
-            .map_err(Error::Resource)?
-            .commit();
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(data.contents.bytes().len())
-            .map_err(|_| Error::Allocation)?;
-        bytes.extend_from_slice(data.contents.bytes());
-        Ok(Some(ExecutableSnapshot::owned(bytes, charge)))
+        ExecutableSnapshot::read(data.contents.len() as u64, sponsor, |bytes| {
+            Ok(data.contents.read(0, bytes))
+        })
+        .map(Some)
     }
 
     pub(super) fn create<R, E: From<Error>>(
@@ -680,30 +672,32 @@ impl Ramfs {
             data.write(0, target, &DataBudget(&self.budget))
                 .map_err(map_data_error)?;
         }
-        let node = FallibleArc::try_new(Node {
-            mount_pins: AtomicU64::new(0),
-            mount_roots: AtomicU64::new(0),
-            id,
-            kind,
-            topology: SpinLock::new(Topology {
-                links: 1,
-                parent: (kind == NodeKind::Directory).then(|| directory.downgrade()),
-            }),
-            metadata: SpinLock::new(NodeMetadata {
-                mode,
-                accessed: now,
-                modified: now,
-                created: now,
-                changed: now,
-            }),
-            data: Mutex::new(NodeData::new(data)),
-            children: Mutex::new(Children::new()),
-            locks: super::locks::FileLocks::new(),
-            content: super::file_data::FileContent::new(),
-            archive: None,
-            _charge: charge,
-        })
-        .map_err(Error::from)?;
+        let slot = UniqueFallibleArc::try_new_uninit().map_err(Error::from)?;
+        let node = slot
+            .write(Node {
+                mount_pins: AtomicU64::new(0),
+                mount_roots: AtomicU64::new(0),
+                id,
+                kind,
+                topology: SpinLock::new(Topology {
+                    links: 1,
+                    parent: (kind == NodeKind::Directory).then(|| directory.downgrade()),
+                }),
+                metadata: SpinLock::new(NodeMetadata {
+                    mode,
+                    accessed: now,
+                    modified: now,
+                    created: now,
+                    changed: now,
+                }),
+                data: Mutex::new(NodeData::new(data)),
+                children: Mutex::new(Children::new()),
+                locks: super::locks::FileLocks::new(),
+                content: super::file_data::FileContent::new(),
+                archive: None,
+                _charge: charge,
+            })
+            .into_shared();
         let mutation = self.begin(epoch)?;
         let mut children = directory.children.lock().map_err(Error::Lock)?;
         if !directory.linked() {
@@ -731,7 +725,7 @@ impl Ramfs {
         let mut data = node.data.lock().map_err(Error::Lock)?;
 
         let attributes = node.metadata.with(|metadata| {
-            NodeAttributes::new(node.kind, metadata.mode, data.contents.bytes().len() as u64)
+            NodeAttributes::new(node.kind, metadata.mode, data.contents.len() as u64)
         });
         // A failed handle reservation/publication must leave file contents
         // untouched. All fallible work precedes this infallible replacement.

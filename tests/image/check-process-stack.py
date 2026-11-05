@@ -52,7 +52,12 @@ def check(disassembly, *, self_test=False):
         # RAM backend construction retires before resolving the mount point,
         # which may traverse a remote filesystem and enter IRQ-tail scheduling.
         '26sys_filesystem_mount_ramfs.*15ProcessServices': 512,
-        '18FilesystemInstance15try_empty_ramfs': 1536,
+        '18FilesystemInstance15try_empty_ramfs': 768,
+        # Ordinary opens must not retain exclusive-creation or by-value RAMFS
+        # node scratch through path lookup and asynchronous IRQ-tail scheduling.
+        '^_RINvNt.*7service19prepare_file_handle': 896,
+        '^_RINvM.*15DirectoryObject11create_fileNt.*14PreparedHandle': 1152,
+        '^_RINvM.*15DirectoryObject18open_resolved_fileNt.*14PreparedHandle': 1024,
         '20sys_filesystem_mount.*15ProcessServices': 1024,
         '18FilesystemInstance15try_from_remote': 1664,
         '8RemoteFs5mount': 2560,
@@ -188,6 +193,13 @@ def check(disassembly, *, self_test=False):
 
     # Moving scratch into a callee must shrink the live chain, not just its
     # caller. Bound each separate phase together with its live coordinator.
+    opening = measured['^_RINvNt.*7service19prepare_file_handle']
+    for phase in ('^_RINvM.*15DirectoryObject11create_fileNt.*14PreparedHandle',
+                  '^_RINvM.*15DirectoryObject18open_resolved_fileNt.*14PreparedHandle'):
+        live = opening + measured[phase]
+        if live > 1984:
+            raise ValueError(f'file open {phase}: live frames {live} exceed 1984')
+
     # Returning the shared owner must reduce live stack, not merely move a
     # by-value backend construction into another simultaneously live frame.
     mount = measured['18FilesystemInstance15try_from_remote'] + measured['8RemoteFs5mount']
