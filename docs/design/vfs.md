@@ -382,8 +382,10 @@ Mutable payload lives in independently owned physical pages. Appending allocates
 only new pages, without copying the old payload or requiring a file-sized
 contiguous allocation. A compact, fallibly allocated page index provides direct
 access; index growth can move metadata but never moves the retained pages.
-Growth is zero-filled and charged to a filesystem-owned 256 MiB storage domain,
-including page indices, node and directory-entry allocations. A write or resize
+Growth is zero-filled and charged to the filesystem's retained resource domain,
+including page indices, node and directory-entry allocations. The archive-backed
+root has a 256 MiB storage limit; explicitly mounted RAMFS instances retain the
+mounting caller's resource domain and its limits. A write or resize
 prepares every new page and index reservation before publishing any change;
 failure releases the prepared prefix and preserves the previous bytes and size.
 Shrinking releases whole trailing pages and clears the retained partial tail.
