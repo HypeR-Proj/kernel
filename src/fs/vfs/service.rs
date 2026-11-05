@@ -548,7 +548,7 @@ pub(crate) fn directory_open_directory_nofollow(
 }
 
 pub(crate) fn file_sync(file: &InvocationReceiver, scope: u64) -> Result<(), ServiceError> {
-    if scope > 1 {
+    if scope > hyper::abi::native::HYPER_NATIVE_FILE_SYNC_VOLUME {
         return Err(ServiceError::InvalidInput);
     }
     let file = file

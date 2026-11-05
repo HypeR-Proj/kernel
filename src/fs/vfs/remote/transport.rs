@@ -47,6 +47,7 @@ pub(in crate::fs::vfs) struct Transport {
     domain: ResourceDomain,
     sequence: u64,
     read_only: bool,
+    capabilities: capabilities::Negotiation,
 }
 struct BlockTransport {
     queue: KernelRef<crate::block::BlockQueue, KernelService>,
@@ -143,6 +144,7 @@ impl Transport {
             domain: process.resource_domain(),
             sequence: 0,
             read_only,
+            capabilities: capabilities::Negotiation::Unknown,
         })
     }
     fn call(
@@ -264,8 +266,13 @@ impl Transport {
             match channel.peek() {
                 Ok(info) => {
                     let claim = channel.claim(info).map_err(|_| Error::Closed)?;
-                    let response =
-                        decode_response(claim.bytes(), self.sequence, operation, metadata);
+                    let response = decode_response(
+                        claim.bytes(),
+                        self.sequence,
+                        operation,
+                        metadata,
+                        &mut self.capabilities,
+                    );
                     claim.commit().release();
                     return response;
                 }
@@ -447,6 +454,14 @@ impl Transport {
         }
     }
 
+    fn supports_read_extents(&mut self) -> Result<bool, Error> {
+        if self.capabilities.needs_query() {
+            let result = self.call(Operation::Capabilities, "", "", 0, 0, [None; 2]);
+            self.capabilities.resolve(result)?;
+        }
+        Ok(self.capabilities.read_extents())
+    }
+
     pub(super) fn write_at(
         &mut self,
         path: &str,
@@ -558,8 +573,10 @@ fn decode_response(
     sequence: u64,
     operation: Operation,
     metadata: Option<&mut Entry>,
+    capabilities: &mut capabilities::Negotiation,
 ) -> Result<u64, Error> {
     let response = ResponseRef::decode(bytes, sequence, operation).ok_or(Error::Corrupt)?;
+    capabilities.observe(response.features());
     let actual = response.result()?;
     if let Some(metadata) = metadata {
         response.entry_into(metadata);
@@ -567,5 +584,7 @@ fn decode_response(
     Ok(actual)
 }
 
+#[path = "capabilities.rs"]
+mod capabilities;
 #[path = "transfer.rs"]
 mod transfer;

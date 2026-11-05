@@ -357,7 +357,9 @@ pub(in crate::abi::native) fn sys_file_sync(
         require_zero(&arguments[1..])?;
         if !matches!(
             arguments[0],
-            abi::HYPER_NATIVE_FILE_SYNC_DATA | abi::HYPER_NATIVE_FILE_SYNC_ALL
+            abi::HYPER_NATIVE_FILE_SYNC_DATA
+                | abi::HYPER_NATIVE_FILE_SYNC_ALL
+                | abi::HYPER_NATIVE_FILE_SYNC_VOLUME
         ) {
             return Err(INVALID);
         }

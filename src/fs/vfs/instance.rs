@@ -812,7 +812,8 @@ impl FilesystemInstance {
                     super::write_source::WriteSource::Bytes(bytes) => {
                         fs.write(node.ramfs()?, offset, bytes)
                     }
-                    super::write_source::WriteSource::User(_, domain) => {
+                    super::write_source::WriteSource::User(_, domain)
+                    | super::write_source::WriteSource::UserRange(_, domain, _, _) => {
                         let mut bytes = super::scratch::ScratchVec::new(
                             super::scratch::ScratchBudget::new(domain),
                         );
@@ -1001,7 +1002,7 @@ impl FilesystemInstance {
         }
     }
     pub(super) fn sync(&self, node: &NodeLease, scope: u64) -> Result<(), Error> {
-        if scope > 1 {
+        if scope > hyper::abi::native::HYPER_NATIVE_FILE_SYNC_VOLUME {
             return Err(Error::InvalidInput);
         }
         // Ramfs operations already complete in memory. This acknowledges that

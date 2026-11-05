@@ -440,47 +440,83 @@ impl RemoteFs {
         content: &mut super::file_data::ContentGuard<'_>,
     ) -> Result<(usize, u64), Error> {
         content.check_writable()?;
-        let mut state = self.state.lock().map_err(Error::Lock)?;
-        state.check_writeback()?;
-        let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES)?;
-        let path = state.path(node)?;
-        let entry = state.stat(&path)?;
-        if entry.directory() {
-            return Err(Error::IsDirectory);
-        }
-        if entry.read_only() {
-            return Err(Error::Remote(BackendError::ReadOnly));
-        }
-        let length = entry.size;
-        let offset = offset.unwrap_or(length);
-        offset
-            .checked_add(input.len() as u64)
-            .ok_or(Error::InvalidInput)?;
-        if input.len() == 0 {
-            return Ok((0, offset));
-        }
-        if state.writeback.enabled() && offset <= length {
-            let identity = FileIdentity::new(
-                state.generation,
-                NodeIdentity::new(NonZeroU64::new(node.id()).ok_or(Error::NotRegularFile)?),
-                content.revision(),
-            );
-            if let Some(written) =
-                state.cache_write(node, &path, identity, length, offset, input)?
-            {
-                content.set_length(length.max(offset + written as u64));
-                return Ok((written, offset + written as u64));
+        let mut first = offset;
+        let mut done = 0;
+        loop {
+            let step = (|| -> Result<(usize, bool), Error> {
+                let mut state = self.state.lock().map_err(Error::Lock)?;
+                state.check_writeback()?;
+                let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES)?;
+                // The content gate excludes another writer or truncate, but a
+                // rename can update this binding between completed chunks.
+                let path = state.path(node)?;
+                let entry = state.stat(&path)?;
+                if entry.directory() {
+                    return Err(Error::IsDirectory);
+                }
+                if entry.read_only() {
+                    return Err(Error::Remote(BackendError::ReadOnly));
+                }
+                let length = entry.size;
+                let base = *first.get_or_insert(length);
+                base.checked_add(input.len() as u64)
+                    .ok_or(Error::InvalidInput)?;
+                if input.len() == 0 {
+                    return Ok((0, false));
+                }
+                let at = base + done as u64;
+                let chunk = input.slice(
+                    done,
+                    (input.len() - done).min(hyper_filesystem::protocol::DATA_BYTES),
+                )?;
+                if state.writeback.enabled() && at <= length {
+                    let identity = FileIdentity::new(
+                        state.generation,
+                        NodeIdentity::new(NonZeroU64::new(node.id()).ok_or(Error::NotRegularFile)?),
+                        content.revision(),
+                    );
+                    if let Some(written) =
+                        state.cache_write(node, &path, identity, length, at, &chunk)?
+                    {
+                        content.set_length(length.max(at + written as u64));
+                        return Ok((written, true));
+                    }
+                }
+                // Only this content revision will be retired by direct I/O.
+                // Drain its earlier dirty versions one batch per lock hold;
+                // unrelated files retain their independently pinned pages.
+                if state.writeback.contains(node.id()) {
+                    state.flush_batch(Some(node.id()))?;
+                    return Ok((0, true));
+                }
+                state.invalidate_metadata()?;
+                content.begin_mutation()?;
+                let written = state.volume.write_at(&path, at, &chunk).map_err(map)?;
+                content.set_length(length.max(at + written as u64));
+                Ok((written, written == chunk.len()))
+            })();
+            match step {
+                Ok((written, more)) => {
+                    done += written;
+                    if !more || done == input.len() {
+                        break;
+                    }
+                }
+                Err(_) if done != 0 => break,
+                Err(error) => return Err(error),
+            }
+            // Dropping the volume guard hands ownership to an existing FIFO
+            // waiter. Never acquire a file-content gate from the worker.
+            if crate::task::scheduler::cond_resched().is_err() {
+                if done != 0 {
+                    break;
+                }
+                return Err(Error::InvalidInput);
             }
         }
-        // Sparse extension and admission pressure use bounded direct I/O after
-        // draining prior dirty versions. No dirty cache key is invalidated.
-        state.flush_writeback()?;
-        state.invalidate_metadata()?;
-        content.begin_mutation()?;
-        let written = state.volume.write_at(&path, offset, input).map_err(map)?;
-        content.set_length(length.max(offset + written as u64));
-        Ok((written, offset + written as u64))
+        Ok((done, first.ok_or(Error::InvalidInput)? + done as u64))
     }
+
     #[inline(never)]
     pub(super) fn resize(&self, node: &Node, length: u64) -> Result<(), Error> {
         let mut state = self.state.lock().map_err(Error::Lock)?;
@@ -499,10 +535,13 @@ impl RemoteFs {
     }
     #[inline(never)]
     pub(super) fn sync(&self, node: &Node, scope: u64) -> Result<(), Error> {
-        let mode =
-            hyper_filesystem::protocol::SyncMode::decode(scope).ok_or(Error::InvalidInput)?;
         let mut state = self.state.lock().map_err(Error::Lock)?;
         state.check_writeback()?;
+        if scope == hyper::abi::native::HYPER_NATIVE_FILE_SYNC_VOLUME {
+            return state.sync_writeback();
+        }
+        let mode =
+            hyper_filesystem::protocol::SyncMode::decode(scope).ok_or(Error::InvalidInput)?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES)?;
         let path = state.path(node)?;
         if state.stat(&path)?.directory() {

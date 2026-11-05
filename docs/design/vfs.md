@@ -120,15 +120,25 @@ backend retires data staging before replying; the same pages then become clean
 and reclaimable in VFS. F2FS retains its metadata, block allocation, GC and
 checkpoint implementation.
 
-A dedicated weakly owned worker per participating mount checks its fixed deadline
-and memory pressure once per second. It never runs in the allocator's reclaim
+A dedicated weakly owned worker per participating mount wakes when dirty pages
+reach 6 MiB and drains toward 4 MiB. Its one-second timed wait also checks the
+fixed checkpoint deadline and global memory pressure. Completed batches rotate
+between files and release the volume gate before continuing. Foreground writes
+also yield the volume gate between bounded chunks while retaining their file's
+content gate; append ordering and same-file serialization remain intact. Pending
+modification time is carried to remaining dirty pages until the final data batch
+and its timestamp update succeed. The worker never runs in the allocator's reclaim
 path and does not serialize unrelated mounts. The volume gate orders cache
 publication, data submission and checkpoint. Periodic, volume and directory sync
 drain all earlier accepted writes before asking the backend to synchronize.
 File sync drains only the target file, preserving other files' dirty owners,
 and sends `SyncFile` with its data/all scope. The backend may use a recovery log
 or a stronger checkpoint; file sync does not clear the volume's changed state
-or postpone its periodic deadline.
+or postpone its periodic deadline. Native `FILE_SYNC_VOLUME` on a writable file
+explicitly selects its containing filesystem's volume fence. Ordinary file
+scopes remain file-local. Explicit and periodic fences retain the volume gate
+for their entire operation; bounded pressure drain does not remove checkpoint
+stalls or introduce a checkpoint per batch.
 Writes arriving during that fence wait for the volume gate. Truncation, rename,
 removal, metadata changes and unmount drain affected pending state before changing
 its backing identity. Writeback errors are sticky and are reported by subsequent
