@@ -27,6 +27,9 @@ SYMBOLS = (
     'executable13parser_buffer',
     '26sys_filesystem_mount_ramfs15ProcessServices',
     '18FilesystemInstance15try_empty_ramfs',
+    'INvNt7service19prepare_file_handle',
+    'INvM15DirectoryObject11create_fileNt14PreparedHandle',
+    'INvM15DirectoryObject18open_resolved_fileNt14PreparedHandle',
     '20sys_filesystem_mount15ProcessServices',
     '18FilesystemInstance15try_from_remote',
     '8RemoteFs5mount',
@@ -126,6 +129,9 @@ class ProcessStackTests(unittest.TestCase):
                 ('9Transport12read_scatter', 1232),
                 ('NCNv7service8map_file0', 1088),
                 ('26sys_filesystem_mount_ramfs15ProcessServices', 1328),
+                ('18FilesystemInstance15try_empty_ramfs', 1264),
+                ('INvNt7service19prepare_file_handle', 1872),
+                ('INvM15DirectoryObject18open_resolved_fileNt14PreparedHandle', 1504),
                 ('20sys_filesystem_mount15ProcessServices', 2176),
                 ('24sys_process_builder_seal15ProcessServices', 1424),
                 ('6loader11load_native', 1520),
@@ -142,6 +148,13 @@ class ProcessStackTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, f'entry frame {frame} exceeds'):
                     self.check()
                 self.functions[symbol] = original
+
+    def test_file_open_cannot_move_scratch_into_a_live_creation_frame(self):
+        for symbol, frame in (('INvNt7service19prepare_file_handle', 896),
+                              ('INvM15DirectoryObject11create_fileNt14PreparedHandle', 1152)):
+            self.functions[symbol] = function(symbol, f'sub sp, sp, #{frame}\nret')
+        with self.assertRaisesRegex(ValueError, 'file open .*live frames 2048'):
+            self.check()
 
     def test_scatter_wait_bounds_the_combined_live_frames(self):
         for symbol, frame in (('scatter11BlockAccess12read_scatter', 768),

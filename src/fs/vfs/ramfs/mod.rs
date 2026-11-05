@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::fs::primitives::ramfs::RamFs;
 use crate::time::queue::Timestamp;
-use hyper::mm::{FallibleArc, WeakFallibleArc};
+use hyper::mm::{FallibleArc, UniqueFallibleArc, WeakFallibleArc};
 use hyper::sync::SpinLock;
 use {
     crate::fs::primitives::MAX_NAME_BYTES, crate::fs::primitives::MAX_PATH_BYTES,
@@ -296,29 +296,34 @@ impl Ramfs {
         let charge = budget
             .reserve(FallibleArc::<Node>::allocation_size())
             .map_err(Error::Resource)?;
-        let root = FallibleArc::try_new(Node {
-            mount_pins: AtomicU64::new(0),
-            mount_roots: AtomicU64::new(0),
-            id: 0,
-            kind: NodeKind::Directory,
-            topology: SpinLock::new(Topology {
-                links: 1,
-                parent: None,
-            }),
-            metadata: SpinLock::new(NodeMetadata {
-                mode: 0o755,
-                accessed: None,
-                modified: None,
-                created: None,
-                changed: None,
-            }),
-            data: Mutex::new(NodeData::new(FileData::borrowed(&[]))),
-            children: Mutex::new(Children::new()),
-            locks: super::locks::FileLocks::new(),
-            content: super::file_data::FileContent::new(),
-            archive: None,
-            _charge: charge,
-        })?;
+        // Allocate before constructing the complete node so allocator and IRQ
+        // paths do not retain a by-value copy of its locks and page index.
+        let slot = UniqueFallibleArc::try_new_uninit()?;
+        let root = slot
+            .write(Node {
+                mount_pins: AtomicU64::new(0),
+                mount_roots: AtomicU64::new(0),
+                id: 0,
+                kind: NodeKind::Directory,
+                topology: SpinLock::new(Topology {
+                    links: 1,
+                    parent: None,
+                }),
+                metadata: SpinLock::new(NodeMetadata {
+                    mode: 0o755,
+                    accessed: None,
+                    modified: None,
+                    created: None,
+                    changed: None,
+                }),
+                data: Mutex::new(NodeData::new(FileData::borrowed(&[]))),
+                children: Mutex::new(Children::new()),
+                locks: super::locks::FileLocks::new(),
+                content: super::file_data::FileContent::new(),
+                archive: None,
+                _charge: charge,
+            })
+            .into_shared();
         Ok(Self {
             root,
             next_id: AtomicU64::new(1),
@@ -376,31 +381,34 @@ impl Ramfs {
                     .filter(|entry| entry.node.kind == NodeKind::Directory)
                     .map(|entry| entry.node.clone()),
             );
-            let node = FallibleArc::try_new(Node {
-                mount_pins: AtomicU64::new(0),
-                mount_roots: AtomicU64::new(0),
-                id: source.id().get(),
-                kind: source.kind(),
-                topology: SpinLock::new(Topology {
-                    links: 1,
-                    parent: None,
-                }),
-                metadata: SpinLock::new(NodeMetadata {
-                    mode: source.mode() & 0o777,
-                    accessed: None,
-                    modified: source
-                        .modified_seconds()
-                        .and_then(|value| Timestamp::new(i64::from(value), 0)),
-                    created: None,
-                    changed: None,
-                }),
-                data: Mutex::new(NodeData::new(FileData::borrowed(source.data()))),
-                children: Mutex::new(children),
-                locks: super::locks::FileLocks::new(),
-                content: super::file_data::FileContent::new(),
-                archive: backing.clone(),
-                _charge: charge,
-            })?;
+            let slot = UniqueFallibleArc::try_new_uninit()?;
+            let node = slot
+                .write(Node {
+                    mount_pins: AtomicU64::new(0),
+                    mount_roots: AtomicU64::new(0),
+                    id: source.id().get(),
+                    kind: source.kind(),
+                    topology: SpinLock::new(Topology {
+                        links: 1,
+                        parent: None,
+                    }),
+                    metadata: SpinLock::new(NodeMetadata {
+                        mode: source.mode() & 0o777,
+                        accessed: None,
+                        modified: source
+                            .modified_seconds()
+                            .and_then(|value| Timestamp::new(i64::from(value), 0)),
+                        created: None,
+                        changed: None,
+                    }),
+                    data: Mutex::new(NodeData::new(FileData::borrowed(source.data()))),
+                    children: Mutex::new(children),
+                    locks: super::locks::FileLocks::new(),
+                    content: super::file_data::FileContent::new(),
+                    archive: backing.clone(),
+                    _charge: charge,
+                })
+                .into_shared();
             // Startup cannot acquire sleeping locks. These retained children
             // allow parent hints to be completed before publishing the root.
             for child in child_directories {
@@ -664,30 +672,32 @@ impl Ramfs {
             data.write(0, target, &DataBudget(&self.budget))
                 .map_err(map_data_error)?;
         }
-        let node = FallibleArc::try_new(Node {
-            mount_pins: AtomicU64::new(0),
-            mount_roots: AtomicU64::new(0),
-            id,
-            kind,
-            topology: SpinLock::new(Topology {
-                links: 1,
-                parent: (kind == NodeKind::Directory).then(|| directory.downgrade()),
-            }),
-            metadata: SpinLock::new(NodeMetadata {
-                mode,
-                accessed: now,
-                modified: now,
-                created: now,
-                changed: now,
-            }),
-            data: Mutex::new(NodeData::new(data)),
-            children: Mutex::new(Children::new()),
-            locks: super::locks::FileLocks::new(),
-            content: super::file_data::FileContent::new(),
-            archive: None,
-            _charge: charge,
-        })
-        .map_err(Error::from)?;
+        let slot = UniqueFallibleArc::try_new_uninit().map_err(Error::from)?;
+        let node = slot
+            .write(Node {
+                mount_pins: AtomicU64::new(0),
+                mount_roots: AtomicU64::new(0),
+                id,
+                kind,
+                topology: SpinLock::new(Topology {
+                    links: 1,
+                    parent: (kind == NodeKind::Directory).then(|| directory.downgrade()),
+                }),
+                metadata: SpinLock::new(NodeMetadata {
+                    mode,
+                    accessed: now,
+                    modified: now,
+                    created: now,
+                    changed: now,
+                }),
+                data: Mutex::new(NodeData::new(data)),
+                children: Mutex::new(Children::new()),
+                locks: super::locks::FileLocks::new(),
+                content: super::file_data::FileContent::new(),
+                archive: None,
+                _charge: charge,
+            })
+            .into_shared();
         let mutation = self.begin(epoch)?;
         let mut children = directory.children.lock().map_err(Error::Lock)?;
         if !directory.linked() {

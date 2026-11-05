@@ -269,6 +269,9 @@ impl DirectoryObject {
         Self::try_new(self.namespace.clone(), location, sponsor)
     }
 
+    // Exclusive creation has separate parent/result scratch. Ordinary open
+    // must not retain that frame through path lookup and remote reply waits.
+    #[inline(never)]
     pub(crate) fn create_file<R, E: From<Error> + From<super::instance::Error>>(
         &self,
         path: &str,
