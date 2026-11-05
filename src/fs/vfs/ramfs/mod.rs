@@ -28,6 +28,7 @@ use {
 use {crate::sync::Mutex, crate::sync::MutexGuard};
 
 pub(super) mod promotion;
+mod storage;
 
 const STORAGE_LIMIT: u64 = 256 * 1024 * 1024;
 
@@ -59,13 +60,11 @@ impl StorageBudget for DataBudget<'_> {
 
     fn reserve(&self, bytes: usize) -> Result<DataCharge, ResourceError> {
         let charge = self.0.reserve(bytes)?;
-        // This is a diagnostic sum of live payload-capacity reservations, not
-        // allocator backing. Failed allocations and replaced buffers release
-        // their reservation through the same owner.
-        DATA_CAPACITY_BYTES.fetch_add(bytes as u64, Ordering::Relaxed);
+        // Indices pay the same storage quota but are not payload capacity in
+        // the public memory observation. reserve_page records payload below.
         Ok(DataCharge {
             _charge: charge,
-            bytes: bytes as u64,
+            bytes: 0,
         })
     }
 }
@@ -108,10 +107,10 @@ pub(super) struct Node {
 }
 
 struct NodeData {
-    contents: FileData<'static, DataCharge>,
+    contents: FileData<'static, storage::DataPage, DataCharge>,
 }
 impl NodeData {
-    const fn new(contents: FileData<'static, DataCharge>) -> Self {
+    const fn new(contents: FileData<'static, storage::DataPage, DataCharge>) -> Self {
         Self { contents }
     }
 }
@@ -229,13 +228,7 @@ impl Node {
         self.id
     }
     pub(super) fn attributes(&self) -> Result<NodeAttributes, Error> {
-        let size = self
-            .data
-            .lock()
-            .map_err(Error::Lock)?
-            .contents
-            .bytes()
-            .len() as u64;
+        let size = self.data.lock().map_err(Error::Lock)?.contents.len() as u64;
         Ok(self
             .metadata
             .with(|metadata| NodeAttributes::new(self.kind, metadata.mode, size)))
@@ -244,7 +237,7 @@ impl Node {
         let data = self.data.lock().map_err(Error::Lock)?;
         Ok(self.metadata.with(|metadata| {
             (
-                NodeAttributes::new(self.kind, metadata.mode, data.contents.bytes().len() as u64),
+                NodeAttributes::new(self.kind, metadata.mode, data.contents.len() as u64),
                 *metadata,
             )
         }))
@@ -600,7 +593,7 @@ impl Ramfs {
     ) -> Result<(usize, u64), Error> {
         node.require(NodeKind::File)?;
         let mut data = node.data.lock().map_err(Error::Lock)?;
-        let offset = offset.unwrap_or(data.contents.bytes().len() as u64);
+        let offset = offset.unwrap_or(data.contents.len() as u64);
         let actual = data
             .contents
             .write(offset, input, &DataBudget(&self.budget))
@@ -635,19 +628,10 @@ impl Ramfs {
                 node.archive.clone(),
             )));
         }
-        let charge = sponsor
-            .reserve(ResourceAmount::ZERO.with(
-                ResourceKind::KernelMemoryBytes,
-                data.contents.bytes().len() as u64,
-            ))
-            .map_err(Error::Resource)?
-            .commit();
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(data.contents.bytes().len())
-            .map_err(|_| Error::Allocation)?;
-        bytes.extend_from_slice(data.contents.bytes());
-        Ok(Some(ExecutableSnapshot::owned(bytes, charge)))
+        ExecutableSnapshot::read(data.contents.len() as u64, sponsor, |bytes| {
+            Ok(data.contents.read(0, bytes))
+        })
+        .map(Some)
     }
 
     pub(super) fn create<R, E: From<Error>>(
@@ -731,7 +715,7 @@ impl Ramfs {
         let mut data = node.data.lock().map_err(Error::Lock)?;
 
         let attributes = node.metadata.with(|metadata| {
-            NodeAttributes::new(node.kind, metadata.mode, data.contents.bytes().len() as u64)
+            NodeAttributes::new(node.kind, metadata.mode, data.contents.len() as u64)
         });
         // A failed handle reservation/publication must leave file contents
         // untouched. All fallible work precedes this infallible replacement.

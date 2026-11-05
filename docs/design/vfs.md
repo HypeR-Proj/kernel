@@ -378,10 +378,18 @@ cannot turn a position into a reused entry index.
 Enumeration is not a snapshot of the whole directory during concurrent mutation.
 
 File bytes borrow the boot archive until mutation requires owned storage.
+Mutable payload lives in independently owned physical pages. Appending allocates
+only new pages, without copying the old payload or requiring a file-sized
+contiguous allocation. A compact, fallibly allocated page index provides direct
+access; index growth can move metadata but never moves the retained pages.
 Growth is zero-filled and charged to a filesystem-owned 256 MiB storage domain,
-including node and directory-entry allocations. Replacement buffers reserve
-before allocation and retain the old charge until replacement succeeds.
-Truncation to zero releases owned capacity. The namespace mutation mutex
+including page indices, node and directory-entry allocations. A write or resize
+prepares every new page and index reservation before publishing any change;
+failure releases the prepared prefix and preserves the previous bytes and size.
+Shrinking releases whole trailing pages and clears the retained partial tail.
+Truncation to zero releases both payload and index capacity. These pages are
+authoritative volatile storage and cannot be reclaimed as clean file cache.
+The namespace mutation mutex
 serializes create, remove, link, and rename publication; independent file reads and writes use
 per-node sleeping mutexes. User memory is copied through bounded buffers before
 or after backend execution. One Native write may complete a short prefix;
