@@ -123,8 +123,12 @@ checkpoint implementation.
 A dedicated weakly owned worker per participating mount checks its fixed deadline
 and memory pressure once per second. It never runs in the allocator's reclaim
 path and does not serialize unrelated mounts. The volume gate orders cache
-publication, data submission and checkpoint: a successful explicit or periodic
-sync drains all earlier accepted writes before asking the backend to synchronize.
+publication, data submission and checkpoint. Periodic, volume and directory sync
+drain all earlier accepted writes before asking the backend to synchronize.
+File sync drains only the target file, preserving other files' dirty owners,
+and sends `SyncFile` with its data/all scope. The backend may use a recovery log
+or a stronger checkpoint; file sync does not clear the volume's changed state
+or postpone its periodic deadline.
 Writes arriving during that fence wait for the volume gate. Truncation, rename,
 removal, metadata changes and unmount drain affected pending state before changing
 its backing identity. Writeback errors are sticky and are reported by subsequent
@@ -285,8 +289,8 @@ admission check. Cached data and cached length still honor a failed or closed
 backend once that state is latched; the check does not probe the media on a
 cache hit. Remote filesystems use this common reader; it owns no file-page cache algorithm.
 Recoverable backends negotiate buffered writes in this same cache; other
-backends keep the synchronous path. Explicit `file_sync` drains accepted data
-before the backend durability fence. External coherence, direct I/O and shared
+backends keep the synchronous path. Explicit `file_sync` drains that file's accepted
+data before the backend durability fence. External coherence, direct I/O and shared
 writable mappings require separate protocols. Destructors perform no fallible
 storage work.
 

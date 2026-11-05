@@ -526,6 +526,14 @@ impl Transport {
         self.call(Operation::Resize, path, "", 0, length, [None; 2])
             .map(|_| ())
     }
+    pub(super) fn sync_file(
+        &mut self,
+        path: &str,
+        mode: hyper_filesystem::protocol::SyncMode,
+    ) -> Result<(), Error> {
+        self.call(Operation::SyncFile, path, "", 0, mode as u64, [None; 2])
+            .map(|_| ())
+    }
     pub(super) fn sync(&mut self) -> Result<(), Error> {
         self.call(Operation::Sync, "", "", 0, 0, [None; 2])
             .map(|_| ())
