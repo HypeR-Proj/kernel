@@ -652,7 +652,7 @@ pub(crate) fn mount_remote(
     directory: &InvocationReceiver,
     path: UserSlice,
     read_only: bool,
-) -> Result<(), ServiceError> {
+) -> Result<u64, ServiceError> {
     let path = copy_path(process, path)?;
     let directory = directory
         .resolve::<DirectoryObject>(Rights::WRITE.union(Rights::EXECUTE))
@@ -660,13 +660,13 @@ pub(crate) fn mount_remote(
     let device = super::remote::Transport::prepare(process, channel, buffer, queue, read_only)
         .map_err(|error| ServiceError::FileSystem(VfsError::Backend(error)))?;
     let publication = device.publication();
-    directory
+    let id = directory
         .object()
         .mount_remote(&path, device, &process.resource_domain())?;
     if let Some(publication) = publication {
         publication.publish();
     }
-    Ok(())
+    Ok(id)
 }
 
 pub(crate) fn unmount(
@@ -682,4 +682,19 @@ pub(crate) fn unmount(
         .object()
         .unmount(&path, &process.resource_domain())?;
     Ok(())
+}
+
+/// Explicitly abandon one failed mounted generation without consulting its peer.
+pub(crate) fn detach_failed(
+    process: &Process,
+    directory: &InvocationReceiver,
+    id: u64,
+) -> Result<u64, ServiceError> {
+    let directory = directory
+        .resolve::<DirectoryObject>(Rights::MANAGE_NAMESPACE)
+        .map_err(crate::process::ProcessError::from)?;
+    directory
+        .object()
+        .detach_failed(id, &process.resource_domain())
+        .map_err(Into::into)
 }

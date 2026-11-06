@@ -484,6 +484,12 @@ pub(super) fn dispatch_operation(
         abi::NativeOperation::FilesystemFinishRootSwitch => {
             handlers::sys_filesystem_finish_root_switch(services, receiver, arguments)
         }
+        abi::NativeOperation::FilesystemDetachFailed => {
+            handlers::sys_filesystem_detach_failed(services, receiver, arguments)
+        }
+        abi::NativeOperation::NativeBlockRetireQueue => {
+            handlers::sys_native_block_retire_queue(services, receiver, arguments)
+        }
         abi::NativeOperation::FilesystemUnmount => {
             handlers::sys_filesystem_unmount(services, receiver, arguments)
         }

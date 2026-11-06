@@ -8,6 +8,7 @@ use {hyper_trace::Error, hyper_trace::Site, hyper_trace::Ticket};
 /// started; one ordinary expiry callout is allocated but not armed.
 pub fn initialize() -> Result<(), Error> {
     super::control::initialize()?;
+    hyper_trace::install_observer(crate::process::vdso::trace_activity)?;
     hyper_trace::install(record)
 }
 

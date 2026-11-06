@@ -18,8 +18,24 @@ pub type MachineEmitter = fn(Ticket, &'static Site, &mut dyn FnMut() -> [u64; 4]
 // Maximum on-demand allocation, not a boot reservation or the CLI default.
 // Short storage snapshots need headroom without a reader on live producer rings.
 pub const CAPACITY: usize = 65_536;
-static RECORDER: Recorder<{ hyper_core::cpu::MAX_CPUS }, CAPACITY> = Recorder::new();
+static RECORDER: Recorder<{ hyper_core::cpu::MAX_CPUS }, CAPACITY> =
+    Recorder::with_observer(Some(admission));
 static MACHINE: PublishedOnce<MachineEmitter> = PublishedOnce::new();
+static OBSERVER: PublishedOnce<fn(u8)> = PublishedOnce::new();
+
+fn admission(categories: u8) {
+    if let Some(observer) = OBSERVER.get() {
+        observer(categories);
+    }
+}
+
+/// Install before exposing capture control. The callback observes only category
+/// admission, including a stop that closes admission but returns Busy.
+pub fn install_observer(observer: fn(u8)) -> Result<(), Error> {
+    OBSERVER
+        .publish(observer)
+        .map_err(|_| Error::AlreadyInitialized)
+}
 
 pub fn prepare(
     capacity: usize,

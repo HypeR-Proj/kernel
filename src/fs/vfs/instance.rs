@@ -1074,6 +1074,12 @@ impl Mount {
     pub(super) fn freeze(&self) -> Result<(), Error> {
         self.locations.freeze().then_some(()).ok_or(Error::Busy)
     }
+    pub(super) fn freeze_failed(&self) -> Result<(), Error> {
+        self.locations
+            .freeze_failed()
+            .then_some(())
+            .ok_or(Error::Busy)
+    }
     pub(super) fn thaw(&self) {
         self.locations.thaw();
     }
@@ -1087,6 +1093,16 @@ impl Mount {
         match &self.filesystem.backend {
             Backend::Remote(fs) => fs.unmount_with(publish),
             Backend::RamFs(_) => publish(),
+        }
+    }
+
+    pub(super) fn abandon_with(
+        &self,
+        publish: impl FnOnce() -> Result<(), Error>,
+    ) -> Result<u64, Error> {
+        match &self.filesystem.backend {
+            Backend::Remote(fs) => fs.abandon_with(publish),
+            Backend::RamFs(_) => Err(Error::Unsupported),
         }
     }
 

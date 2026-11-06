@@ -732,13 +732,6 @@ impl<Backend: PageBackend, Account: MemoryAccount> WritableVmo<Backend, Account>
     /// Snapshot admission excludes new writers and waits for no context: it
     /// reports `Busy` while a writer is active. The returned type exposes no
     /// write operation, and no source page is shared with executable backing.
-    #[cfg_attr(
-        not(any(test, all(feature = "kernel-test", feature = "kernel-self-test"))),
-        expect(
-            dead_code,
-            reason = "executable snapshot conversion currently exercised by memory self-tests"
-        )
-    )]
     pub(crate) fn try_executable_snapshot(
         &self,
         _provenance: &ExecutableProvenance,

@@ -58,3 +58,46 @@ fn clone_of_existing_location_prevents_freeze() {
         admission.release();
     });
 }
+
+#[test]
+fn failed_freeze_preserves_live_clones_and_remains_closed() {
+    loom::model(|| {
+        let admission = Arc::new(Admission::new());
+        assert!(admission.acquire());
+        let clone = {
+            let admission = admission.clone();
+            thread::spawn(move || {
+                admission.retain();
+                thread::yield_now();
+                admission.release();
+            })
+        };
+        assert!(admission.freeze_failed());
+        assert!(!admission.freeze_failed());
+        assert!(!admission.acquire());
+        crate::require_ok(clone.join());
+        admission.release();
+        assert!(!admission.acquire());
+        admission.thaw();
+        assert!(admission.freeze());
+    });
+}
+
+#[test]
+fn failed_freeze_rollback_preserves_racing_reference_count() {
+    loom::model(|| {
+        let admission = Arc::new(Admission::new());
+        assert!(admission.acquire());
+        assert!(admission.freeze_failed());
+        let release = {
+            let admission = admission.clone();
+            thread::spawn(move || admission.release())
+        };
+        admission.thaw();
+        assert!(admission.acquire());
+        crate::require_ok(release.join());
+        assert!(!admission.freeze());
+        admission.release();
+        assert!(admission.freeze());
+    });
+}

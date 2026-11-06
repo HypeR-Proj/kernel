@@ -113,6 +113,7 @@ struct Control {
 /// pins producers to the CPU whose ring they select.
 pub struct Recorder<const CPUS: usize, const CAPACITY: usize> {
     requested: AtomicU64,
+    observer: Option<fn(u8)>,
     control: SpinLock<Control>,
     cpus: [Cpu; CPUS],
 }
@@ -125,9 +126,16 @@ impl<const CPUS: usize, const CAPACITY: usize> Default for Recorder<CPUS, CAPACI
 
 impl<const CPUS: usize, const CAPACITY: usize> Recorder<CPUS, CAPACITY> {
     pub const fn new() -> Self {
+        Self::with_observer(None)
+    }
+
+    /// The optional observer runs under recorder control after each admission
+    /// publication. It must be bounded, nonblocking, and never reenter tracing.
+    pub const fn with_observer(observer: Option<fn(u8)>) -> Self {
         assert!(CPUS > 0 && CAPACITY > 0);
         Self {
             requested: AtomicU64::new(0),
+            observer,
             control: SpinLock::new(Control {
                 generation: 0,
                 stopped: true,
@@ -135,6 +143,13 @@ impl<const CPUS: usize, const CAPACITY: usize> Recorder<CPUS, CAPACITY> {
                 retirement: Vec::new(),
             }),
             cpus: [const { Cpu::new() }; CPUS],
+        }
+    }
+
+    fn publish_admission(&self, requested: u64) {
+        self.requested.store(requested, Ordering::Release);
+        if let Some(observer) = self.observer {
+            observer(requested as u8);
         }
     }
 
@@ -234,7 +249,7 @@ impl<const CPUS: usize, const CAPACITY: usize> Recorder<CPUS, CAPACITY> {
                 if !control.present || control.generation != session.0 {
                     return Err(Error::InvalidSession);
                 }
-                self.requested.store(0, Ordering::Release);
+                self.publish_admission(0);
                 // An admitted writer must release its ring before this acquire.
                 // A later holder acquires our release, so its gate recheck cannot
                 // see the pre-stop request. No global producer counter is needed.
@@ -265,10 +280,7 @@ impl<const CPUS: usize, const CAPACITY: usize> Recorder<CPUS, CAPACITY> {
                 if self.requested.load(Ordering::Acquire) == 0 {
                     return Err(Error::Busy);
                 }
-                self.requested.store(
-                    (session.0 << FILTER_BITS) | u64::from(filter.0),
-                    Ordering::Release,
-                );
+                self.publish_admission((session.0 << FILTER_BITS) | u64::from(filter.0));
                 Ok(())
             })
             .ok_or(Error::Busy)?
@@ -419,10 +431,8 @@ impl<const CPUS: usize, const CAPACITY: usize> PreparedCapture<'_, CPUS, CAPACIT
                 control.generation = generation;
                 control.stopped = false;
                 control.present = true;
-                self.recorder.requested.store(
-                    (generation << FILTER_BITS) | u64::from(filter.0),
-                    Ordering::Release,
-                );
+                self.recorder
+                    .publish_admission((generation << FILTER_BITS) | u64::from(filter.0));
                 Ok(Session(generation))
             })
             .ok_or(Error::Busy)?

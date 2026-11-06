@@ -166,6 +166,9 @@ pub(super) struct Queue {
     pub(super) closed: AtomicBool,
     pub(super) state: Lock<QueueState>,
     pub(super) signals: SignalState,
+    // Private completion for owner-authorized revocation. CLOSED alone is only
+    // logical admission closure and never proves physical request retirement.
+    drained: SignalState,
     pub(super) window: Lock<Option<FallibleArc<super::window::IoWindow>>>,
     _charge: CommittedCharge,
 }
@@ -186,7 +189,7 @@ impl Queue {
                         )
                     })
                 });
-            let (revision, mut bits) = self.state.with(|state| {
+            let (revision, mut bits, drained) = self.state.with(|state| {
                 let writable = device_writable
                     && state.count < self.limits.capacity
                     && state.bytes <= self.limits.byte_limit - required;
@@ -194,12 +197,20 @@ impl Queue {
                     state.revision,
                     (u64::from(state.completed != 0) * COMPLETED)
                         | (u64::from(writable) * WRITABLE),
+                    state.count == 0 && self.closed.load(Ordering::Acquire),
                 )
             });
             if device_failed || self.closed.load(Ordering::Acquire) {
                 bits = (bits & COMPLETED) | CLOSED;
             }
             publish(&self.signals, SIGNALS, bits);
+            // Closing admission and reserving credits both hold device.state.
+            // Read the closed bit with count under the queue lock: once both
+            // are observed, count cannot increase again. This notification is
+            // monotonic, so an older publisher can never clear a completed drain.
+            if device_failed || drained {
+                publish(&self.drained, 1, 1);
+            }
             if self.state.with(|state| state.revision == revision)
                 && self.device.upgrade().is_none_or(|device| {
                     device
@@ -376,6 +387,7 @@ impl Device {
                 peak_inflight: 0,
             }),
             signals: SignalState::new(),
+            drained: SignalState::new(),
             window: Lock::new(None),
             _charge: charge,
         })
@@ -402,6 +414,43 @@ impl Device {
 }
 
 impl BlockQueue {
+    /// The volume owner revokes every alias of this queue. Success requires all
+    /// reservations and physical requests to retire on a healthy device. A
+    /// timeout/cancellation leaves the queue closed and permits a later wait.
+    pub(crate) fn retire(
+        &self,
+        block: &NativeBlock,
+        deadline: u64,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<(), QueueError> {
+        if !core::ptr::eq(&*self.device, &*block.device) {
+            return Err(QueueError::Invalid);
+        }
+        self.close();
+        match wait_one(
+            SignalSource::new(&self.queue.drained, SignalMask::from_trusted_bits(1)),
+            &self.queue.domain,
+            1,
+            deadline,
+            cancelled,
+        )
+        .map_err(|_| QueueError::ResourceLimit)?
+        {
+            SignalWaitOutcome::TimedOut => return Err(QueueError::TimedOut),
+            SignalWaitOutcome::Cancelled => return Err(QueueError::Cancelled),
+            SignalWaitOutcome::Observed(_) => {}
+        }
+        self.device.state.with(|device| {
+            if device.failed {
+                return Err(QueueError::Device(Error::Disconnected));
+            }
+            if self.queue.state.with(|state| state.count != 0) {
+                return Err(QueueError::Busy);
+            }
+            Ok(())
+        })
+    }
+
     pub(super) fn abandon(&self, ticket: u64) {
         if let Ok(request) = self.find(ticket) {
             request.abandoned.store(true, Ordering::Release);
@@ -418,7 +467,7 @@ impl BlockQueue {
             self.queue
                 .state
                 .with(|state| state.revision = state.revision.wrapping_add(1));
-            publish(&self.queue.signals, WRITABLE | CLOSED, CLOSED);
+            self.queue.refresh_signals();
             self.device.notify_space();
             self.device.prompt();
         }
@@ -961,6 +1010,7 @@ impl Device {
             })
         });
         self.notify_space();
+        queue.refresh_signals();
         removed
     }
 }

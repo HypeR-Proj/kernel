@@ -95,6 +95,23 @@ impl crate::abi::native::GuestIoServices for ProcessServices<'_> {
     ) -> Result<(), crate::block::service::TransferError> {
         crate::block::service::transfer(self.process, block, operation, first, buffer)
     }
+    fn retire_block_queue(
+        &self,
+        receiver: &InvocationReceiver,
+        queue: HandleValue,
+        deadline: u64,
+    ) -> Result<(), crate::block::service::TransferError> {
+        crate::block::service::queue::retire(self.process, receiver, queue, deadline, || {
+            self.thread.stop_requested()
+        })
+    }
+    fn detach_failed_filesystem(
+        &self,
+        receiver: &InvocationReceiver,
+        id: u64,
+    ) -> Result<u64, crate::fs::vfs::VfsServiceError> {
+        crate::fs::vfs::service::detach_failed(self.process, receiver, id)
+    }
     fn create_block_queue(
         &self,
         receiver: &InvocationReceiver,
@@ -176,7 +193,7 @@ impl crate::abi::native::GuestIoServices for ProcessServices<'_> {
         directory: &InvocationReceiver,
         path: UserSlice,
         read_only: bool,
-    ) -> Result<(), crate::fs::vfs::VfsServiceError> {
+    ) -> Result<u64, crate::fs::vfs::VfsServiceError> {
         crate::fs::vfs::service::mount_remote(
             self.process,
             channel,

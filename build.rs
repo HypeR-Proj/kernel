@@ -17,6 +17,8 @@ mod native_abi;
 #[allow(dead_code)]
 #[path = "hal/src/arch/riscv64/registers.rs"]
 mod riscv64_registers;
+#[path = "build_support/vdso.rs"]
+mod vdso;
 #[allow(dead_code)]
 #[path = "hal/src/arch/x86_64/registers.rs"]
 mod x86_64_registers;
@@ -100,6 +102,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         _ => return Ok(()),
     };
     write_assembly_header(&header_path, constants)?;
+    vdso::build(&output_directory, &target)?;
     for &(source, object_name) in sources {
         let object_path = output_directory.join(object_name);
         compile_assembly(

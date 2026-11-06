@@ -20,6 +20,25 @@ fn capability(error: impl Into<ProcessError>) -> TransferError {
     TransferError::Capability(error.into())
 }
 
+pub(crate) fn retire(
+    process: &Process,
+    receiver: &InvocationReceiver,
+    queue: HandleValue,
+    deadline: u64,
+    cancelled: impl Fn() -> bool,
+) -> Result<(), TransferError> {
+    let block = receiver
+        .resolve::<NativeBlock>(Rights::WRITE)
+        .map_err(capability)?;
+    let queue = process
+        .resolve_handle::<BlockQueue>(queue, Rights::WAIT)
+        .map_err(capability)?;
+    queue
+        .object()
+        .retire(block.object(), deadline, cancelled)
+        .map_err(queue_error)
+}
+
 pub(crate) fn create(
     process: &Process,
     receiver: &InvocationReceiver,

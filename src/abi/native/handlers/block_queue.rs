@@ -196,3 +196,19 @@ pub(in crate::abi::native) fn sys_block_queue_submit_window(
         Err(status) => failure(status),
     })
 }
+
+#[inline(never)]
+pub(in crate::abi::native) fn sys_native_block_retire_queue(
+    services: &impl GuestIoServices,
+    receiver: &InvocationReceiver,
+    arguments: &Arguments,
+) -> NativeAction {
+    let result = (|| {
+        require_zero(&arguments[2..])?;
+        let queue = crate::abi::native::wire::parse_handle(arguments[0])?;
+        services
+            .retire_block_queue(receiver, queue, arguments[1])
+            .map_err(status)
+    })();
+    NativeAction::Return(status_only(result))
+}

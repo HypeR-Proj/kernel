@@ -236,6 +236,21 @@ impl MountTable {
         }
     }
 
+    pub(super) fn detach_failed(&self, id: u64, sponsor: &ResourceDomain) -> Result<u64, Error> {
+        let view = self.snapshot();
+        if view.root().mount().id().get() == id {
+            return Err(Error::InvalidInput);
+        }
+        let mounted = view
+            .entries()
+            .iter()
+            .find(|entry| entry.mounted.id().get() == id)
+            .ok_or(Error::Missing)?
+            .mounted
+            .clone();
+        self.detach(&view, &mounted, sponsor, true)
+    }
+
     /// Freeze admission before syncing; table locks never span backend IPC.
     /// The caller has dropped its resolution Location before entering here.
     pub(super) fn detach(
@@ -243,13 +258,22 @@ impl MountTable {
         old: &View,
         mounted: &FallibleArc<Mount>,
         sponsor: &ResourceDomain,
-    ) -> Result<(), Error> {
+        failed: bool,
+    ) -> Result<u64, Error> {
         if !old
             .entries()
             .iter()
             .any(|entry| entry.mounted.id() == mounted.id())
         {
             return Err(Error::InvalidInput);
+        }
+        if failed
+            && old
+                .entries()
+                .iter()
+                .any(|entry| entry.covered.mount().id() == mounted.id())
+        {
+            return Err(Error::Busy);
         }
         let mut entries = ScratchVec::new(ScratchBudget::new(sponsor));
         entries.try_reserve_exact(old.entries().len())?;
@@ -259,8 +283,12 @@ impl MountTable {
             }
         }
         let mut replacement = Some(Self::prepare_view(old.root.clone(), entries, sponsor)?);
-        mounted.freeze()?;
-        let result = mounted.unmount_with(|| {
+        if failed {
+            mounted.freeze_failed()?;
+        } else {
+            mounted.freeze()?;
+        }
+        let publish = || {
             let retired = self.current.with(|current| {
                 if self.transition_pending.load(Ordering::Relaxed) || !current.same(old) {
                     return Err(Error::Busy);
@@ -270,7 +298,12 @@ impl MountTable {
             })?;
             drop(retired);
             Ok(())
-        });
+        };
+        let result = if failed {
+            mounted.abandon_with(publish)
+        } else {
+            mounted.unmount_with(publish).map(|()| 0)
+        };
         if result.is_err() {
             mounted.thaw();
         }
@@ -285,9 +318,11 @@ impl MountTable {
         covered: Location,
         filesystem: FallibleArc<FilesystemInstance>,
         sponsor: &ResourceDomain,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let mounted = Mount::try_new(filesystem, Some(sponsor))?;
-        self.attach_mount(old, covered, mounted, sponsor)
+        let id = mounted.id().get();
+        self.attach_mount(old, covered, mounted, sponsor)?;
+        Ok(id)
     }
 
     #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]

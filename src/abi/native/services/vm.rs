@@ -86,6 +86,23 @@ pub(crate) trait GuestIoServices: UserMemoryServices {
             hyper::abi::native::HYPER_NATIVE_STATUS_NOT_SUPPORTED,
         ))
     }
+    fn retire_block_queue(
+        &self,
+        _receiver: &InvocationReceiver,
+        _queue: HandleValue,
+        _deadline: u64,
+    ) -> Result<(), crate::block::service::TransferError> {
+        Err(crate::block::service::TransferError::Status(
+            hyper::abi::native::HYPER_NATIVE_STATUS_NOT_SUPPORTED,
+        ))
+    }
+    fn detach_failed_filesystem(
+        &self,
+        _receiver: &InvocationReceiver,
+        _id: u64,
+    ) -> Result<u64, crate::fs::vfs::VfsServiceError> {
+        Err(crate::fs::vfs::VfsServiceError::InvalidInput)
+    }
     fn create_block_queue(
         &self,
         _receiver: &InvocationReceiver,
@@ -173,7 +190,7 @@ pub(crate) trait GuestIoServices: UserMemoryServices {
         _directory: &InvocationReceiver,
         _path: UserSlice,
         _read_only: bool,
-    ) -> Result<(), crate::fs::vfs::VfsServiceError> {
+    ) -> Result<u64, crate::fs::vfs::VfsServiceError> {
         Err(crate::fs::vfs::VfsServiceError::InvalidInput)
     }
 
