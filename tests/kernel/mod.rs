@@ -56,6 +56,7 @@ mod type_contracts;
 mod user_memory_access;
 #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_RISCV64))]
 mod vcpu_migration;
+mod vdso;
 mod virtual_serial;
 mod vm_registry;
 mod vm_wfi_wait;
@@ -72,6 +73,7 @@ pub(crate) fn verify_early_startup() {
 
 pub(crate) fn run() {
     crate::hal::irq::enable_local();
+    run_case("vDSO ownership and observation isolation", vdso::run);
     run_case("static tracepoint recording", trace::run);
     #[cfg(any(CONFIG_ARCH_AARCH64, CONFIG_ARCH_X86_64))]
     run_case("reschedule IPI runtime proof", reschedule_ipi::run);

@@ -10,6 +10,7 @@
 mod callout;
 mod deadline_slot;
 mod realtime;
+pub(crate) use realtime::vdso_anchor as vdso_realtime_anchor;
 mod tick;
 mod timers;
 mod worker;

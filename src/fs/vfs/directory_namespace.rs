@@ -20,7 +20,7 @@ impl DirectoryObject {
         path: &str,
         device: crate::fs::vfs::remote::Transport,
         sponsor: &ResourceDomain,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let filesystem =
             FilesystemInstance::try_from_remote(device, sponsor, self.namespace.cache())?;
         self.mount_filesystem(path, filesystem, sponsor)
@@ -31,13 +31,13 @@ impl DirectoryObject {
         path: &str,
         filesystem: FallibleArc<FilesystemInstance>,
         sponsor: &ResourceDomain,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let view = self.namespace.mounts.snapshot();
         let location = self.namespace_directory(&view, path, None, sponsor)?;
-        self.namespace
+        Ok(self
+            .namespace
             .mounts
-            .attach(&view, location, filesystem, sponsor)?;
-        Ok(())
+            .attach(&view, location, filesystem, sponsor)?)
     }
 
     pub(in crate::fs::vfs) fn unmount(
@@ -52,15 +52,28 @@ impl DirectoryObject {
         }
         let mounted = location.mount().clone();
         drop(location);
-        self.namespace.mounts.detach(&view, &mounted, sponsor)?;
+        self.namespace
+            .mounts
+            .detach(&view, &mounted, sponsor, false)?;
         Ok(())
+    }
+
+    /// Exact mount identity avoids consulting the failed provider while
+    /// resolving its own mountpoint. Only a namespace-root authority may use it.
+    pub(in crate::fs::vfs) fn detach_failed(
+        &self,
+        id: u64,
+        sponsor: &ResourceDomain,
+    ) -> Result<u64, Error> {
+        self.require_namespace_root()?;
+        Ok(self.namespace.mounts.detach_failed(id, sponsor)?)
     }
 
     /// Allocate an empty memory filesystem charged to the caller's domain.
     pub(crate) fn mount_ramfs(&self, path: &str, sponsor: &ResourceDomain) -> Result<(), Error> {
         self.require_namespace_root()?;
         let filesystem = FilesystemInstance::try_empty_ramfs(sponsor)?;
-        self.mount_filesystem(path, filesystem, sponsor)
+        self.mount_filesystem(path, filesystem, sponsor).map(|_| ())
     }
 
     /// Bind resident data without copying it. Remote transports cannot be

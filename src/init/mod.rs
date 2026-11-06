@@ -116,6 +116,7 @@ extern "C" fn start_worker(_: usize) {
 
 fn prepare_and_start() -> Result<Infallible, Error> {
     let domain = ResourceDomain::try_new_root(ResourceLimits::UNLIMITED)?;
+    crate::process::vdso::initialize(&domain);
     let group = TaskGroup::try_new(&domain)?;
     let init = bootstrap::prepare(INIT_PATH, "init", &group, &domain)?;
 

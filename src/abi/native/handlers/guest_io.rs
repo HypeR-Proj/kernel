@@ -232,7 +232,10 @@ pub(in crate::abi::native) fn sys_filesystem_mount(
             )
             .map_err(crate::abi::native::status::status_from_vfs_service_error)
     })();
-    NativeAction::Return(status_only(result))
+    NativeAction::Return(match result {
+        Ok(id) => success([id, 0]),
+        Err(status) => failure(status),
+    })
 }
 
 #[inline(never)]
@@ -450,4 +453,25 @@ pub(in crate::abi::native) fn sys_guest_interrupt_set_level(
             .map_err(status_from_vm_service_error)
     })();
     NativeAction::Return(status_only(result))
+}
+
+#[inline(never)]
+pub(in crate::abi::native) fn sys_filesystem_detach_failed(
+    services: &impl GuestIoServices,
+    receiver: &InvocationReceiver,
+    arguments: &Arguments,
+) -> NativeAction {
+    let result = (|| {
+        require_zero(&arguments[1..])?;
+        if arguments[0] == 0 {
+            return Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT);
+        }
+        services
+            .detach_failed_filesystem(receiver, arguments[0])
+            .map_err(crate::abi::native::status::status_from_vfs_service_error)
+    })();
+    NativeAction::Return(match result {
+        Ok(bytes) => success([bytes, 0]),
+        Err(status) => failure(status),
+    })
 }

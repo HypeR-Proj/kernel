@@ -28,6 +28,33 @@ vm-manager owns creation of a fresh instance after guest reset. See
 
 ## Rust runtime
 
+The initial loader and every child loader may receive an optional vDSO image
+and a paired observation VMO in the 112-byte startup header. The kernel prepares
+one immutable Rust ELF and one live page under the boot resource domain; failure
+leaves the pair absent. Loaders own address selection and map the ELF's code RX
+and observation segment RO/NX. Runtime symbol discovery and syscall fallback
+belong to lib-system. Code and data survive loader retirement and handle closure.
+The observation VMO forbids snapshot/COW derivation, writable mappings and
+execution; only the kernel updates its atomic capture-activity word.
+
+On AArch64 VHE, `CNTHCTL_EL2.EL0PCTEN` is enabled while the remaining timer and
+guest controls retain their prior settings. With `E2H=TGE=1`, Native EL0 can
+read `CNTPCT_EL0` and `CNTFRQ_EL0`; with guest `TGE=0`, that bit is ignored and
+`EL1PCTEN` remains zero. Guest `CNTKCTL_EL1` uses the EL12 alias during context
+switches, and `CNTVOFF_EL2` does not alter the physical count used by the host.
+These register semantics are specified by the
+[Arm architecture reference manual](https://documentation-service.arm.com/static/60df1943677cf7536a55ddef).
+The fast clock orders each physical-counter sample with ISB, converts using the
+frequency checked on CPU admission, and uses the same boot UTC anchor as the
+kernel. RISC-V and x86-64 currently return NOT_SUPPORTED for fast clocks. No
+periodic clock publisher or generic subsystem-page registry is involved.
+
+Capture hints follow the recorder's serialized admission publication, including
+filter changes and a stop that closes admission before returning Busy. Expiry
+uses the same stop path; clear does not change mapping lifetime. Hints are
+best-effort public observations and cannot authorize capture or correlate a
+completion with a replacement generation.
+
 Init uses HypeR's Rust `std`, like the other in-tree applications. It uses
 Native SDK bindings for bootstrap handles, capability delegation and service
 construction; these operations are not provided by the Rust standard library.
@@ -79,7 +106,7 @@ and a loader File with `READ|EXECUTE`. The child receives only
 `READ|EXECUTE|PROTECT` on the target; builder creation preserves file identity,
 not a frozen content version. The kernel validates and maps the loader's restricted ELF,
 then enters it on an empty guarded stack. Its first argument register carries
-a ByteChannel handle. The queued 96-byte `loader_startup` header describes the
+a ByteChannel handle. The queued 112-byte `loader_startup` header describes the
 executable/VMAR capabilities and mapping bounds, plus the child's ExecutionContext,
 ObjectFactory and SystemInfo capabilities, followed by tagged capabilities
 and opaque SDK data. No runtime or library directory is opened implicitly by

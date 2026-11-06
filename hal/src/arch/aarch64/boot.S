@@ -188,7 +188,11 @@ aarch64_boot_initialize_el2:
     msr     vttbr_el2, xzr
     msr     tpidr_el2, xzr
     msr     cntvoff_el2, xzr
-    msr     cnthctl_el2, xzr
+    // E2H=1,TGE=1: EL0PCTEN permits Native CNTPCT/CNTFRQ reads. Timer
+    // control remains trapped. With TGE=0 (guest), EL0PCTEN is ignored and
+    // EL1PCTEN stays zero; guest timer/counter isolation is unchanged.
+    mov     x2, #1
+    msr     cnthctl_el2, x2
     msr     cnthp_ctl_el2, xzr
     isb
     // CPU admission checks optional FP/SIMD support before clearing its bank.

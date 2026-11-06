@@ -202,6 +202,21 @@ impl RemoteFs {
     pub(super) fn read_status(&self) -> Result<(), Error> {
         self.health.check().map_err(map)
     }
+    pub(super) fn abandon_with(
+        &self,
+        publish: impl FnOnce() -> Result<(), Error>,
+    ) -> Result<u64, Error> {
+        // This path is explicitly lossy and only for already failed providers.
+        // It performs no backend RPC. The state mutex drains local range borrows;
+        // block request leases independently retain any device-visible storage.
+        if self.health.check().is_ok() {
+            return Err(Error::Busy);
+        }
+        let mut state = self.state.lock().map_err(Error::Lock)?;
+        publish()?;
+        self.health.fail();
+        Ok(state.abandon_writeback())
+    }
     pub(super) fn reserve_read_ahead_metadata(
         &self,
         bytes: usize,

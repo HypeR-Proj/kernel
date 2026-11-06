@@ -16,6 +16,16 @@ struct Anchor {
 
 static ANCHOR: PublishedOnce<Anchor> = PublishedOnce::new();
 
+pub(crate) fn vdso_anchor() -> (i64, u32, u64) {
+    ANCHOR.get().map_or((0, 0, 0), |anchor| {
+        (
+            anchor.utc.seconds(),
+            anchor.utc.nanoseconds(),
+            anchor.monotonic,
+        )
+    })
+}
+
 /// Optional boot-time discovery. Platform policy owns DTB resources and their
 /// permanent mappings; physical register access remains in the RTC driver.
 #[cfg(feature = "rtc")]

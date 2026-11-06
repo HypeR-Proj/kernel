@@ -22,6 +22,7 @@ pub(crate) mod retention;
 pub(crate) mod scheduling;
 mod task_group;
 mod user_thread;
+pub(crate) mod vdso;
 
 pub(crate) use builder::{
     ProcessBuilder, ProcessBuilderError, StartupCapability, abort_process_builder,

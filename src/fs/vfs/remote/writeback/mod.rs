@@ -275,6 +275,18 @@ impl RemoteFs {
 }
 
 impl State {
+    pub(super) fn abandon_writeback(&mut self) -> u64 {
+        let bytes = self.writeback.pages.iter().fold(0_u64, |total, dirty| {
+            total.saturating_add(dirty.page.value().bytes().len() as u64)
+        });
+        self.writeback.failure = Some(Error::Remote(BackendError::Closed));
+        self.writeback.pages.clear();
+        self.writeback.interval = 0;
+        if let Some(wake) = &self.writeback.wake {
+            wake.update(true);
+        }
+        bytes
+    }
     pub(super) fn check_writeback(&self) -> Result<(), Error> {
         self.volume.health.check().map_err(map)?;
         self.writeback.failure.map_or(Ok(()), Err)

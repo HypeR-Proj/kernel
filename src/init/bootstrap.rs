@@ -149,10 +149,22 @@ fn install_bootstrap<const N: usize>(
     purposes: &[u32; N],
     values: &[HandleValue; N],
 ) -> Result<u64, Error> {
+    if crate::process::vdso::available() {
+        install_bootstrap_pair::<N, 7>(boot, purposes, values)
+    } else {
+        install_bootstrap_pair::<N, 5>(boot, purposes, values)
+    }
+}
+
+fn install_bootstrap_pair<const N: usize, const EXTRA: usize>(
+    boot: &BootProcess,
+    purposes: &[u32; N],
+    values: &[HandleValue; N],
+) -> Result<u64, Error> {
     use hyper::abi::native::*;
     let [execution_context, object_factory, system_info] =
         boot.process.prepare_invocation_handles()?;
-    let reservation = boot.process.reserve_handles::<5>()?;
+    let reservation = boot.process.reserve_handles::<EXTRA>()?;
     let extra = reservation.values();
     let root = purposes
         .iter()
@@ -180,6 +192,16 @@ fn install_bootstrap<const N: usize>(
         execution_context: handle_wire::to_abi(extra[2]),
         object_factory: handle_wire::to_abi(extra[3]),
         system_info: handle_wire::to_abi(extra[4]),
+        vdso_image: if EXTRA == 7 {
+            handle_wire::to_abi(extra[5])
+        } else {
+            0
+        },
+        vdso_data: if EXTRA == 7 {
+            handle_wire::to_abi(extra[6])
+        } else {
+            0
+        },
     };
     let records = purposes
         .iter()
@@ -205,18 +227,22 @@ fn install_bootstrap<const N: usize>(
         }
     };
     drop(prepared.parent_channel);
+    let mut handles = [
+        prepared.executable,
+        prepared.child_channel,
+        execution_context,
+        object_factory,
+        system_info,
+    ]
+    .into_iter()
+    .chain(prepared.vdso.into_iter().flatten());
+    let handles = core::array::from_fn::<_, EXTRA, _>(|_| match handles.next() {
+        Some(handle) => handle,
+        None => hyper::debug::invariant_failure("vDSO bootstrap handle count changed"),
+    });
     let published = boot
         .process
-        .publish_handles(
-            reservation,
-            [
-                prepared.executable,
-                prepared.child_channel,
-                execution_context,
-                object_factory,
-                system_info,
-            ],
-        )
+        .publish_handles(reservation, handles)
         .map_err(|failure| Error::Process(failure.error))?;
     Ok(handle_wire::to_abi(published[1]))
 }

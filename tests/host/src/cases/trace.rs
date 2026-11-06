@@ -158,8 +158,14 @@ fn recursive_writer_drops_without_evaluating_payload() {
 
 #[test]
 fn stop_joins_an_admitted_writer_and_cannot_recycle_early() {
-    let r = Arc::new(Recorder::<2, 8>::new());
+    use std::sync::atomic::{AtomicU8, Ordering};
+    static OBSERVED: AtomicU8 = AtomicU8::new(0);
+    fn observe(categories: u8) {
+        OBSERVED.store(categories, Ordering::Release);
+    }
+    let r = Arc::new(Recorder::<2, 8>::with_observer(Some(observe)));
     let session = crate::require_ok(r.start(Filter::ALL));
+    assert_ne!(OBSERVED.load(Ordering::Acquire) & Category::Ipc as u8, 0);
     let entered = Arc::new(Barrier::new(2));
     let release = Arc::new(Barrier::new(2));
     let writer = {
@@ -185,6 +191,7 @@ fn stop_joins_an_admitted_writer_and_cannot_recycle_early() {
     let restart = r.start(Filter::ALL);
     let clear = r.clear(session);
     let disabled = r.enabled(Category::Scheduler).is_none();
+    let observed_disabled = OBSERVED.load(Ordering::Acquire) == 0;
     let mut out = [None; 4];
     let busy_read = matches!(r.read(session, 1, 0, &mut out), Err(Error::Busy));
     release.wait();
@@ -192,12 +199,21 @@ fn stop_joins_an_admitted_writer_and_cannot_recycle_early() {
     assert_eq!(stop, Err(Error::Busy));
     assert_eq!(restart, Err(Error::Busy));
     assert_eq!(clear, Err(Error::Busy));
-    assert!(disabled && busy_read);
+    assert!(disabled && busy_read && observed_disabled);
     crate::require_ok(r.stop(session));
     assert_eq!(crate::require_ok(r.read(session, 1, 0, &mut out)).count, 1);
     assert_eq!(crate::require_some(out[0]).values[0], 88);
     let next = crate::require_ok(r.start(Filter::ALL));
-    assert_eq!(crate::require_ok(r.read(next, 1, 0, &mut out)).count, 0);
+    assert_ne!(OBSERVED.load(Ordering::Acquire) & Category::Ipc as u8, 0);
+    crate::require_ok(r.set_filter(next, Filter::only(Category::Scheduler)));
+    assert_eq!(OBSERVED.load(Ordering::Acquire) & Category::Ipc as u8, 0);
+    crate::require_ok(r.stop(next));
+    crate::require_ok(r.clear(next));
+    assert_eq!(OBSERVED.load(Ordering::Acquire), 0);
+    assert!(matches!(
+        r.read(next, 1, 0, &mut out),
+        Err(Error::InvalidSession)
+    ));
 }
 
 #[test]

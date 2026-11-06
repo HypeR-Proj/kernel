@@ -22,6 +22,7 @@ pub(crate) struct PreparedBootstrap {
     pub(crate) executable: PreparedHandle,
     pub(crate) child_channel: PreparedHandle,
     pub(crate) parent_channel: PreparedHandle,
+    pub(crate) vdso: Option<[PreparedHandle; 2]>,
 }
 
 /// All storage is sponsored before publication. Dropping this owner closes
@@ -36,6 +37,7 @@ pub(crate) fn prepare(
     let executable = executable
         .try_duplicate(super::builder::EXECUTABLE_RIGHTS)
         .map_err(|error| Error::Process(error.into()))?;
+    let vdso = super::vdso::handles().map_err(|error| Error::Process(error.into()))?;
 
     let mut message = PreparedByteMessage::try_new(
         domain,
@@ -68,6 +70,8 @@ pub(crate) fn prepare(
         header.execution_context,
         header.object_factory,
         header.system_info,
+        header.vdso_image,
+        header.vdso_data,
     ]
     .into_iter()
     .enumerate()
@@ -105,6 +109,7 @@ pub(crate) fn prepare(
     )
     .map_err(|e| Error::Process(e.into()))?;
     Ok(PreparedBootstrap {
+        vdso,
         executable,
         child_channel,
         parent_channel,

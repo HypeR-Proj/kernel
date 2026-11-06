@@ -15,8 +15,8 @@ mod macros;
 mod recorder;
 #[cfg(feature = "kernel-trace")]
 pub use global::{
-    CAPACITY, MachineEmitter, clear, detach, emit, enabled, install, prepare, read, record_at,
-    set_filter, start, start_with_capacity, stop,
+    CAPACITY, MachineEmitter, clear, detach, emit, enabled, install, install_observer, prepare,
+    read, record_at, set_filter, start, start_with_capacity, stop,
 };
 pub use recorder::{Batch, Error, PreparedCapture, Recorder, RetiredCapture, Session, Ticket};
 

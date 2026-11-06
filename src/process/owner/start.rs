@@ -164,6 +164,11 @@ fn prepare_bootstrap(
     let execution_context = next();
     let object_factory = next();
     let system_info = next();
+    let (vdso_image, vdso_data) = if super::super::vdso::available() {
+        (next(), next())
+    } else {
+        (0, 0)
+    };
     let layout = build.child().process().image().bootstrap();
     let header = HyperNativeLoaderStartup {
         size: core::mem::size_of::<HyperNativeLoaderStartup>() as u32,
@@ -180,6 +185,8 @@ fn prepare_bootstrap(
         execution_context,
         object_factory,
         system_info,
+        vdso_image,
+        vdso_data,
     };
     let records = build
         .startup_capabilities()
@@ -225,7 +232,11 @@ impl PreparedChildProcessStart {
             Ok(handles) => handles,
             Err(error) => return Err(start_failure(ChildProcessStartError::Process(error), build)),
         };
-        let startup_count = match build.startup_capabilities().len().checked_add(7) {
+        let startup_count = match build
+            .startup_capabilities()
+            .len()
+            .checked_add(7 + 2 * usize::from(super::super::vdso::available()))
+        {
             Some(count) => count,
             None => {
                 return Err(start_failure(
@@ -491,6 +502,9 @@ impl PreparedChildProcessStart {
             None => process_invariant_violation(),
         };
         self.prepared_startup_handles.extend(invocation_handles);
+        if let Some(handles) = bootstrap.vdso {
+            self.prepared_startup_handles.extend(handles);
+        }
         self.prepared_startup_handles.reverse();
         publish_unpublished_startup_handles(&mut self);
 
