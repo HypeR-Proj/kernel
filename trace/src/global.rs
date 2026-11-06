@@ -15,7 +15,9 @@ use hyper_core::sync::PublishedOnce;
 /// once. The adapter must not retain them or call `emit` recursively.
 pub type MachineEmitter = fn(Ticket, &'static Site, &mut dyn FnMut() -> [u64; 4]);
 
-pub const CAPACITY: usize = 16384;
+// Maximum on-demand allocation, not a boot reservation or the CLI default.
+// Short storage snapshots need headroom without a reader on live producer rings.
+pub const CAPACITY: usize = 65_536;
 static RECORDER: Recorder<{ hyper_core::cpu::MAX_CPUS }, CAPACITY> = Recorder::new();
 static MACHINE: PublishedOnce<MachineEmitter> = PublishedOnce::new();
 
