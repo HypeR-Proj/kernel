@@ -22,6 +22,7 @@ impl From<ByteChannelError> for Error {
 pub(super) fn run() -> Result<(), Error> {
     let domain =
         ResourceDomain::try_new_root(ResourceLimits::UNLIMITED).map_err(|_| Error::Construction)?;
+    verify_capacity_and_reservations(&domain)?;
     let (first, second) = ByteChannel::try_pair(&domain)?;
 
     verify_signals(&first, ByteChannel::WRITABLE.bits(), 1)?;
@@ -75,4 +76,48 @@ fn verify_signals(endpoint: &ByteChannel, expected: u64, stage: usize) -> Result
     } else {
         Err(Error::StateMismatch(stage))
     }
+}
+
+fn verify_capacity_and_reservations(domain: &ResourceDomain) -> Result<(), Error> {
+    if !ByteChannel::verify_writable_capacity_for_test() {
+        return Err(Error::StateMismatch(10));
+    }
+    let (sender, receiver) = ByteChannel::try_pair(domain)?;
+    let size = hyper::abi::native::HYPER_NATIVE_BYTE_CHANNEL_MAX_MESSAGE_BYTES as usize;
+    let slots = hyper::abi::native::HYPER_NATIVE_BYTE_CHANNEL_MAX_QUEUED_MESSAGES;
+    let bytes = hyper::abi::native::HYPER_NATIVE_BYTE_CHANNEL_MAX_QUEUED_BYTES;
+    let count = slots.min(bytes / size as u64);
+    for _ in 0..count {
+        let message = PreparedByteMessage::try_new(domain, size)?;
+        sender.prepare_write(&message)?.publish(message);
+    }
+    verify_signals(&sender, 0, 11)?;
+    let message = PreparedByteMessage::try_new(domain, size)?;
+    if !matches!(
+        sender.prepare_write(&message),
+        Err(ByteChannelError::WouldBlock)
+    ) {
+        return Err(Error::StateMismatch(12));
+    }
+    let claim = receiver.claim(receiver.peek()?)?;
+    verify_signals(&sender, 0, 13)?;
+    claim.abort();
+    verify_signals(&sender, 0, 14)?;
+    receiver.claim(receiver.peek()?)?.commit().release();
+    verify_signals(&sender, ByteChannel::WRITABLE.bits(), 15)?;
+    let reservation = sender.prepare_write(&message)?;
+    // Outstanding reservations consume the same credits as queued messages.
+    let reserved_level = sender.signal_level_for_test();
+    reservation.publish(message);
+    if reserved_level != 0 {
+        return Err(Error::StateMismatch(16));
+    }
+    verify_signals(&sender, 0, 17)?;
+    for _ in 0..count {
+        receiver.claim(receiver.peek()?)?.commit().release();
+    }
+    verify_signals(&sender, ByteChannel::WRITABLE.bits(), 18)?;
+    sender.close_for_test();
+    receiver.close_for_test();
+    Ok(())
 }

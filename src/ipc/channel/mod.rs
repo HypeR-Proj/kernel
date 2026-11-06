@@ -81,11 +81,6 @@ pub(crate) struct ByteMessageInfo {
 }
 
 impl ByteMessageInfo {
-    const EMPTY: Self = Self {
-        sequence: MessageSequence::UNASSIGNED,
-        bytes: 0,
-    };
-
     fn new(sequence: MessageSequence, bytes: usize) -> Self {
         Self { sequence, bytes }
     }
@@ -207,6 +202,11 @@ impl ByteChannel {
             .signal_state(self.side)
             .observe(Self::SUPPORTED_SIGNALS)
             .map_or(0, |snapshot| snapshot.signals().bits())
+    }
+
+    #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+    pub(crate) fn verify_writable_capacity_for_test() -> bool {
+        pair::verify_writable_capacity_for_test()
     }
 
     #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]

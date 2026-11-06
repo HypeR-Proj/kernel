@@ -50,6 +50,7 @@ pub(super) fn run() -> Result<(), Error> {
     verify_nonblocking_and_signal_contract(&domain)?;
     verify_fifo_and_exact_cancellation(&domain)?;
     verify_capacity_rejection(&domain)?;
+    verify_rejected_receiver_requeues_at_tail(&domain)?;
     verify_timeout_and_cancellation(&domain)?;
     verify_receiver_reservation_bound(&domain)?;
     verify_peer_close(&domain)
@@ -172,6 +173,54 @@ fn verify_capacity_rejection(domain: &ResourceDomain) -> Result<(), Error> {
     claim.reject(error);
     if pending.outcome() != Some(CapabilityReceiveOutcome::Rejected(error)) {
         return Err(Error::State(9));
+    }
+    Ok(())
+}
+
+fn verify_rejected_receiver_requeues_at_tail(domain: &ResourceDomain) -> Result<(), Error> {
+    let (sender, receiver) = pair(domain)?;
+    let small = receiver
+        .prepare_receive(domain, contract(2, 0)?)?
+        .publish()?;
+    let large = receiver
+        .prepare_receive(domain, contract(8, 0)?)?
+        .publish()?;
+    let claim = sender.try_match(4, 0)?;
+    let error = CapabilityChannelError::BufferTooSmall {
+        required_bytes: 4,
+        required_handles: 0,
+    };
+    let rejected = claim.capacity_result();
+    claim.reject(error);
+    if rejected != Err(error)
+        || small.outcome() != Some(CapabilityReceiveOutcome::Rejected(error))
+        || large.outcome().is_some()
+    {
+        return Err(Error::State(15));
+    }
+    let reposted = receiver
+        .prepare_receive(domain, contract(2, 0)?)?
+        .publish()?;
+    let claim = sender.try_match(4, 0)?;
+    if let Err(error) = claim.capacity_result() {
+        claim.reject(error);
+        return Err(Error::State(16));
+    }
+    let delivery = CapabilityDeliveryInfo {
+        bytes: 4,
+        handles: 0,
+    };
+    claim.commit(delivery);
+    if large.outcome() != Some(CapabilityReceiveOutcome::Delivered(delivery))
+        || reposted.outcome().is_some()
+        || !reposted.cancel()
+        || reposted.outcome()
+            != Some(CapabilityReceiveOutcome::Failed(
+                CapabilityChannelError::Cancelled,
+            ))
+        || sender.signal_level_for_test() != 0
+    {
+        return Err(Error::State(17));
     }
     Ok(())
 }

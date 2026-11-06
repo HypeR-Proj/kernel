@@ -712,54 +712,35 @@ an operation which will succeed.
 
 ## Channels and IPC
 
-A Channel has two ordered endpoints. Each endpoint has one active handle or one
-in-transit owner and does not support `DUPLICATE`. Threads in the owning process
-share that handle normally. True multi-owner consumption belongs to a future
-SharedQueue or dispatcher service, not weakened Channel ordering.
+ByteChannel provides bounded, ordered queues for handle-free messages. CapabilityChannel
+provides synchronous typed capability rendezvous; it does not retain a buffered
+capability batch. Both use the current Native ABI's rights and transfer contracts.
 
-Each mutating operation holds a short endpoint ownership-epoch guard. A send
-which transfers exclusive objects first acquires a `TransferClaim` for every
-object in KOID order, prevents new mutations, and waits for existing guards to
-retire. It then validates all claims, source uniqueness, rights, quota, and
-queue capacity before changing any epoch or slot. Epoch updates, terminal
-subscription events, source removal, and message publication form one
-infallible commit. Failed preparation releases claims without changing epochs
-or subscriptions; racing use of a reserved source returns `Busy`, not a false
-stale-handle result. The endpoint used to send cannot be transferred in that
-message.
+ByteChannel write copies and charges the complete payload before reserving one
+message slot and its payload bytes. Publication converts that reservation into
+queued usage. Read claims the head message exclusively; its credits remain used
+until commit, and abort restores the message without releasing those credits.
 
-Channel send copies user bytes and dispositions into owned memory before taking
-object locks. It reserves message and accounting capacity, validates every
-source generation, operation, kind, and rights attenuation, moves every source
-entry into a private transaction, and publishes the complete message once. Any
-pre-publication failure restores every entry to its original numeric handle.
+`WRITABLE` is a conservative capacity observation: both endpoints are open and
+the peer has one free message slot and enough free bytes for the maximum legal
+ByteChannel message. Queued messages and outstanding write reservations both
+consume these credits. The implementation checks both limits directly; it does
+not rely on the byte budget equaling the slot count times the message limit.
+Compile-time checks require a nonzero message limit, at least one slot, and a
+byte budget large enough for one maximum-sized message.
 
-An in-transit capability keeps the object's active-handle count but is not
-usable. Send commit releases sender handle-slot charges and acquires one
-in-transit charge from the sponsoring domain. Receive preparation reserves
-receiver slots and charges; commit publishes them and releases in-transit
-charges exactly once. Failure leaves the message and its charges unchanged.
-Message destruction releases message, in-transit, and active-handle charges
-exactly once. Persistent object memory remains charged to its original sponsor
-unless a privileged charge-adoption transaction succeeds.
+Smaller messages may fit while `WRITABLE` is clear. Observing it reserves no
+credits: another sender may win first, so callers must still handle `WOULD_BLOCK`.
+Resource-domain admission, allocation and endpoint lifetime remain independent
+failure conditions. Blocking bindings retry `WOULD_BLOCK` after waiting for
+`WRITABLE` or `PEER_CLOSED`, respecting their deadline. There is no public
+ByteChannel size-qualified wait/reservation operation or FIFO sender queue.
 
-Channels have immutable, inspectable limits for queued messages, bytes, and
-handles. Exhausted endpoint credits return `WouldBlock`; exhausted hierarchical
-budget returns `QuotaExceeded`. Neither consumes input. `WRITABLE` means that a
-minimum legal message fits; a larger write may still fail. A size-qualified
-write reservation or capacity snapshot with an observation sequence prevents
-retry livelock for large messages, and waiter ordering must prevent a stream of
-small writes from starving an already queued legal large write. A message
-retains its sponsoring resource-domain charge until consumption or destruction,
-preventing quota laundering through transfer.
-
-Queued endpoints can form active-handle cycles. ResourceDomain sponsorship is
-therefore revocable across transfer. `resource_domain_revoke_all`, requiring
-`REVOKE`, prevents new sponsored work, detaches endpoints and queues across
-processes, and drives the iterative teardown worklist until cycles and leases
-are quiescent. Ordinary handle owners do not gain sponsor-revocation authority.
-Closing the final ResourceDomain control handle requests the same asynchronous
-revocation; terminal observation is published only after quiescence.
+CapabilityChannel selects the oldest fully published receiver. A rejected
+transaction completes both participants without consuming MOVE sources or
+installing destination handles. Reposting creates a new receiver at the tail;
+it cannot overtake receivers already waiting. This FIFO rendezvous does not
+search for a later compatible receive contract.
 
 The initial native surface has no `channel_call`. Request/reply libraries use
 transaction IDs, Channel operations, and WaitSet. Any future kernel-assisted

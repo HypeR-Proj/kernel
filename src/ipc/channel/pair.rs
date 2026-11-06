@@ -19,6 +19,12 @@ use {crate::object::ObjectRetirement, crate::object::SignalMask, crate::object::
 
 type PairLock = InterruptSpinLock<PairState, crate::hal::irq::LocalMask>;
 
+const MAX_MESSAGE_BYTES: u64 = hyper::abi::native::HYPER_NATIVE_BYTE_CHANNEL_MAX_MESSAGE_BYTES;
+const _: () = assert!(MAX_MESSAGE_BYTES > 0);
+const _: () = assert!(hyper::abi::native::HYPER_NATIVE_BYTE_CHANNEL_MAX_QUEUED_MESSAGES > 0);
+const _: () =
+    assert!(hyper::abi::native::HYPER_NATIVE_BYTE_CHANNEL_MAX_QUEUED_BYTES >= MAX_MESSAGE_BYTES);
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum SideLifecycle {
     Open,
@@ -176,7 +182,7 @@ impl Pair {
             if target.lifecycle != SideLifecycle::Open {
                 return Err(ByteChannelError::PeerClosed);
             }
-            ensure_capacity(target, info)?;
+            ensure_capacity(target, info.bytes_u64())?;
             let sequence = MessageSequence::new(state.next_message_sequence)
                 .ok_or(ByteChannelError::SequenceExhausted)?;
             state.next_message_sequence = state
@@ -372,10 +378,7 @@ impl Pair {
     }
 }
 
-fn ensure_capacity(
-    endpoint: &EndpointState,
-    info: ByteMessageInfo,
-) -> Result<(), ByteChannelError> {
+fn ensure_capacity(endpoint: &EndpointState, byte_count: u64) -> Result<(), ByteChannelError> {
     if endpoint
         .incoming
         .messages
@@ -386,7 +389,7 @@ fn ensure_capacity(
             .incoming
             .bytes
             .checked_add(endpoint.reserved_bytes)
-            .and_then(|used| used.checked_add(info.bytes_u64()))
+            .and_then(|used| used.checked_add(byte_count))
             .is_none_or(|used| {
                 used > hyper::abi::native::HYPER_NATIVE_BYTE_CHANNEL_MAX_QUEUED_BYTES
             })
@@ -423,7 +426,9 @@ fn signal_level(state: &PairState, side: Side) -> SignalMask {
     }
     if endpoint.lifecycle == SideLifecycle::Open
         && peer.lifecycle == SideLifecycle::Open
-        && ensure_capacity(peer, ByteMessageInfo::EMPTY).is_ok()
+        // Readiness covers any legal message size, including outstanding
+        // reservations. It is an observation, not a reservation for a sender.
+        && ensure_capacity(peer, MAX_MESSAGE_BYTES).is_ok()
     {
         level = SignalMask::from_trusted_bits(level.bits() | super::ByteChannel::WRITABLE.bits());
     }
@@ -432,6 +437,33 @@ fn signal_level(state: &PairState, side: Side) -> SignalMask {
             SignalMask::from_trusted_bits(level.bits() | super::ByteChannel::PEER_CLOSED.bits());
     }
     level
+}
+
+/// Exercise byte pressure independently of today's message-count limit.
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+pub(super) fn verify_writable_capacity_for_test() -> bool {
+    let mut state = PairState {
+        endpoints: [EndpointState::new(), EndpointState::new()],
+        next_message_sequence: 1,
+    };
+    let budget = hyper::abi::native::HYPER_NATIVE_BYTE_CHANNEL_MAX_QUEUED_BYTES;
+    state.endpoints[1].incoming.bytes = budget - MAX_MESSAGE_BYTES;
+    if !signal_level(&state, Side::First).intersects(super::ByteChannel::WRITABLE) {
+        return false;
+    }
+    // Empty/small writes can fit while a maximum-sized message cannot.
+    // This must remain true if future limits let bytes fill before slots.
+    state.endpoints[1].reserved_bytes = 1;
+    if signal_level(&state, Side::First).intersects(super::ByteChannel::WRITABLE)
+        || ensure_capacity(&state.endpoints[1], 0).is_err()
+    {
+        return false;
+    }
+    state.endpoints[1].incoming.bytes = 0;
+    state.endpoints[1].reserved_bytes = 0;
+    state.endpoints[1].incoming_reservations =
+        hyper::abi::native::HYPER_NATIVE_BYTE_CHANNEL_MAX_QUEUED_MESSAGES;
+    !signal_level(&state, Side::First).intersects(super::ByteChannel::WRITABLE)
 }
 
 fn checked_sub(value: u64, amount: u64) -> u64 {
