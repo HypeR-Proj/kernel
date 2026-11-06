@@ -477,10 +477,21 @@ pub(crate) fn test_delivery_rollback(domain: &ResourceDomain) -> Result<(), Wait
         return Err(WaitSetError::InvalidInput);
     }
     second.complete();
+    // Repeating an asserted level neither creates a second one-shot event nor
+    // advances its sequence. Rearm must observe that same level immediately.
+    source
+        .update(SignalMask::EMPTY, mask)
+        .map_err(|_| WaitSetError::InvalidInput)?;
+    if !matches!(set.wait(0, domain, || false), Err(WaitSetError::TimedOut)) {
+        return Err(WaitSetError::InvalidInput);
+    }
     if registration.pending() || !source.rearm_subscription(1) {
         return Err(WaitSetError::InvalidInput);
     }
     let third = set.wait(0, domain, || false)?;
+    if third.record() != expected {
+        return Err(WaitSetError::InvalidInput);
+    }
     registration.active.store(false, Ordering::Relaxed);
     drop(source.unsubscribe(1));
     set.queue.remove(1);

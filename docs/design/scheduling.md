@@ -95,6 +95,36 @@ receives that amount or a proportional Q/P share. Eligible Budget peers rotate
 by turn order and B within their arbitration tier. Budgets are per Thread, not
 an aggregate per-process or per-VM limit.
 
+## Signal wait notification
+
+Object signals remain broadcast observations. Each matching wait generation
+competes with cancellation, timeout and other wait sources; only the winner
+commits its snapshot, before a parked Thread becomes Ready. Readiness does not
+reserve a channel message for an observer.
+
+Signal updates arbitrate pending registrations in fixed batches of 16. A
+scheduler registry reader pins residence while entries are grouped by owner CPU;
+each CPU lock is acquired once per batch. Arbitration retains the existing
+registry, owner CPU, then wait-queue lock order. Ready prompts are coalesced per
+CPU and published after the current signal-state lock is released. Callers may
+still hold outer object locks, including a persistent WaitSet source lock.
+The local interrupt mask remains held until those prompts are published, so a
+preempted notifier cannot strand a remote idle CPU before sending its prompt.
+
+Completed registrations retain their committed observations in a separate list
+until exact-generation cleanup, so later updates scan only pending observers.
+An unchanged signal level skips notification work: registration and persistent
+subscription rearm already check the current level under the same source lock.
+Storage is allocated before registration, never while delivering a batch.
+
+The self-test contention workload records deliveries, retries, scans, scheduler
+entries, owner-CPU lock acquisitions and source-critical-section ticks for 1, 8
+and 17 readers on one or multiple CPUs. Armed-before-park completion need not
+make a Thread Ready, and immediate readiness retries depend on scheduling.
+Batching reduces notification overhead but does not bound the total broadcast
+critical section independently of waiter count or eliminate competing readers.
+QEMU timings do not establish physical-board interrupt latency.
+
 ## Deadline programming and balancing
 
 When a CPU has no competing runnable Thread, the scheduler has no timer deadline.

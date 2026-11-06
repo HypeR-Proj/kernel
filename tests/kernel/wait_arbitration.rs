@@ -94,6 +94,7 @@ impl From<crate::task::TimedWaitError> for Error {
 
 pub(super) fn run() -> Result<(), Error> {
     exercise_exact_notification()?;
+    exercise_batch_notification()?;
     exercise_unqueued_arbitration()?;
     exercise_queued_arbitration_and_stale_ticket()?;
     exercise_timed_wait_paths()?;
@@ -119,6 +120,62 @@ fn exercise_exact_notification() -> Result<(), Error> {
     let stale = scheduler::notify_registered_with(ticket, || observation = 0xff)?;
     if stale.won || stale.made_ready || observation != 0x51 {
         return Err(Error::StateMismatch(28));
+    }
+    Ok(())
+}
+
+/// A batch must commit only one observation for an exact generation. Completed
+/// and stale tickets must lose even when another entry is still eligible.
+fn exercise_batch_notification() -> Result<(), Error> {
+    struct Notification {
+        ticket: WaitTicket,
+        commits: usize,
+    }
+    impl scheduler::WaitNotification for Notification {
+        fn ticket(&self) -> WaitTicket {
+            self.ticket
+        }
+        fn commit(&mut self) {
+            self.commits += 1;
+        }
+    }
+    let mut stale = None;
+    for precursor in [
+        None,
+        Some(WaitOutcome::TimedOut),
+        Some(WaitOutcome::Cancelled),
+        None,
+    ] {
+        let registration = scheduler::begin_wait(WaitMobility::Migratable)?;
+        let ticket = registration.ticket();
+        if let Some(outcome) = precursor {
+            scheduler::resolve_wait(ticket, outcome)?;
+        }
+        let mut entries: [Option<Notification>; scheduler::NOTIFICATION_BATCH_SIZE] =
+            core::array::from_fn(|_| None);
+        entries[0] = stale.map(|ticket| Notification { ticket, commits: 0 });
+        entries[1] = Some(Notification { ticket, commits: 0 });
+        entries[2] = Some(Notification { ticket, commits: 0 });
+        let mut ready = scheduler::ReadyNotifications::new();
+        let result = scheduler::notify_registered_batch(&mut entries, &mut ready);
+        let made_ready = ready.made_ready;
+        ready.publish();
+        let outcome = scheduler::finish_wait(registration)?;
+        result?;
+        let expected = usize::from(precursor.is_none());
+        if entries[0].as_ref().is_some_and(|entry| entry.commits != 0)
+            || entries[1..]
+                .iter()
+                .flatten()
+                .map(|entry| entry.commits)
+                .sum::<usize>()
+                != expected
+            || made_ready != 0
+            || outcome != Some(precursor.unwrap_or(WaitOutcome::Notified))
+        {
+            return Err(Error::StateMismatch(29));
+        }
+        stale = Some(ticket);
     }
     Ok(())
 }

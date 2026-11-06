@@ -8,6 +8,7 @@ mod callout_ready;
 mod capability_channel;
 mod capability_objects;
 mod channel;
+mod channel_contention;
 #[cfg(CONFIG_ARCH_AARCH64)]
 mod channel_service;
 #[cfg(CONFIG_ARCH_AARCH64)]
@@ -138,6 +139,10 @@ pub(crate) fn run() {
         capability_channel::run,
     );
     run_case("kernel ByteChannel core tests", channel::run);
+    run_case(
+        "kernel ByteChannel contention tests",
+        channel_contention::run,
+    );
     run_case(
         "registered virtual serial lifetime tests",
         virtual_serial::run,

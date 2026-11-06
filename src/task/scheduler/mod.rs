@@ -9,6 +9,7 @@ mod balance_policy;
 mod configuration;
 #[cfg(not(test))]
 mod cpu_time;
+mod notifications;
 mod queue;
 mod registry;
 #[cfg(all(feature = "kernel-test", feature = "kernel-stack-audit"))]
@@ -33,6 +34,10 @@ use core::ptr::NonNull;
 use hyper::cpu::CpuIndex;
 use hyper::sync::atomic::{AtomicUsize, Ordering};
 use hyper::sync::{InterruptMaskGuard, InterruptShardedLock};
+
+pub(crate) use notifications::{
+    NOTIFICATION_BATCH_SIZE, ReadyNotifications, WaitNotification, notify_registered_batch,
+};
 
 use self::registry::ThreadReservation;
 use self::state::{PreparedContextSwitch, Scheduler};
