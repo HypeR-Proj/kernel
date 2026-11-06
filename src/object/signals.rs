@@ -207,11 +207,25 @@ impl PersistentObserver {
     }
 }
 
+/// Self-test counters exclude time spent outside the signal critical section.
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SignalNotificationMetrics {
+    pub scans: u64,
+    pub scheduler_entries: u64,
+    pub cpu_locks: u64,
+    pub made_ready: u64,
+    pub critical_ticks: u64,
+}
+
 struct State {
     level: SignalMask,
     sequence: u64,
     park_queue: WaitQueue,
+    #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+    metrics: SignalNotificationMetrics,
     registrations: Option<Box<SignalWaiter>>,
+    completed: Option<Box<SignalWaiter>>,
     observers: Option<Box<PersistentObserver>>,
 }
 
@@ -236,7 +250,16 @@ impl SignalState {
                 level,
                 sequence: 0,
                 park_queue: WaitQueue::new(),
+                #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+                metrics: SignalNotificationMetrics {
+                    scans: 0,
+                    scheduler_entries: 0,
+                    cpu_locks: 0,
+                    made_ready: 0,
+                    critical_ticks: 0,
+                },
                 registrations: None,
+                completed: None,
                 observers: None,
             }),
         }
@@ -264,28 +287,29 @@ impl SignalState {
     }
 
     pub(crate) fn update(&self, clear: SignalMask, set: SignalMask) -> Result<(), SignalWaitError> {
-        let result = self.state.with(|state| {
-            let previous = state.level.0;
-            let next_level = SignalMask((previous & !clear.0) | set.0);
-            if next_level.0 != previous {
-                let next_sequence = state
-                    .sequence
-                    .checked_add(1)
-                    .ok_or(UpdateError::SequenceExhausted)?;
-                state.level = next_level;
-                state.sequence = next_sequence;
-            }
-            let snapshot = SignalSnapshot {
-                signals: state.level,
-                sequence: state.sequence,
-            };
-            let mut observer = state.observers.as_deref_mut();
-            while let Some(entry) = observer {
-                entry.notify(snapshot);
-                observer = entry.next.as_deref_mut();
-            }
-            notify_matching(state).map_err(UpdateError::Scheduler)
-        });
+        let mut ready = scheduler::ReadyNotifications::new();
+        // SAFETY: retain the local IRQ mask across source unlock and prompt
+        // publication. The notifier must not be preempted with remote Ready
+        // work committed but its sole reschedule prompt still on this stack.
+        let (result, interrupt_mask) = unsafe {
+            self.state.with_mask_retained(|state| {
+                #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+                let started = crate::time::monotonic_ticks();
+                let result = update_locked(state, clear, set, &mut ready);
+                #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+                {
+                    state.metrics.critical_ticks +=
+                        crate::time::monotonic_ticks().saturating_sub(started);
+                    state.metrics.cpu_locks += ready.cpu_locks;
+                    state.metrics.made_ready += ready.made_ready;
+                }
+                result
+            })
+        };
+        // Ready publication is durable before unlocking. Reschedule prompts are
+        // coalesced and sent after this source lock is released.
+        ready.publish();
+        drop(interrupt_mask);
         match result {
             Ok(()) => Ok(()),
             Err(UpdateError::SequenceExhausted) => Err(SignalWaitError::SequenceExhausted),
@@ -356,12 +380,26 @@ impl SignalState {
     }
 
     #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
-    pub(super) fn waiter_count(&self) -> usize {
+    pub(crate) fn waiter_count(&self) -> usize {
         self.state.with(|state| {
             let mut count = 0usize;
+            for mut current in [state.registrations.as_deref(), state.completed.as_deref()] {
+                while let Some(waiter) = current {
+                    count += 1;
+                    current = waiter.next.as_deref();
+                }
+            }
+            count
+        })
+    }
+
+    #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+    pub(crate) fn pending_waiter_count_for_test(&self) -> usize {
+        self.state.with(|state| {
+            let mut count = 0;
             let mut current = state.registrations.as_deref();
             while let Some(waiter) = current {
-                count = count.saturating_add(1);
+                count += usize::from(waiter.observed.is_none());
                 current = waiter.next.as_deref();
             }
             count
@@ -369,9 +407,14 @@ impl SignalState {
     }
 
     #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+    pub(crate) fn metrics_for_test(&self) -> SignalNotificationMetrics {
+        self.state.with(|state| state.metrics)
+    }
+
+    #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
     pub(super) fn set_sequence_for_test(&self, sequence: u64) {
         self.state.with(|state| {
-            if state.registrations.is_some() {
+            if state.registrations.is_some() || state.completed.is_some() {
                 signal_invariant()
             }
             state.sequence = sequence;
@@ -515,9 +558,41 @@ enum UpdateError {
     Scheduler(scheduler::Error),
 }
 
+fn update_locked(
+    state: &mut State,
+    clear: SignalMask,
+    set: SignalMask,
+    ready: &mut scheduler::ReadyNotifications,
+) -> Result<(), UpdateError> {
+    let next = SignalMask((state.level.0 & !clear.0) | set.0);
+    // New wait registrations and subscription rearm both recheck the current
+    // level while holding this same lock. An unchanged level has no new work.
+    if next == state.level {
+        return Ok(());
+    }
+    let sequence = state
+        .sequence
+        .checked_add(1)
+        .ok_or(UpdateError::SequenceExhausted)?;
+    state.level = next;
+    state.sequence = sequence;
+    let snapshot = SignalSnapshot {
+        signals: next,
+        sequence,
+    };
+    let mut observer = state.observers.as_deref_mut();
+    while let Some(entry) = observer {
+        entry.notify(snapshot);
+        observer = entry.next.as_deref_mut();
+    }
+    notify_matching(state, ready).map_err(UpdateError::Scheduler)
+}
+
 fn link_waiter(state: &mut State, mut waiter: Box<SignalWaiter>) {
     let ticket = waiter_ticket(&waiter);
-    if find_waiter_mut(&mut state.registrations, ticket).is_some() {
+    if find_waiter_mut(&mut state.registrations, ticket).is_some()
+        || find_waiter_mut(&mut state.completed, ticket).is_some()
+    {
         signal_invariant()
     }
     waiter.next = state.registrations.take();
@@ -525,36 +600,116 @@ fn link_waiter(state: &mut State, mut waiter: Box<SignalWaiter>) {
 }
 
 fn unlink_waiter(state: &mut State, ticket: WaitTicket) -> Box<SignalWaiter> {
-    let mut link = &mut state.registrations;
-    loop {
-        let matches = match link.as_ref() {
-            Some(waiter) => waiter.ticket == Some(ticket),
-            None => signal_invariant(),
-        };
-        if matches {
-            let mut removed = match link.take() {
-                Some(waiter) => waiter,
-                None => signal_invariant(),
-            };
-            *link = removed.next.take();
-            return removed;
-        }
-        link = match link.as_mut() {
-            Some(waiter) => &mut waiter.next,
-            None => signal_invariant(),
-        };
+    match take_waiter(&mut state.registrations, ticket)
+        .or_else(|| take_waiter(&mut state.completed, ticket))
+    {
+        Some(waiter) => waiter,
+        None => signal_invariant(),
     }
 }
 
-fn notify_matching(state: &mut State) -> Result<(), scheduler::Error> {
-    let level = state.level;
-    let sequence = state.sequence;
-    let mut current = state.registrations.as_deref_mut();
-    while let Some(waiter) = current {
-        notify_waiter_if_matching(waiter, level, sequence)?;
-        current = waiter.next.as_deref_mut();
+fn take_waiter(
+    mut link: &mut Option<Box<SignalWaiter>>,
+    ticket: WaitTicket,
+) -> Option<Box<SignalWaiter>> {
+    loop {
+        let matches = link.as_ref()?.ticket == Some(ticket);
+        if matches {
+            let mut removed = link.take()?;
+            *link = removed.next.take();
+            return Some(removed);
+        }
+        link = &mut link.as_mut()?.next;
+    }
+}
+
+struct SignalNotification {
+    waiter: Box<SignalWaiter>,
+    snapshot: SignalSnapshot,
+}
+
+impl scheduler::WaitNotification for SignalNotification {
+    fn ticket(&self) -> WaitTicket {
+        waiter_ticket(&self.waiter)
+    }
+    fn commit(&mut self) {
+        self.waiter.observed = Some(self.snapshot);
+        trace_notification(&self.waiter, self.snapshot);
+    }
+}
+
+fn notify_matching(
+    state: &mut State,
+    ready: &mut scheduler::ReadyNotifications,
+) -> Result<(), scheduler::Error> {
+    // Most level transitions have no pending direct observers. Avoid preparing
+    // batch storage on that path, including when only completed nodes remain.
+    if state.registrations.is_none() {
+        return Ok(());
+    }
+    let snapshot = SignalSnapshot {
+        signals: state.level,
+        sequence: state.sequence,
+    };
+    let mut entries: [Option<SignalNotification>; scheduler::NOTIFICATION_BATCH_SIZE] =
+        core::array::from_fn(|_| None);
+    let mut count = 0;
+    let mut cursor = &mut state.registrations;
+    while cursor.is_some() {
+        #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+        {
+            state.metrics.scans += 1;
+        }
+        let matches = cursor
+            .as_ref()
+            .is_some_and(|waiter| snapshot.signals.intersects(waiter.requested));
+        if matches {
+            let mut waiter = match cursor.take() {
+                Some(waiter) => waiter,
+                None => signal_invariant(),
+            };
+            *cursor = waiter.next.take();
+            entries[count] = Some(SignalNotification { waiter, snapshot });
+            count += 1;
+            if count == entries.len() {
+                #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+                {
+                    state.metrics.scheduler_entries += 1;
+                }
+                flush_notifications(&mut entries, &mut state.completed, ready)?;
+                count = 0;
+            }
+        } else {
+            cursor = match cursor {
+                Some(waiter) => &mut waiter.next,
+                None => signal_invariant(),
+            };
+        }
+    }
+    if count != 0 {
+        #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+        {
+            state.metrics.scheduler_entries += 1;
+        }
+        flush_notifications(&mut entries, &mut state.completed, ready)?;
     }
     Ok(())
+}
+
+fn flush_notifications(
+    entries: &mut [Option<SignalNotification>; scheduler::NOTIFICATION_BATCH_SIZE],
+    completed: &mut Option<Box<SignalWaiter>>,
+    ready: &mut scheduler::ReadyNotifications,
+) -> Result<(), scheduler::Error> {
+    let result = scheduler::notify_registered_batch(entries, ready);
+    // Even tickets already won by timeout/cancellation stay owned until their
+    // waiter unregisters. Relinking never drops charged storage under this lock.
+    for entry in entries.iter_mut().filter_map(Option::take) {
+        let mut waiter = entry.waiter;
+        waiter.next = completed.take();
+        *completed = Some(waiter);
+    }
+    result
 }
 
 fn notify_ticket_if_matching(
@@ -567,20 +722,35 @@ fn notify_ticket_if_matching(
         Some(waiter) => waiter,
         None => signal_invariant(),
     };
-    notify_waiter_if_matching(waiter, level, sequence)
+    if !level.intersects(waiter.requested) {
+        return Ok(());
+    }
+    notify_waiter_if_matching(waiter, level, sequence)?;
+    // Also retire an immediate match or a generation already won by another
+    // source. Its owner still unregisters and retrieves the committed snapshot.
+    let mut waiter = unlink_waiter(state, ticket);
+    waiter.next = state.completed.take();
+    state.completed = Some(waiter);
+    Ok(())
 }
 
 fn notify_waiter_if_matching(
     waiter: &mut SignalWaiter,
     level: SignalMask,
     sequence: u64,
-) -> Result<(), scheduler::Error> {
+) -> Result<scheduler::ResolveWait, scheduler::Error> {
     if waiter.observed.is_some() {
-        return Ok(());
+        return Ok(scheduler::ResolveWait {
+            won: false,
+            made_ready: false,
+        });
     }
     let observed = level.intersection(waiter.requested);
     if observed.is_empty() {
-        return Ok(());
+        return Ok(scheduler::ResolveWait {
+            won: false,
+            made_ready: false,
+        });
     }
     let ticket = waiter_ticket(waiter);
     let snapshot = SignalSnapshot {
@@ -591,19 +761,26 @@ fn notify_waiter_if_matching(
     };
     let resolution = scheduler::notify_registered_with(ticket, || {
         waiter.observed = Some(snapshot);
-        crate::tracepoint!(
-            Ipc,
-            "signal_wake",
-            source_id = waiter.trace_source,
-            thread = ticket.thread().get(),
-            wait = ticket.generation(),
-            signals = level.bits()
-        );
+        trace_notification(waiter, snapshot);
     })?;
     if resolution.won != waiter.observed.is_some() {
         signal_invariant()
     }
-    Ok(())
+    Ok(resolution)
+}
+
+fn trace_notification(waiter: &SignalWaiter, snapshot: SignalSnapshot) {
+    let ticket = waiter_ticket(waiter);
+    let level = snapshot.signals;
+    crate::tracepoint!(
+        Ipc,
+        "signal_wake",
+        source_id = waiter.trace_source,
+        thread = ticket.thread().get(),
+        wait = ticket.generation(),
+        signals = level.bits()
+    );
+    let _ = (ticket, level);
 }
 
 fn find_waiter_mut(

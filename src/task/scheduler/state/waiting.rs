@@ -8,6 +8,7 @@
 //! nor a global write lock. Queue-head discovery releases the queue lock before
 //! taking a CPU lock and revalidates the head afterwards; locks never invert.
 
+use super::super::{NOTIFICATION_BATCH_SIZE, ReadyNotifications, WaitNotification};
 use super::*;
 
 impl Scheduler {
@@ -201,6 +202,54 @@ impl Scheduler {
         super::runtime::with_accounted_cpu(cpu, |local| {
             self.resolve_on_cpu(local, ticket, outcome, preemption, on_commit)
         })
+    }
+
+    /// A registry reader pins thread residence across owner discovery and all
+    /// CPU-local batches. Take only one CPU lock at a time, preserving the
+    /// existing registry -> owner CPU -> wait queue order.
+    pub fn resolve_notifications_shared<N: WaitNotification>(
+        &self,
+        entries: &mut [Option<N>; NOTIFICATION_BATCH_SIZE],
+        ready: &mut ReadyNotifications,
+    ) -> Result<(), Error> {
+        let mut owners = [None; NOTIFICATION_BATCH_SIZE];
+        for (owner, entry) in owners.iter_mut().zip(entries.iter()) {
+            if let Some(entry) = entry {
+                *owner = self.wait_owner(entry.ticket().thread())?;
+            }
+        }
+        for index in 0..owners.len() {
+            let Some(cpu) = owners[index] else {
+                continue;
+            };
+            #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+            {
+                ready.cpu_locks += 1;
+            }
+            super::runtime::with_accounted_cpu(cpu, |local| {
+                for (owner, entry) in owners.iter_mut().zip(entries.iter_mut()) {
+                    if *owner != Some(cpu) {
+                        continue;
+                    }
+                    *owner = None;
+                    let Some(entry) = entry else {
+                        continue;
+                    };
+                    let resolved = self.resolve_on_cpu(
+                        local,
+                        entry.ticket(),
+                        WaitOutcome::Notified,
+                        WakePreemption::Policy,
+                        || entry.commit(),
+                    )?;
+                    if let Some(outcome) = resolved.ready {
+                        ready.record(outcome);
+                    }
+                }
+                Ok::<_, Error>(())
+            })?;
+        }
+        Ok(())
     }
 
     fn wait_owner(&self, id: ThreadId) -> Result<Option<CpuIndex>, Error> {

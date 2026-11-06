@@ -210,6 +210,18 @@ impl ByteChannel {
     }
 
     #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+    pub(crate) fn signal_waiter_count_for_test(&self) -> usize {
+        self.pair
+            .signal_state(self.side)
+            .pending_waiter_count_for_test()
+    }
+
+    #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+    pub(crate) fn signal_metrics_for_test(&self) -> crate::object::SignalNotificationMetrics {
+        self.pair.signal_state(self.side).metrics_for_test()
+    }
+
+    #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
     pub(crate) fn close_for_test(&self) {
         let mut retirement = ObjectRetirement::new();
         self.pair.close(self.side, &mut retirement);
