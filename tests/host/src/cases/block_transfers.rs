@@ -48,3 +48,35 @@ fn invalid_batch_never_yields_a_partial_submission() {
     let oversized = vec![0; 512 * 1024 + 33];
     assert!(decode_write_batch(&oversized, 2, 100).is_err());
 }
+
+#[test]
+fn transport_keeps_two_maximum_commands_disjoint_until_completion() {
+    use crate::native_block_plan::{DataSlots, DataSpan, MAX_PAYLOAD};
+    use crate::native_block_wire::{DATA_BYTES, DATA_SLOTS};
+    let command_slots = MAX_PAYLOAD.div_ceil(DATA_BYTES);
+    let first = DataSpan {
+        first: 0,
+        count: command_slots,
+    };
+    let second = DataSpan {
+        first: command_slots,
+        count: command_slots,
+    };
+    let mut pool = DataSlots::new(DATA_SLOTS);
+    assert!(pool.claim(first));
+    assert!(pool.claim(second));
+    assert!(!pool.claim(first));
+    assert!(!pool.claim(second));
+    assert!(pool.release(first));
+    assert!(pool.claim(first));
+    assert!(!pool.claim(second));
+    assert!(pool.release(second));
+    assert!(pool.release(first));
+    assert_eq!(
+        pool.largest_free(),
+        Some(DataSpan {
+            first: 0,
+            count: DATA_SLOTS
+        })
+    );
+}
