@@ -52,7 +52,7 @@ pub(in crate::fs::vfs) struct Transport {
 struct BlockTransport {
     queue: KernelRef<crate::block::BlockQueue, KernelService>,
     window: FallibleArc<crate::block::WindowBinding>,
-    // The volume mutex serializes the private extent plan, sector bounce
+    // The backend gate serializes the private extent plan, sector bounce
     // buffer and batch descriptors. Allocate once under the mount sponsor,
     // keeping all fixed-size read scratch off nested page-in stacks.
     read_scratch: super::ScratchVec<u8>,
@@ -182,6 +182,7 @@ impl Transport {
             && matches!(
                 request.operation,
                 Operation::Write
+                    | Operation::SubmitWriteback
                     | Operation::Create
                     | Operation::Remove
                     | Operation::Rename
@@ -460,6 +461,92 @@ impl Transport {
             self.capabilities.resolve(result)?;
         }
         Ok(self.capabilities.read_extents())
+    }
+
+    pub(super) fn supports_async_writeback(&mut self) -> Result<bool, Error> {
+        if self.capabilities.needs_query() {
+            let result = self.call(Operation::Capabilities, "", "", 0, 0, [None; 2]);
+            self.capabilities.resolve(result)?;
+        }
+        Ok(self.capabilities.async_writeback())
+    }
+    pub(super) fn submit_writeback(
+        &mut self,
+        path: &str,
+        offset: u64,
+        input: &super::super::write_source::WriteSource<'_>,
+    ) -> Result<(u64, usize), Error> {
+        let length = input.len();
+        if length == 0 || length > protocol::DATA_BYTES {
+            return Err(Error::InvalidInput);
+        }
+        self.health.check()?;
+        let window = if let Some(block) = &self.block {
+            Some(
+                crate::block::IoWindow::begin(block.window.window(), length, |memory| {
+                    input.copy_to_vmo(memory, 0, length)
+                })
+                .map_err(|_| Error::Io)?,
+            )
+        } else {
+            input
+                .copy_to_exposed_vmo(&self.mapping, 0, length)
+                .map_err(|_| Error::Io)?;
+            None
+        };
+        let response = self.exchange(
+            Request {
+                window_token: window.as_ref().map_or(0, |guard| guard.token()),
+                sequence: 0,
+                operation: Operation::SubmitWriteback,
+                path,
+                target: "",
+                offset,
+                length: length as u64,
+                accessed: None,
+                modified: None,
+                cursor: DirectoryCursor::START,
+            },
+            None,
+        );
+        if window.is_some_and(|guard| guard.finish().is_err()) {
+            self.health.fail();
+            return Err(Error::Corrupt);
+        }
+        let actual = match response {
+            Ok(actual) if actual != 0 && actual <= length as u64 => actual as usize,
+            Ok(_) => {
+                self.health.fail();
+                return Err(Error::Corrupt);
+            }
+            Err(error) => {
+                self.health.fail();
+                return Err(error);
+            }
+        };
+        Ok((self.sequence, actual))
+    }
+    pub(super) fn reap_writeback(
+        &mut self,
+        batch: u64,
+    ) -> Result<protocol::WritebackCompletion, Error> {
+        let count = self.call(Operation::ReapWriteback, "", "", batch, 0, [None; 2])?;
+        let mut bytes = [0; protocol::WRITEBACK_COMPLETION_BYTES];
+        if count != bytes.len() as u64 || self.buffer.read_exposed(0, &mut bytes).is_err() {
+            self.health.fail();
+            return Err(Error::Corrupt);
+        }
+        let completion = protocol::WritebackCompletion::decode(&bytes).ok_or_else(|| {
+            self.health.fail();
+            Error::Corrupt
+        })?;
+        if completion.batch != batch || completion.result.is_err() {
+            self.health.fail();
+        }
+        if completion.batch != batch {
+            return Err(Error::Corrupt);
+        }
+        Ok(completion)
     }
 
     pub(super) fn write_at(

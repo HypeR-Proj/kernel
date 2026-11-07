@@ -99,11 +99,22 @@ splitting phases does not weaken that unconditional join or change batch sizes.
 
 Block-backed filesystem transports allocate the 1040-byte extent plan, a
 512-byte sector bounce buffer and sixteen batch descriptors once under the mount
-sponsor, then reuse them under the volume mutex. All remain private to the kernel
+sponsor, then reuse them under the backend transaction gate. All remain private to the kernel
 and are released with the transport. Aligned and unaligned page-in paths carry
 only borrowed descriptors below block completion waits. The optimized image check
 bounds both read frames and their combined size; no per-read allocation is added
 for this scratch.
+
+Each mount also reserves and charges one maximum-path backend scratch string.
+Speculative reads, partial-page fills and file-sync fences borrow that string
+across RPC while State is released; cache-only writes borrow their binding path
+under State and allocate no temporary path.
+
+The backend has its own charged heap owner, so mount publication does not carry
+the complete transport and batch state through constructor return values.
+Directory and partial-page buffers are initialized directly in their heap
+allocations; an optional page buffer must not reserve a page-sized stack
+temporary even for providers that do not enable writeback.
 
 `sh tests/ci/run.sh native-stack-16k` builds a production image with 16 KiB
 kernel thread stacks and runs Native acceptance on one and four CPUs. This is

@@ -9,8 +9,13 @@ use {
     crate::mm::user_space::WritableVmo,
 };
 
+mod fragments;
+use fragments::FragmentSource;
+pub(super) use fragments::WriteFragments;
+
 pub(super) enum WriteSource<'a> {
     Bytes(&'a [u8]),
+    Fragments(FragmentSource<'a>),
     User(&'a NativeUserRead, &'a crate::accounting::ResourceDomain),
     UserRange(
         &'a NativeUserRead,
@@ -20,9 +25,17 @@ pub(super) enum WriteSource<'a> {
     ),
 }
 impl WriteSource<'_> {
+    pub(super) fn fragments(
+        owner: &dyn WriteFragments,
+    ) -> Result<WriteSource<'_>, super::instance::Error> {
+        FragmentSource::new(owner)
+            .map(WriteSource::Fragments)
+            .ok_or(super::instance::Error::InvalidInput)
+    }
     pub(super) fn len(&self) -> usize {
         match self {
             Self::Bytes(bytes) => bytes.len(),
+            Self::Fragments(source) => source.len(),
             Self::User(input, _) => input.len() as usize,
             Self::UserRange(_, _, _, length) => *length,
         }
@@ -39,6 +52,11 @@ impl WriteSource<'_> {
             .ok_or(super::instance::Error::InvalidInput)?;
         Ok(match self {
             Self::Bytes(bytes) => WriteSource::Bytes(&bytes[offset..end]),
+            Self::Fragments(source) => WriteSource::Fragments(
+                source
+                    .slice(offset, length)
+                    .ok_or(super::instance::Error::InvalidInput)?,
+            ),
             Self::User(input, domain) => WriteSource::UserRange(input, domain, offset, length),
             Self::UserRange(input, domain, first, _) => WriteSource::UserRange(
                 input,
@@ -68,6 +86,11 @@ impl WriteSource<'_> {
     ) -> Result<(), crate::block::QueueError> {
         use crate::block::QueueError;
         match self {
+            Self::Fragments(source) => source
+                .copy(offset, length, |at, bytes| {
+                    memory.write_exposed(at as u64, bytes)
+                })
+                .map_err(|_| QueueError::Invalid),
             Self::Bytes(bytes) => memory
                 .write_exposed(
                     0,
@@ -93,6 +116,12 @@ impl WriteSource<'_> {
         output: &mut [u8],
     ) -> Result<(), super::instance::Error> {
         match self {
+            Self::Fragments(source) => source
+                .copy(offset, output.len(), |at, bytes| {
+                    output[at..at + bytes.len()].copy_from_slice(bytes);
+                    Ok::<_, ()>(())
+                })
+                .map_err(|_| super::instance::Error::InvalidInput),
             Self::Bytes(bytes) => {
                 let end = offset
                     .checked_add(output.len())
@@ -129,6 +158,11 @@ impl WriteSource<'_> {
     ) -> Result<(), crate::block::QueueError> {
         use crate::block::QueueError;
         match self {
+            Self::Fragments(source) => source
+                .copy(offset, length, |at, bytes| {
+                    lease.write_exposed(at as u64, bytes)
+                })
+                .map_err(|_| QueueError::Invalid),
             Self::Bytes(bytes) => lease
                 .write_exposed(
                     0,

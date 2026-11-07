@@ -25,12 +25,25 @@ pub(crate) fn run(domain: &ResourceDomain) -> Result<(), TestError> {
         return Err(TestError::Contract("record cursor retains live entry"));
     }
     records.insert(binding(&live, 1, domain)?);
+    // A rename plan is prepared before RPC releases State. Reclaim can remove
+    // the idle descendant while the backend changes its physical path.
+    let expired_path = super::copy("renamed/expired")?;
+    let live_path = super::copy("renamed/live")?;
     drop(expired);
     for _ in 0..records.cleanup_bound() {
         drop(records.inspect_next());
     }
     if records.len() != 1 || records.iter().any(|record| record.id != 1) {
         return Err(TestError::Contract("record cursor reaches expired suffix"));
+    }
+    if records.rename_retained(2, expired_path)
+        || !records.rename_retained(1, live_path)
+        || records.path(1)? != "renamed/live"
+        || records.find_path("renamed/expired").is_some()
+    {
+        return Err(TestError::Contract(
+            "rename tolerates reclaimed idle descendants without reviving IDs",
+        ));
     }
     drop(records);
     let live_usage = domain.usage().committed(ResourceKind::KernelMemoryBytes);
@@ -145,6 +158,8 @@ fn binding(
     domain: &ResourceDomain,
 ) -> Result<super::PreparedRecord, Error> {
     Records::prepare(Record {
+        metadata_revision: 1,
+        directory_revision: 1,
         id,
         path: String::new(),
         node: owner.downgrade(),

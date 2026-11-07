@@ -28,7 +28,7 @@ impl RemoteFs {
         position: &RemoteDirectoryPosition,
         page: &mut DirectoryPage,
     ) -> Result<RemoteDirectoryPosition, Error> {
-        let mut state = self.state.lock().map_err(Error::Lock)?;
+        let mut state = self.session()?;
         self.read_status()?;
         let revision = directory
             .directory_revision
@@ -47,8 +47,12 @@ impl RemoteFs {
         let mut next = *position;
         next.revision = Some(revision);
         let identity = state.metadata_identity(directory.id())?;
-        let lookup_identity = state.metadata_identity(0)?;
-        let metadata_revision = state.metadata_revision;
+        let lookup_identity = state.entry_fallback_identity()?;
+        let metadata_revision = state
+            .records
+            .get(directory.id())
+            .ok_or(Error::Missing)?
+            .directory_revision;
         if next.batch_revision != metadata_revision {
             next.batch_start = next.checkpoint;
             next.batch_index = 0;
@@ -64,37 +68,55 @@ impl RemoteFs {
             let cached = (next.batch_revision == metadata_revision)
                 .then(|| cache::lookup_batch(&state.cache, identity, next.batch_start))
                 .flatten();
+            let count = if cached.is_none() {
+                next.batch_start = next.checkpoint;
+                next.batch_index = 0;
+                state.finish_batches()?;
+                let count = state.backend_rpc(|backend| {
+                    backend
+                        .volume
+                        .read_directory(&path, next.checkpoint, &mut backend.directory)
+                        .map_err(map)
+                })?;
+                cache::retain_batch(
+                    &state.cache,
+                    identity,
+                    next.batch_start,
+                    &state.backend.directory[..count],
+                    &directory.record,
+                );
+                count
+            } else {
+                0
+            };
+            let super::Session {
+                state: Some(guard),
+                backend,
+                ..
+            } = &mut state
+            else {
+                return Err(Error::InvalidBackendResult);
+            };
             let State {
                 cache: pages,
                 root_record,
                 metadata,
-                directory_scratch,
-                volume,
                 records,
                 writeback,
                 ..
-            } = &mut *state;
+            } = &mut **guard;
             let bytes = if let Some(cached) = &cached {
                 cached.value().bytes()
             } else {
-                // Eviction discards a hint, never traversal authority. Resume
-                // from the stream's last accepted entry, not from directory 0.
-                next.batch_start = next.checkpoint;
-                next.batch_index = 0;
-                let count = volume
-                    .read_directory(&path, next.checkpoint, directory_scratch)
-                    .map_err(map)?;
-                let bytes = &directory_scratch[..count];
-                cache::retain_batch(pages, identity, next.batch_start, bytes, &directory.record);
-                bytes
+                &backend.directory[..count]
             };
             next.batch_revision = metadata_revision;
             let Some(batch) = DirectoryBatch::decode(bytes) else {
-                volume.health.fail();
+                backend.volume.health.fail();
                 return Err(Error::InvalidBackendResult);
             };
             if batch.start_cursor() != next.batch_start || next.batch_index > batch.len() {
-                volume.health.fail();
+                backend.volume.health.fail();
                 return Err(Error::InvalidBackendResult);
             }
             let context = AttributeAdmission {
@@ -107,7 +129,7 @@ impl RemoteFs {
             };
             let result = consume_batch(&batch, &mut next, page, metadata, &context);
             if matches!(result, Err(Error::InvalidBackendResult)) {
-                volume.health.fail();
+                backend.volume.health.fail();
             }
             if result? {
                 return Ok(next);
@@ -148,6 +170,17 @@ fn consume_batch(
             return Err(Error::InvalidBackendResult);
         }
         record.entry_into(scratch);
+        // Retain only backend attributes as the cache base. Dirty overlays are
+        // applied to this listing result afterwards, never committed into a base.
+        if let Ok(path) = join(admission.directory, name) {
+            cache::retain_entry(
+                admission.cache,
+                admission.identity,
+                &path,
+                scratch,
+                admission.owner,
+            );
+        }
         // The backend has not yet seen cached extensions. Canonical bindings
         // identify the accepted size without flushing data for an ls/stat.
         if let Some(binding) = admission.records.iter().find(|binding| {
@@ -167,17 +200,6 @@ fn consume_batch(
         position.checkpoint = record.next_cursor();
         position.batch_index += 1;
 
-        // Exact canonical spelling only. Alias lookup remains the backend's
-        // responsibility; absence from a partial batch never means ENOENT.
-        if let Ok(path) = join(admission.directory, name) {
-            cache::retain_entry(
-                admission.cache,
-                admission.identity,
-                &path,
-                scratch,
-                admission.owner,
-            );
-        }
         if output.len == DIRECTORY_PAGE_CAPACITY {
             break;
         }

@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 use hyper_filesystem::Timestamp;
 
 pub(super) struct Pending<Page> {
+    pub(super) version: u64,
     pub(super) node: u64,
     pub(super) offset: u64,
     pub(super) page: Page,
@@ -77,18 +78,42 @@ pub(super) fn select<Page>(
     })
 }
 
-/// Caller retains the volume mutex from selection through successful backend
-/// completion. The last batch also requires `SetTimes` success before retirement.
-pub(super) fn retire<Page>(pages: &mut Vec<Pending<Page>>, batch: &Batch) {
-    // Preserve the newest pending timestamp even when its original page was
-    // submitted before the remaining, older pages. No metadata-only lease is
-    // needed: the last page stays pinned until its SetTimes is acknowledged.
-    if let Some(next) = pages.get_mut(batch.end)
+/// Freeze a finite owner set without allocating. Later replacement happens in
+/// pending, never in frozen, so continuous redirty cannot extend this cut.
+pub(super) fn freeze<Page>(
+    pending: &mut Vec<Pending<Page>>,
+    frozen: &mut Vec<Pending<Page>>,
+    selected: Option<u64>,
+) {
+    if selected.is_none() && frozen.is_empty() {
+        core::mem::swap(pending, frozen);
+        return;
+    }
+    let mut retained = 0;
+    for index in 0..pending.len() {
+        if selected.is_some_and(|node| pending[index].node != node) {
+            pending.swap(retained, index);
+            retained += 1;
+        }
+    }
+    frozen.extend(pending.drain(retained..));
+    frozen.sort_unstable_by_key(|p| (p.node, p.offset, p.version));
+    pending.sort_unstable_by_key(|p| (p.node, p.offset));
+}
+
+/// Selection indices are valid only under State until this ownership transfer.
+/// Completion drops the transferred owners, never indices into a mutable queue.
+pub(super) fn take<Page>(
+    pages: &mut Vec<Pending<Page>>,
+    batch: &Batch,
+    owners: &mut Vec<Pending<Page>>,
+) {
+    owners.extend(pages.drain(batch.first..batch.end));
+    if let Some(next) = pages.get_mut(batch.first)
         && next.node == batch.node
     {
         next.modified = batch.modified;
     }
-    pages.drain(batch.first..batch.end);
 }
 
 #[cfg(test)]
@@ -97,6 +122,7 @@ mod tests {
 
     fn page(node: u64, offset: u64, seconds: i64) -> Pending<usize> {
         Pending {
+            version: 0,
             node,
             offset,
             page: 4096,
@@ -113,7 +139,7 @@ mod tests {
             };
             assert_eq!(batch.modified, Timestamp::new(30, 0));
             assert_eq!(batch.last, last);
-            retire(&mut pages, &batch);
+            take(&mut pages, &batch, &mut Vec::new());
         }
         assert!(pages.is_empty());
     }
@@ -131,12 +157,12 @@ mod tests {
             panic!("missing first batch");
         };
         assert_eq!((first.node, first.length, first.last), (1, 8192, false));
-        retire(&mut pages, &first);
+        take(&mut pages, &first, &mut Vec::new());
         let Some(second) = select(&pages, None, first.node, 4096, |size| *size) else {
             panic!("missing next file");
         };
         assert_eq!((second.node, second.length, second.last), (2, 4096, false));
-        retire(&mut pages, &second);
+        take(&mut pages, &second, &mut Vec::new());
         let Some(third) = select(&pages, None, second.node, 8192, |size| *size) else {
             panic!("missing wrapped file");
         };
@@ -150,18 +176,80 @@ mod tests {
         let Some(first) = select(&pages, None, 0, 4096, |size| *size) else {
             panic!("missing first file");
         };
-        retire(&mut pages, &first);
+        take(&mut pages, &first, &mut Vec::new());
         let Some(other) = select(&pages, None, first.node, 4096, |size| *size) else {
             panic!("missing other file");
         };
         assert_eq!(other.modified, Timestamp::new(5, 0));
-        retire(&mut pages, &other);
+        take(&mut pages, &other, &mut Vec::new());
         pages.push(page(1, 8192, 40));
         let Some(next) = select(&pages, Some(1), 0, 4096, |size| *size) else {
             panic!("missing remaining file");
         };
         assert_eq!(next.modified, Timestamp::new(40, 0));
-        retire(&mut pages, &next);
+        take(&mut pages, &next, &mut Vec::new());
         assert_eq!(modified(&pages, 1), Timestamp::new(40, 0));
+    }
+    #[test]
+    fn frozen_cut_retains_old_version_while_new_writes_continue() {
+        let mut old = page(1, 0, 10);
+        old.version = 1;
+        let mut pending = Vec::with_capacity(8);
+        pending.push(old);
+        let mut frozen = Vec::with_capacity(8);
+        freeze(&mut pending, &mut frozen, None);
+        let old_buffer = frozen.as_ptr();
+        for version in 2..20 {
+            pending.clear();
+            let mut latest = page(1, 0, version as i64);
+            latest.version = version;
+            pending.push(latest);
+        }
+        let Some(batch) = select(&frozen, None, 0, 512 * 1024, |n| *n) else {
+            panic!("expected selected dirty batch");
+        };
+        let mut accepted = Vec::with_capacity(128);
+        take(&mut frozen, &batch, &mut accepted);
+        assert_eq!(accepted[0].version, 1);
+        assert_eq!(pending[0].version, 19);
+        assert!(frozen.is_empty());
+        assert_eq!(frozen.as_ptr(), old_buffer);
+        drop(accepted); // Completing the old batch never removes the new version.
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[test]
+    fn selected_cut_merges_older_frozen_versions_without_reordering_overwrites() {
+        let mut pending = Vec::with_capacity(8);
+        for (node, offset, version) in [(1, 0, 3), (1, 4096, 4), (2, 0, 5), (3, 0, 6)] {
+            let mut p = page(node, offset, version as i64);
+            p.version = version;
+            pending.push(p);
+        }
+        let mut frozen = Vec::with_capacity(8);
+        let mut old = page(1, 0, 1);
+        old.version = 1;
+        frozen.push(old);
+        let before = (pending.capacity(), frozen.capacity());
+        freeze(&mut pending, &mut frozen, Some(1));
+        assert_eq!(pending.iter().map(|p| p.node).collect::<Vec<_>>(), [2, 3]);
+        assert_eq!(
+            frozen.iter().map(|p| p.version).collect::<Vec<_>>(),
+            [1, 3, 4]
+        );
+        let Some(first) = select(&frozen, Some(1), 0, 8192, |n| *n) else {
+            panic!("expected selected dirty batch");
+        };
+        assert_eq!(first.length, 4096); // Overlap starts another ordered batch.
+        let mut accepted = Vec::with_capacity(128);
+        take(&mut frozen, &first, &mut accepted);
+        let Some(second) = select(&frozen, Some(1), 0, 8192, |n| *n) else {
+            panic!("expected selected dirty batch");
+        };
+        assert_eq!(
+            (second.length, second.modified),
+            (8192, Timestamp::new(4, 0))
+        );
+        assert_eq!((pending.capacity(), frozen.capacity()), before);
     }
 }
