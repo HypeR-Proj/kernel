@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Optional directory and name retention in the same
-//! reclaimable pages as file data. Callers hold the volume mutex and check
+//! reclaimable pages as file data. Callers hold the short state lock and check
 //! backend health before hits.
-//! Identities contain the mount generation and its current metadata revision;
+//! Identities contain the mount generation and the applicable attribute/listing revision;
 //! mutations retire that revision before a possibly partial backend change.
 
 #[cfg(test)]
@@ -49,6 +49,27 @@ pub(super) fn lookup_entry<Owner>(
     bytes
         .get(end..)
         .is_some_and(|entry| entry_decode_into(entry, output).is_some())
+}
+
+/// An exact-name enumeration entry survives reclamation of an idle binding.
+/// Its fallback revision is advanced by every metadata mutation. Once a bound
+/// hit is found, optionally retain it under the stable per-record identity.
+pub(super) fn lookup_entry_with_fallback<Owner: Clone>(
+    cache: &FileDataCache<FilePage<Owner>>,
+    identity: FileIdentity,
+    fallback: FileIdentity,
+    key: &str,
+    output: &mut Entry,
+    owner: &Owner,
+) -> bool {
+    if lookup_entry(cache, identity, key, output) {
+        return true;
+    }
+    if identity == fallback || !lookup_entry(cache, fallback, key, output) {
+        return false;
+    }
+    retain_entry(cache, identity, key, output, owner);
+    true
 }
 
 /// Retain a canonical entry under an exact request name or path. Oversized

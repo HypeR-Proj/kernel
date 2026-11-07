@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-//! Userspace filesystem namespace adapter. All backend access is serialized by one
-//! sleepable volume mutex. Live leases prevent unlink; rename updates every
-//! retained descendant path before releasing the namespace transaction.
+//! Userspace filesystem namespace adapter. Backend transactions serialize RPC
+//! separately from short cache and binding state access. Live leases prevent
+//! unlink; namespace transactions retain the backend gate through publication.
 
 use super::CachePage;
 use super::MetadataUpdate;
@@ -37,8 +37,10 @@ use {
 mod cache;
 mod directory;
 mod records;
+mod session;
 mod writeback;
 use records::{PreparedRecord, Records};
+use session::{Backend, Session};
 #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 #[path = "../../../../tests/kernel/vfs_records.rs"]
 mod records_test;
@@ -47,7 +49,7 @@ pub(super) use records_test::run as test_record_storage;
 
 pub(super) struct Node {
     mount_pins: AtomicU64,
-    // Serialized by the volume mutex; separate from file content revisions.
+    // Serialized by the backend gate; separate from file content revisions.
     directory_revision: AtomicU64,
     pub(super) locks: super::locks::FileLocks,
     pub(super) record: FallibleArc<FileRecord>,
@@ -75,13 +77,15 @@ impl Drop for MountPin {
 }
 struct Record {
     id: u64,
+    metadata_revision: u64,
+    directory_revision: u64,
     path: String,
     node: WeakFallibleArc<Node>,
     content: WeakFallibleArc<FileRecord>,
     _charge: CommittedCharge,
 }
 struct State {
-    volume: Transport,
+    health: FallibleArc<transport::Health>,
     writeback: writeback::Writeback,
     metadata: Box<Entry>,
     records: Records,
@@ -90,10 +94,10 @@ struct State {
     generation: FilesystemGeneration,
     metadata_revision: u64,
     root_record: FallibleArc<FileRecord>,
-    directory_scratch: Box<[u8; hyper_filesystem::protocol::DIRECTORY_BATCH_BYTES]>,
 }
 pub(super) struct RemoteFs {
     state: Mutex<State>,
+    backend: Mutex<Box<Backend>>,
     root: FallibleArc<Node>,
     domain: ResourceDomain,
     epoch: AtomicU64,
@@ -117,15 +121,18 @@ impl RemoteFs {
         let persistent = charge(
             &domain,
             FallibleArc::<Self>::allocation_size()
-                + core::mem::size_of::<Entry>()
+                + core::mem::size_of::<Backend>()
+                + 2 * core::mem::size_of::<Entry>()
+                + MAX_PATH_BYTES
                 + hyper_filesystem::protocol::DIRECTORY_BATCH_BYTES,
         )?;
         let metadata = metadata_scratch()?;
         let root = node(FileRecord::try_new(0, &domain)?, &domain)?;
         let health = volume.health.clone();
         let writeback = writeback::Writeback::new(volume.take_writeback().map_err(map)?, &domain)?;
+        let backend = Backend::new(volume, &domain, writeback.enabled())?;
         let mut state = State {
-            volume,
+            health: health.clone(),
             writeback,
             metadata,
             records: Records::new(),
@@ -134,12 +141,11 @@ impl RemoteFs {
             generation,
             metadata_revision: 1,
             root_record: root.record.clone(),
-            directory_scratch: hyper::mm::try_box(
-                [0; hyper_filesystem::protocol::DIRECTORY_BATCH_BYTES],
-            )?,
         };
         state.records.insert(Records::prepare(Record {
             id: 0,
+            metadata_revision: 1,
+            directory_revision: 1,
             path: String::new(),
             node: root.downgrade(),
             content: root.record.downgrade(),
@@ -147,6 +153,7 @@ impl RemoteFs {
         })?);
         FallibleArc::try_new(Self {
             state: Mutex::new(state),
+            backend: Mutex::new(backend),
             root,
             domain,
             epoch: AtomicU64::new(0),
@@ -163,6 +170,7 @@ impl RemoteFs {
         epoch: u64,
         publish: impl FnOnce() -> Result<T, Error>,
     ) -> Result<T, Error> {
+        let _backend = self.backend.lock().map_err(Error::Lock)?;
         let _guard = self.state.lock().map_err(Error::Lock)?;
         if epoch & 1 != 0 || self.epoch.load(Ordering::Acquire) != epoch {
             return Err(Error::Busy);
@@ -171,7 +179,7 @@ impl RemoteFs {
     }
 
     pub(super) fn pin_mount(&self, node: &FallibleArc<Node>) -> Result<MountPin, Error> {
-        let mut state = self.state.lock().map_err(Error::Lock)?;
+        let mut state = self.session()?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES)?;
         let path = state.path(node)?;
         if !state.is_directory(&path)? {
@@ -191,9 +199,11 @@ impl RemoteFs {
     ) -> Result<(), Error> {
         // Admission is frozen. This lock also drains read-ahead which retains
         // only weak content identity rather than a namespace Location.
-        let mut state = self.state.lock().map_err(Error::Lock)?;
+        let mut state = self.session()?;
+        state.fence_cache();
         state.sync_writeback()?;
         publish()?;
+        state.retire_writeback();
         // No fallible operation follows publication. A late speculative reader
         // sees closed health before it can initiate a new backend transaction.
         self.health.fail();
@@ -212,10 +222,12 @@ impl RemoteFs {
         if self.health.check().is_ok() {
             return Err(Error::Busy);
         }
-        let mut state = self.state.lock().map_err(Error::Lock)?;
+        let mut state = self.session()?;
         publish()?;
         self.health.fail();
-        Ok(state.abandon_writeback())
+        let discarded = state.abandon_writeback();
+        state.backend.batches.abandon();
+        Ok(discarded)
     }
     pub(super) fn reserve_read_ahead_metadata(
         &self,
@@ -228,7 +240,7 @@ impl RemoteFs {
         self.epoch.load(Ordering::Acquire)
     }
     pub(super) fn wait_for_namespace(&self) -> Result<(), Error> {
-        drop(self.state.lock().map_err(Error::Lock)?);
+        drop(self.backend.lock().map_err(Error::Lock)?);
         Ok(())
     }
 
@@ -297,7 +309,7 @@ impl RemoteFs {
     }
     #[inline(never)]
     pub(super) fn attributes(&self, node: &Node) -> Result<NodeAttributes, Error> {
-        let mut state = self.state.lock().map_err(Error::Lock)?;
+        let mut state = self.session()?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES)?;
         let path = state.path(node)?;
         let entry = state.stat(&path)?;
@@ -305,7 +317,7 @@ impl RemoteFs {
     }
     #[inline(never)]
     pub(super) fn metadata(&self, node: &Node) -> Result<(NodeAttributes, NodeMetadata), Error> {
-        let mut state = self.state.lock().map_err(Error::Lock)?;
+        let mut state = self.session()?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES)?;
         let path = state.path(node)?;
         let entry = state.stat(&path)?;
@@ -323,7 +335,8 @@ impl RemoteFs {
     }
     #[inline(never)]
     pub(super) fn set_metadata(&self, node: &Node, update: MetadataUpdate) -> Result<(), Error> {
-        let mut state = self.state.lock().map_err(Error::Lock)?;
+        let mut state = self.session()?;
+        state.fence_cache();
         state.flush_writeback()?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES)?;
         let path = state.path(node)?;
@@ -337,15 +350,14 @@ impl RemoteFs {
         if update.accessed.is_none() && update.modified.is_none() {
             return Ok(());
         }
-        state.invalidate_metadata()?;
-        state
-            .volume
-            .set_times(
+        state.invalidate_entry(node.id())?;
+        state.rpc(|volume| {
+            volume.set_times(
                 &path,
                 update.accessed.map(to_service_time),
                 update.modified.map(to_service_time),
             )
-            .map_err(map)
+        })
     }
     #[inline(never)]
     pub(super) fn lookup(
@@ -353,7 +365,7 @@ impl RemoteFs {
         directory: &Node,
         name: Name<'_>,
     ) -> Result<Option<FallibleArc<Node>>, Error> {
-        let mut state = self.state.lock().map_err(Error::Lock)?;
+        let mut state = self.session()?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES * 3)?;
         let parent = state.path(directory)?;
         if !state.is_directory(&parent)? {
@@ -367,7 +379,20 @@ impl RemoteFs {
         };
         // Use the stored spelling so differently cased opens share one lease.
         let canonical = join(&parent, entry.name())?;
-        state.lease(canonical, &self.domain).map(Some)
+        let node = state.lease(canonical, &self.domain)?;
+        // A lookup can create the canonical binding after an unbound name hit.
+        // Retain its validated attributes under the new identity so open does not
+        // immediately repeat Stat. Existing bound entries remain immutable.
+        let path = state.records.path(node.id())?;
+        let identity = state.entry_identity(path)?;
+        cache::retain_entry(
+            &state.cache,
+            identity,
+            path,
+            &state.metadata,
+            &state.root_record,
+        );
+        Ok(Some(node))
     }
     #[inline(never)]
     pub(super) fn read(
@@ -377,19 +402,16 @@ impl RemoteFs {
         destination: &mut [u8],
         symlink: bool,
     ) -> Result<usize, Error> {
-        let mut state = self.state.lock().map_err(Error::Lock)?;
+        let mut state = self.session()?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES)?;
         let path = state.path(node)?;
         if symlink {
             if state.stat(&path)?.kind != hyper_filesystem::protocol::SYMLINK {
                 return Err(Error::NotSymlink);
             }
-            state.volume.read_link(&path, destination).map_err(map)
+            state.rpc(|volume| volume.read_link(&path, destination))
         } else {
-            state
-                .volume
-                .read_at(&path, offset, destination)
-                .map_err(map)
+            state.rpc(|volume| volume.read_at(&path, offset, destination))
         }
     }
     pub(super) fn read_scatter(
@@ -398,13 +420,10 @@ impl RemoteFs {
         offset: u64,
         output: &mut [&mut [u8]],
     ) -> Result<usize, Error> {
-        let mut state = self.state.lock().map_err(Error::Lock)?;
+        let mut state = self.session()?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES)?;
         let path = state.path(node)?;
-        state
-            .volume
-            .read_scatter(&path, offset, output)
-            .map_err(map)
+        state.rpc(|volume| volume.read_scatter(&path, offset, output))
     }
 
     pub(super) fn try_read_scatter(
@@ -413,38 +432,27 @@ impl RemoteFs {
         offset: u64,
         output: &mut [&mut [u8]],
     ) -> Result<Option<usize>, Error> {
-        let Some(mut state) = self.state.try_lock().map_err(Error::Lock)? else {
+        let Some(mut state) = self.try_session()? else {
             return Ok(None);
         };
-        let State {
-            volume, records, ..
-        } = &mut *state;
-        volume
-            .read_scatter(records.path(record.id())?, offset, output)
+        state.bind_path(record.id())?;
+        state
+            .rpc_bound(|volume, path| volume.read_scatter(path, offset, output))
             .map(Some)
-            .map_err(map)
     }
-    /// Background read admission never queues behind an active filesystem RPC.
     pub(super) fn try_read(
         &self,
         record: &FileRecord,
         offset: u64,
-        destination: &mut [u8],
+        output: &mut [u8],
     ) -> Result<Option<usize>, Error> {
-        let Some(mut state) = self.state.try_lock().map_err(Error::Lock)? else {
+        let Some(mut state) = self.try_session()? else {
             return Ok(None);
         };
-        let State {
-            volume, records, ..
-        } = &mut *state;
-        // The volume mutex excludes rename and record reclamation through the
-        // RPC. Borrow the charged path so speculative reads need no temporary
-        // path allocation or quota admission, and cannot trigger quota reclaim.
-        let path = records.path(record.id())?;
-        volume
-            .read_at(path, offset, destination)
+        state.bind_path(record.id())?;
+        state
+            .rpc_bound(|volume, path| volume.read_at(path, offset, output))
             .map(Some)
-            .map_err(map)
     }
     #[inline(never)]
     pub(super) fn write(
@@ -459,11 +467,55 @@ impl RemoteFs {
         let mut done = 0;
         loop {
             let step = (|| -> Result<(usize, bool), Error> {
-                let mut state = self.state.lock().map_err(Error::Lock)?;
+                // This path never waits for backend ownership. The same canonical
+                // reclaimable attributes and versioned cache serve both paths.
+                {
+                    let mut state = self.state.lock().map_err(Error::Lock)?;
+                    state.check_writeback()?;
+                    if state.writeback.enabled()
+                        && !state.writeback.fenced
+                        && state.cached_stat_node(node.id())?
+                    {
+                        let length = state.metadata.size;
+                        if state.metadata.directory() {
+                            return Err(Error::IsDirectory);
+                        }
+                        if state.metadata.read_only() {
+                            return Err(Error::Remote(BackendError::ReadOnly));
+                        }
+                        let base = *first.get_or_insert(length);
+                        base.checked_add(input.len() as u64)
+                            .ok_or(Error::InvalidInput)?;
+                        if input.len() == 0 {
+                            return Ok((0, false));
+                        }
+                        let at = base + done as u64;
+                        if at <= length {
+                            let chunk = input.slice(
+                                done,
+                                (input.len() - done).min(hyper_filesystem::protocol::DATA_BYTES),
+                            )?;
+                            let identity = FileIdentity::new(
+                                state.generation,
+                                NodeIdentity::new(
+                                    NonZeroU64::new(node.id()).ok_or(Error::NotRegularFile)?,
+                                ),
+                                content.revision(),
+                            );
+                            if let Some(written) =
+                                state.cache_write(node, identity, length, at, &chunk, None)?
+                            {
+                                content.set_length(length.max(at + written as u64));
+                                return Ok((written, true));
+                            }
+                        }
+                    }
+                }
+                // Never acquire the backend gate while retaining State. A slow
+                // stat, partial-page miss or pressure fallback may wait here.
+                let mut state = self.session()?;
                 state.check_writeback()?;
                 let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES)?;
-                // The content gate excludes another writer or truncate, but a
-                // rename can update this binding between completed chunks.
                 let path = state.path(node)?;
                 let entry = state.stat(&path)?;
                 if entry.directory() {
@@ -491,22 +543,17 @@ impl RemoteFs {
                         content.revision(),
                     );
                     if let Some(written) =
-                        state.cache_write(node, &path, identity, length, at, &chunk)?
+                        state.cache_write_filled(node, identity, length, at, &chunk)?
                     {
                         content.set_length(length.max(at + written as u64));
                         return Ok((written, true));
                     }
                 }
-                // Only this content revision will be retired by direct I/O.
-                // Drain its earlier dirty versions one batch per lock hold;
-                // unrelated files retain their independently pinned pages.
-                if state.writeback.contains(node.id()) {
-                    state.flush_batch(Some(node.id()))?;
-                    return Ok((0, true));
-                }
-                state.invalidate_metadata()?;
+                state.fence_cache();
+                state.flush_node(node.id())?;
+                state.invalidate_entry(node.id())?;
                 content.begin_mutation()?;
-                let written = state.volume.write_at(&path, at, &chunk).map_err(map)?;
+                let written = state.rpc(|volume| volume.write_at(&path, at, &chunk))?;
                 content.set_length(length.max(at + written as u64));
                 Ok((written, written == chunk.len()))
             })();
@@ -520,8 +567,6 @@ impl RemoteFs {
                 Err(_) if done != 0 => break,
                 Err(error) => return Err(error),
             }
-            // Dropping the volume guard hands ownership to an existing FIFO
-            // waiter. Never acquire a file-content gate from the worker.
             if crate::task::scheduler::cond_resched().is_err() {
                 if done != 0 {
                     break;
@@ -534,7 +579,8 @@ impl RemoteFs {
 
     #[inline(never)]
     pub(super) fn resize(&self, node: &Node, length: u64) -> Result<(), Error> {
-        let mut state = self.state.lock().map_err(Error::Lock)?;
+        let mut state = self.session()?;
+        state.fence_cache();
         state.flush_writeback()?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES)?;
         let path = state.path(node)?;
@@ -545,12 +591,12 @@ impl RemoteFs {
         if entry.read_only() {
             return Err(Error::Remote(BackendError::ReadOnly));
         }
-        state.invalidate_metadata()?;
-        state.volume.resize(&path, length).map_err(map)
+        state.invalidate_entry(node.id())?;
+        state.rpc(|volume| volume.resize(&path, length))
     }
     #[inline(never)]
     pub(super) fn sync(&self, node: &Node, scope: u64) -> Result<(), Error> {
-        let mut state = self.state.lock().map_err(Error::Lock)?;
+        let mut state = self.session()?;
         state.check_writeback()?;
         if scope == hyper::abi::native::HYPER_NATIVE_FILE_SYNC_VOLUME {
             return state.sync_writeback();
@@ -582,7 +628,7 @@ impl RemoteFs {
         if name.directory_required && creation.kind != NodeKind::Directory {
             return Err(Error::NotDirectory.into());
         }
-        let mut state = self.state.lock().map_err(Error::Lock)?;
+        let mut state = self.session()?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES * 3)?;
         let _mutation = self.mutation(epoch)?;
         let parent = state.path(directory)?;
@@ -600,10 +646,9 @@ impl RemoteFs {
         let prepared = publish(lease)?;
         directory.invalidate_directory()?;
         state.invalidate_metadata()?;
-        state
-            .volume
-            .create(&record.value().path, creation.kind == NodeKind::Directory)
-            .map_err(map)?;
+        state.rpc(|volume| {
+            volume.create(&record.value().path, creation.kind == NodeKind::Directory)
+        })?;
         // Creation succeeded while the namespace mutex excluded competing
         // lookups. Retire any expired name binding before publishing this one.
         if let Some(previous) = state.records.find_path(&record.value().path) {
@@ -620,7 +665,7 @@ impl RemoteFs {
         truncate: bool,
         publish: impl FnOnce(NodeAttributes) -> Result<R, E>,
     ) -> Result<R, E> {
-        let mut state = self.state.lock().map_err(Error::Lock)?;
+        let mut state = self.session()?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES)?;
         let path = state.path(node)?;
         let entry = state.stat(&path)?;
@@ -631,11 +676,13 @@ impl RemoteFs {
         let attributes = attributes(entry);
         let prepared = publish(attributes)?;
         if truncate {
+            state.fence_cache();
+            state.flush_writeback()?;
             if read_only {
                 return Err(Error::Remote(BackendError::ReadOnly).into());
             }
-            state.invalidate_metadata()?;
-            state.volume.resize(&path, 0).map_err(map)?;
+            state.invalidate_entry(node.id())?;
+            state.rpc(|volume| volume.resize(&path, 0))?;
         }
         Ok(prepared)
     }
@@ -649,7 +696,8 @@ impl RemoteFs {
         expected: Option<u64>,
         epoch: Option<u64>,
     ) -> Result<(), Error> {
-        let mut state = self.state.lock().map_err(Error::Lock)?;
+        let mut state = self.session()?;
+        state.fence_cache();
         state.flush_writeback()?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES * 3)?;
         let _mutation = self.mutation(epoch)?;
@@ -673,7 +721,7 @@ impl RemoteFs {
         }
         directory.invalidate_directory()?;
         state.invalidate_metadata()?;
-        state.volume.remove(&path).map_err(map)?;
+        state.rpc(|volume| volume.remove(&path))?;
         // Cached content is not an active lease. Its old numeric identity may
         // remain in clean pages until eviction, but the removed name must never
         // reconnect it to a new file (or a recreated directory subtree).
@@ -707,7 +755,8 @@ impl RemoteFs {
         new_name: EntryName<'_>,
         epoch: u64,
     ) -> Result<(), Error> {
-        let mut state = self.state.lock().map_err(Error::Lock)?;
+        let mut state = self.session()?;
+        state.fence_cache();
         state.flush_writeback()?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES * 5)?;
         let _mutation = self.mutation(Some(epoch))?;
@@ -789,13 +838,11 @@ impl RemoteFs {
             }
         }
         state.invalidate_metadata()?;
-        state.volume.rename(&old, &new).map_err(map)?;
+        state.rpc(|volume| volume.rename(&old, &new))?;
         // All replacement paths and index nodes already exist. Reindexing is
         // allocation-free after the backend has committed the rename.
         for (id, path) in replacements {
-            if state.records.set_path(id, path).is_err() {
-                hyper::debug::invariant_failure("filesystem rename binding disappeared");
-            }
+            state.records.rename_retained(id, path);
         }
         Ok(())
     }
@@ -808,7 +855,7 @@ impl RemoteFs {
         output: &mut ScratchVec<(T, ScratchString)>,
         wrap: impl Fn(FallibleArc<Node>) -> T,
     ) -> Result<(), Error> {
-        let mut state = self.state.lock().map_err(Error::Lock)?;
+        let mut state = self.session()?;
         let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES * 5)?;
         let root_path = state.path(root)?;
         let start_path = state.path(start)?;
@@ -848,7 +895,7 @@ impl State {
             };
             // Only unpublished preparation is retried. The worker scans the
             // denying domain (including descendant mount sponsors), never
-            // waits for our volume mutex, and drops cache owners outside its
+            // waits for our state mutex, and drops cache owners outside its
             // locks. Keep admissions paused through local pruning and retry.
             let Some(pause) =
                 crate::mm::reclaim::reclaim(crate::mm::reclaim::Target::Domain(*domain))
@@ -878,11 +925,14 @@ impl State {
     ) -> Result<(FallibleArc<Node>, PreparedRecord), Error> {
         // Keep the path across a quota retry; all fallible quota admission and
         // object allocation precedes installing it in the prepared binding.
+        let metadata_revision = self.metadata_revision;
         let (node, mut record) = self.reclaim_retry(|_| {
             let record_charge = record_charge(domain)?;
             let node = node(FileRecord::try_new(id, domain)?, domain)?;
             let record = Records::prepare(Record {
                 id,
+                metadata_revision,
+                directory_revision: metadata_revision,
                 path: String::new(),
                 node: node.downgrade(),
                 content: node.record.downgrade(),
@@ -894,20 +944,52 @@ impl State {
         Ok((node, record))
     }
 
-    /// The volume lock covers cache lookup, RPC, publication, and every mutation.
-    /// Namespace cache generations never acquire the file-content gate: the
-    /// established lock order is content gate -> volume -> cache.
+    /// Directory retention follows its parent listing revision. State protects
+    /// identity publication; backend operations release it while waiting for I/O.
     fn metadata_identity(&self, node: u64) -> Result<FileIdentity, Error> {
+        let revision = self
+            .records
+            .get(node)
+            .map_or(self.metadata_revision, |r| r.directory_revision);
+        self.metadata_identity_at(node, revision)
+    }
+    fn entry_fallback_identity(&self) -> Result<FileIdentity, Error> {
+        self.metadata_identity_at(0, self.metadata_revision)
+    }
+    fn metadata_identity_at(&self, node: u64, revision: u64) -> Result<FileIdentity, Error> {
         let node = node
             .checked_add(1)
             .and_then(NonZeroU64::new)
             .ok_or(Error::IdentifierExhausted)?;
-        let revision = NonZeroU64::new(self.metadata_revision).ok_or(Error::IdentifierExhausted)?;
+        let revision = NonZeroU64::new(revision).ok_or(Error::IdentifierExhausted)?;
         Ok(FileIdentity::new(
             self.generation,
             NodeIdentity::new(node),
             ContentRevision::new(revision),
         ))
+    }
+    fn invalidate_entry(&mut self, node: u64) -> Result<(), Error> {
+        self.writeback.changed = self.writeback.enabled();
+        self.metadata_revision = self
+            .metadata_revision
+            .checked_add(1)
+            .ok_or(Error::IdentifierExhausted)?;
+        let revision = self.metadata_revision;
+        let record = self.records.get_mut(node).ok_or(Error::Missing)?;
+        record.metadata_revision = revision;
+        self.invalidate_parent_listing(node, revision)
+    }
+    fn invalidate_parent_listing(&mut self, node: u64, revision: u64) -> Result<(), Error> {
+        let record = self.records.get(node).ok_or(Error::Missing)?;
+        let parent = record
+            .path
+            .rsplit_once('/')
+            .map_or("", |(parent, _)| parent);
+        let parent_id = self.records.find_path(parent).map(|r| r.id);
+        if let Some(parent) = parent_id.and_then(|id| self.records.get_mut(id)) {
+            parent.directory_revision = revision;
+        }
+        Ok(())
     }
 
     fn invalidate_metadata(&mut self) -> Result<(), Error> {
@@ -918,31 +1000,9 @@ impl State {
             .metadata_revision
             .checked_add(1)
             .ok_or(Error::IdentifierExhausted)?;
+        let revision = self.metadata_revision;
+        self.records.update_all_metadata(revision);
         Ok(())
-    }
-
-    fn stat(&mut self, path: &str) -> Result<&Entry, Error> {
-        self.volume.health.check().map_err(map)?;
-        let identity = self.metadata_identity(0)?;
-        if !cache::lookup_entry(&self.cache, identity, path, &mut self.metadata) {
-            self.volume
-                .stat_into(path, &mut self.metadata)
-                .map_err(map)?;
-            cache::retain_entry(
-                &self.cache,
-                identity,
-                path,
-                &self.metadata,
-                &self.root_record,
-            );
-        }
-        if let Some(record) = self.records.find_path(path) {
-            self.writeback.overlay(record.id, &mut self.metadata);
-        }
-        Ok(&self.metadata)
-    }
-    fn is_directory(&mut self, path: &str) -> Result<bool, Error> {
-        Ok(self.stat(path)?.directory())
     }
 
     fn path(&self, node: &Node) -> Result<String, Error> {

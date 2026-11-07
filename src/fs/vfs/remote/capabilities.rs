@@ -33,6 +33,10 @@ impl Negotiation {
         Ok(())
     }
 
+    pub(super) fn async_writeback(&self) -> bool {
+        matches!(self, Self::Known(capabilities) if capabilities.supports_async_writeback())
+    }
+
     pub(super) fn read_extents(&self) -> bool {
         match self {
             Self::Known(capabilities) => capabilities.supports_read_extents(),
@@ -44,6 +48,27 @@ impl Negotiation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn async_writeback_requires_explicit_support_on_each_transport() -> Result<(), Error> {
+        let mut state = Negotiation::Unknown;
+        assert!(!state.async_writeback());
+        state.observe(ResponseFeatures::CAPABILITY_QUERY);
+        assert!(!state.async_writeback());
+        state.resolve(Ok(Capabilities::READ_EXTENTS.bits()))?;
+        assert!(!state.async_writeback());
+
+        let mut state = Negotiation::Advertised;
+        state.resolve(Ok(Capabilities::ASYNC_WRITEBACK.bits() | 1 << 63))?;
+        assert!(state.async_writeback());
+        assert!(!state.read_extents());
+        // Provider replacement must negotiate again; legacy is synchronous.
+        assert!(!Negotiation::Unknown.async_writeback());
+        let mut legacy = Negotiation::Advertised;
+        legacy.resolve(Err(Error::Unsupported))?;
+        assert!(!legacy.async_writeback());
+        Ok(())
+    }
 
     #[test]
     fn legacy_replies_never_cause_an_unknown_request() {

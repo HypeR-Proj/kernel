@@ -809,6 +809,9 @@ impl FilesystemInstance {
             Backend::RamFs(fs) => {
                 content.begin_mutation()?;
                 match input {
+                    // Retained page fragments are an internal remote-writeback
+                    // source; application writes never enter through this form.
+                    super::write_source::WriteSource::Fragments(_) => Err(Error::InvalidInput),
                     super::write_source::WriteSource::Bytes(bytes) => {
                         fs.write(node.ramfs()?, offset, bytes)
                     }

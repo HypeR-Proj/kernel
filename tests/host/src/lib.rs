@@ -10,6 +10,10 @@
 extern crate alloc;
 
 #[cfg(test)]
+#[path = "../../../src/fs/vfs/write_source/fragments.rs"]
+mod filesystem_write_fragments;
+
+#[cfg(test)]
 #[path = "../../../src/fs/vfs/remote/writeback/queue.rs"]
 mod filesystem_writeback_queue;
 

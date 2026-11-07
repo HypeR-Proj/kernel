@@ -16,7 +16,7 @@ pub(super) struct PreparedRecord {
     path: Box<Node<(u64, u64), ()>>,
 }
 
-/// The volume mutex covers both indices and every record change. Deletion and
+/// The state mutex covers both indices and every record change. Deletion and
 /// path replacement reuse owned index nodes; neither allocates during reclaim
 /// or after a backend namespace mutation has committed.
 pub(super) struct Records {
@@ -99,6 +99,17 @@ impl Records {
         None
     }
 
+    pub(super) fn update_all_metadata(&mut self, revision: u64) {
+        let mut previous = None;
+        while let Some((id, _)) = self.ids.next(previous) {
+            previous = Some(id);
+            if let Some(record) = self.ids.get_mut(id) {
+                record.metadata_revision = revision;
+                record.directory_revision = revision;
+            }
+        }
+    }
+
     pub(super) fn path(&self, id: u64) -> Result<&str, Error> {
         self.get(id)
             .map(|record| record.path.as_str())
@@ -114,6 +125,18 @@ impl Records {
         record.path = path;
         self.paths.insert(index);
         Ok(())
+    }
+
+    /// The backend gate excludes new bindings and competing namespace changes
+    /// while a rename RPC releases State. Reclaim may remove only idle records;
+    /// IDs never recur, and an active content/node owner prevents that removal.
+    /// Therefore an absent planned ID needs no replacement after physical rename.
+    pub(super) fn rename_retained(&mut self, id: u64, path: String) -> bool {
+        match self.set_path(id, path) {
+            Ok(()) => true,
+            Err(Error::Missing) => false,
+            Err(_) => invariant_failure(),
+        }
     }
 
     pub(super) fn remove(&mut self, id: u64) -> Option<PreparedRecord> {

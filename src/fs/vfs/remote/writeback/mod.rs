@@ -1,21 +1,23 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-//! Volume-ordered writeback of the common VFS file pages. The volume mutex
-//! serializes publication, submission, namespace changes, and checkpoint fences.
-//! Dirty owners retain content identity, never a node or mount lease.
+//! Exact dirty versions survive preparation, submission and device completion.
+//! Pending cache publication is independent of ordered backend work. A sync cut
+//! moves its finite owner set to frozen storage; later writes cannot extend it.
 
 use super::super::write_source::WriteSource;
 use super::*;
 use crate::fs::cache::{CacheKey, DirtyPage, FilePageIndex};
 use crate::object::{SignalMask, SignalSource, SignalState, SignalWaitRequest, wait_many};
-
 const PAGE: usize = hyper::mm::PAGE_SIZE as usize;
 const MAX_DIRTY_PAGES: usize = 2048;
 const BACKGROUND_HIGH_PAGES: usize = 1536;
 const BACKGROUND_LOW_PAGES: usize = 1024;
 const BATCH_BYTES: usize = hyper_filesystem::protocol::DATA_BYTES;
-
+const BATCH_PAGES: usize = BATCH_BYTES / PAGE;
+const BATCHES: usize = 2;
+mod queue;
+type Dirty = queue::Pending<DirtyPage<CachePage>>;
 struct Wake {
     signal: SignalState,
     _charge: CommittedCharge,
@@ -33,70 +35,90 @@ impl Wake {
         }
     }
 }
-
-mod queue;
-
-type Dirty = queue::Pending<DirtyPage<CachePage>>;
-
+#[derive(Clone, Copy)]
+struct Flight {
+    node: u64,
+    end: u64,
+    modified: Option<hyper_filesystem::Timestamp>,
+    pages: usize,
+    bytes: usize,
+}
 pub(super) struct Writeback {
     pages: Vec<Dirty>,
-    scratch: ScratchVec<u8>,
+    frozen: Vec<Dirty>,
+    flights: [Option<Flight>; BATCHES],
     interval: u64,
     deadline: u64,
     failure: Option<Error>,
     wake: Option<FallibleArc<Wake>>,
     background: bool,
+    retired: bool,
     cursor: u64,
+    version: u64,
     pub(super) changed: bool,
+    pub(super) fenced: bool,
     _charge: Option<CommittedCharge>,
 }
 impl Writeback {
     pub(super) fn new(interval: u64, domain: &ResourceDomain) -> Result<Self, Error> {
         let capacity = if interval == 0 { 0 } else { MAX_DIRTY_PAGES };
-        let pages_charge = if capacity == 0 {
+        let charge = if capacity == 0 {
             None
         } else {
-            Some(charge(domain, capacity * core::mem::size_of::<Dirty>())?)
+            Some(charge(
+                domain,
+                capacity * core::mem::size_of::<Dirty>() * 2,
+            )?)
         };
         let mut pages = Vec::new();
+        let mut frozen = Vec::new();
         pages
             .try_reserve_exact(capacity)
             .map_err(|_| Error::Allocation)?;
-        let mut scratch = ScratchVec::new(ScratchBudget::new(domain));
-        if interval != 0 {
-            scratch.resize(BATCH_BYTES, 0)?;
-        }
+        frozen
+            .try_reserve_exact(capacity)
+            .map_err(|_| Error::Allocation)?;
         let now = crate::time::monotonic_nanoseconds().map_err(|_| Error::InvalidInput)?;
         let wake = if interval == 0 {
             None
         } else {
             Some(FallibleArc::try_new(Wake {
                 signal: SignalState::new(),
-                _charge: charge(domain, FallibleArc::<Wake>::allocation_size())?,
+                _charge: super::charge(domain, FallibleArc::<Wake>::allocation_size())?,
             })?)
         };
         Ok(Self {
             pages,
-            scratch,
+            frozen,
+            flights: [None; BATCHES],
             interval,
             deadline: now.saturating_add(interval),
             failure: None,
             wake,
             background: false,
+            retired: false,
             cursor: 0,
+            version: 0,
             changed: false,
-            _charge: pages_charge,
+            fenced: false,
+            _charge: charge,
         })
     }
     pub(super) fn enabled(&self) -> bool {
         self.interval != 0
     }
-    pub(super) fn contains(&self, node: u64) -> bool {
-        let first = self.pages.partition_point(|page| page.node < node);
-        self.pages.get(first).is_some_and(|page| page.node == node)
+    fn count(&self) -> usize {
+        self.pages.len()
+            + self.frozen.len()
+            + self
+                .flights
+                .iter()
+                .flatten()
+                .map(|f| f.pages)
+                .sum::<usize>()
     }
     fn notify_pressure(&mut self) {
-        if self.pages.len() >= BACKGROUND_HIGH_PAGES && !self.background {
+        if self.count() >= BACKGROUND_HIGH_PAGES && !self.background {
             self.background = true;
             if let Some(wake) = &self.wake {
                 wake.update(true);
@@ -104,7 +126,19 @@ impl Writeback {
         }
     }
     pub(super) fn modified(&self, node: u64) -> Option<hyper_filesystem::Timestamp> {
-        queue::modified(&self.pages, node)
+        self.pages
+            .iter()
+            .chain(&self.frozen)
+            .filter(|p| p.node == node)
+            .filter_map(|p| p.modified)
+            .chain(
+                self.flights
+                    .iter()
+                    .flatten()
+                    .filter(|f| f.node == node)
+                    .filter_map(|f| f.modified),
+            )
+            .max_by_key(|t| (t.seconds(), t.nanoseconds()))
     }
     pub(super) fn overlay(&self, node: u64, entry: &mut Entry) {
         entry.size = self.logical_length(node, entry.size);
@@ -115,13 +149,98 @@ impl Writeback {
     pub(super) fn logical_length(&self, node: u64, size: u64) -> u64 {
         self.pages
             .iter()
+            .chain(&self.frozen)
             .filter(|p| p.node == node)
-            .fold(size, |size, p| {
-                size.max(p.offset + p.page.value().bytes().len() as u64)
-            })
+            .map(|p| p.offset + p.page.value().bytes().len() as u64)
+            .chain(
+                self.flights
+                    .iter()
+                    .flatten()
+                    .filter(|f| f.node == node)
+                    .map(|f| f.end),
+            )
+            .fold(size, u64::max)
+    }
+    fn freeze(&mut self, selected: Option<u64>) {
+        queue::freeze(&mut self.pages, &mut self.frozen, selected);
     }
 }
-
+struct Batch {
+    pages: Vec<Dirty>,
+    path: String,
+    node: u64,
+    offset: u64,
+    length: usize,
+    modified: Option<hyper_filesystem::Timestamp>,
+    last: bool,
+    progress: BatchProgress,
+}
+// A missing receipt is not evidence that the backend completed a write.
+// In particular, lost acknowledgements and consumed failed receipts must never
+// enter the synchronous-success retirement path on a later cleanup attempt.
+#[derive(Clone, Copy)]
+enum BatchProgress {
+    Prepared,
+    Submitted { token: u64, accepted: usize },
+    Completed { accepted: usize },
+    Failed(Error),
+}
+pub(super) struct Batches {
+    slots: [Batch; BATCHES],
+    _charge: Option<CommittedCharge>,
+}
+impl super::super::write_source::WriteFragments for Batch {
+    fn count(&self) -> usize {
+        self.pages.len()
+    }
+    fn fragment(&self, index: usize) -> Option<&[u8]> {
+        self.pages.get(index).map(|page| page.page.value().bytes())
+    }
+}
+impl Batches {
+    pub(super) fn abandon(&mut self) {
+        for slot in &mut self.slots {
+            slot.pages.clear();
+            slot.progress = BatchProgress::Prepared;
+        }
+    }
+    pub(super) fn new(domain: &ResourceDomain, enabled: bool) -> Result<Self, Error> {
+        let capacity = if enabled { BATCH_PAGES } else { 0 };
+        let path_capacity = if enabled { MAX_PATH_BYTES } else { 0 };
+        let charge = if enabled {
+            Some(charge(
+                domain,
+                BATCHES * (capacity * core::mem::size_of::<Dirty>() + path_capacity)
+                    + if enabled { PAGE } else { 0 },
+            )?)
+        } else {
+            None
+        };
+        let slot = || -> Result<Batch, Error> {
+            let mut pages = Vec::new();
+            pages
+                .try_reserve_exact(capacity)
+                .map_err(|_| Error::Allocation)?;
+            let mut path = String::new();
+            path.try_reserve_exact(path_capacity)
+                .map_err(|_| Error::Allocation)?;
+            Ok(Batch {
+                pages,
+                path,
+                node: 0,
+                offset: 0,
+                length: 0,
+                modified: None,
+                last: false,
+                progress: BatchProgress::Prepared,
+            })
+        };
+        Ok(Self {
+            slots: [slot()?, slot()?],
+            _charge: charge,
+        })
+    }
+}
 struct Worker {
     filesystem: WeakFallibleArc<RemoteFs>,
     wake: FallibleArc<Wake>,
@@ -146,7 +265,8 @@ extern "C" fn worker(address: usize) {
         }
         let more = match crate::time::monotonic_nanoseconds() {
             Ok(now) => match filesystem.periodic_writeback(now) {
-                Ok(more) => more,
+                Ok(Some(more)) => more,
+                Ok(None) => return,
                 Err(error) => {
                     crate::pr_err!("HypeR: filesystem writeback stopped: {error:?}");
                     return;
@@ -231,128 +351,164 @@ impl RemoteFs {
     }
 
     pub(in crate::fs::vfs) fn flush_writeback(&self) -> Result<(), Error> {
-        self.state.lock().map_err(Error::Lock)?.flush_writeback()
+        self.session()?.flush_writeback()
     }
-    fn periodic_writeback(&self, now: u64) -> Result<bool, Error> {
-        let mut state = self.state.lock().map_err(Error::Lock)?;
+    fn periodic_writeback(&self, now: u64) -> Result<Option<bool>, Error> {
+        let mut state = self.session()?;
+        // A worker can pass read_status before unmount, then wait behind its
+        // backend gate. Successful publication retires it under that same gate;
+        // revoked old capabilities are not a background writeback failure.
+        if state.writeback.retired {
+            return Ok(None);
+        }
         state.check_writeback()?;
         if !state.writeback.enabled() {
-            return Ok(false);
+            return Ok(Some(false));
         }
         let due = now >= state.writeback.deadline;
         let pressured =
-            !state.writeback.pages.is_empty() && !crate::mm::cache_memory::admission_allowed();
+            state.writeback.count() != 0 && !crate::mm::cache_memory::admission_allowed();
         if !due && !pressured && !state.writeback.background {
-            return Ok(false);
+            return Ok(Some(false));
         }
-        let result = if due && state.writeback.changed {
-            state.sync_writeback()
+        if due && state.writeback.changed {
+            state.sync_writeback()?;
         } else if pressured || state.writeback.background {
-            state.flush_batch(None).map(|_| ())
-        } else {
-            Ok(())
-        };
-        if let Err(error) = result {
-            state.writeback.failure = Some(error);
-            return Err(error);
+            state.flush_batch(None)?;
         }
         if due {
-            // Coalesce ticks elapsed while waiting for the volume and device.
             let now = crate::time::monotonic_nanoseconds().unwrap_or(now);
             let interval = state.writeback.interval;
-            let ticks = (now - state.writeback.deadline) / interval + 1;
+            let ticks = now.saturating_sub(state.writeback.deadline) / interval + 1;
             state.writeback.deadline = state
                 .writeback
                 .deadline
                 .saturating_add(ticks.saturating_mul(interval));
         }
-        if state.writeback.pages.len() <= BACKGROUND_LOW_PAGES {
+        if state.writeback.count() <= BACKGROUND_LOW_PAGES {
             state.writeback.background = false;
         }
-        Ok(!state.writeback.pages.is_empty()
-            && (state.writeback.background || !crate::mm::cache_memory::admission_allowed()))
+        Ok(Some(
+            state.writeback.count() != 0
+                && (state.writeback.background || !crate::mm::cache_memory::admission_allowed()),
+        ))
     }
 }
-
 impl State {
+    pub(super) fn retire_writeback(&mut self) {
+        self.writeback.retired = true;
+        if let Some(wake) = &self.writeback.wake {
+            wake.update(true);
+        }
+    }
     pub(super) fn abandon_writeback(&mut self) -> u64 {
-        let bytes = self.writeback.pages.iter().fold(0_u64, |total, dirty| {
-            total.saturating_add(dirty.page.value().bytes().len() as u64)
-        });
-        self.writeback.failure = Some(Error::Remote(BackendError::Closed));
+        let bytes = self
+            .writeback
+            .pages
+            .iter()
+            .chain(&self.writeback.frozen)
+            .fold(0_u64, |n, p| {
+                n.saturating_add(p.page.value().bytes().len() as u64)
+            })
+            .saturating_add(
+                self.writeback
+                    .flights
+                    .iter()
+                    .flatten()
+                    .map(|f| f.bytes as u64)
+                    .sum(),
+            );
+        self.writeback
+            .failure
+            .get_or_insert(Error::Remote(BackendError::Closed));
         self.writeback.pages.clear();
+        self.writeback.frozen.clear();
+        self.writeback.flights.fill(None);
         self.writeback.interval = 0;
         if let Some(wake) = &self.writeback.wake {
             wake.update(true);
         }
         bytes
     }
-    pub(super) fn check_writeback(&self) -> Result<(), Error> {
-        self.volume.health.check().map_err(map)?;
-        self.writeback.failure.map_or(Ok(()), Err)
+    fn fail_writeback(&mut self, error: Error) -> Error {
+        // No retry/recovery protocol exists for a failed dirty owner. Keep its
+        // first cause and expose failed-detach even when the provider is alive
+        // and its last reply was a nonterminal application-level rejection.
+        self.health.fail();
+        if self.writeback.failure.is_none() {
+            self.writeback.failure = Some(error);
+            crate::pr_crit!(
+                "HypeR: filesystem writeback failed; mount failed: {:?}",
+                error
+            );
+        }
+        self.writeback.failure.unwrap_or(error)
     }
+    pub(super) fn check_writeback(&self) -> Result<(), Error> {
+        if let Some(error) = self.writeback.failure {
+            return Err(error);
+        }
+        self.health.check().map_err(map)
+    }
+    /// Cache-only publication. A missing partial page or exhausted budget asks
+    /// the caller to leave State before obtaining backend ownership.
     pub(super) fn cache_write(
         &mut self,
         node: &Node,
-        path: &str,
         identity: FileIdentity,
         length: u64,
         offset: u64,
         input: &WriteSource<'_>,
+        fill: Option<&[u8]>,
     ) -> Result<Option<usize>, Error> {
+        if self.writeback.fenced {
+            return Ok(None);
+        }
         let mut done = 0;
         while done < input.len() {
             let at = offset + done as u64;
             let base = at / PAGE as u64 * PAGE as u64;
             let within = (at - base) as usize;
             let count = (PAGE - within).min(input.len() - done);
-            let new_length = length.max(at + count as u64);
-            let valid = (new_length - base).min(PAGE as u64) as usize;
+            let valid = (length.max(at + count as u64) - base).min(PAGE as u64) as usize;
             let step = (|| -> Result<bool, Error> {
-                if self.writeback.pages.len() == MAX_DIRTY_PAGES
-                    && self
-                        .writeback
-                        .pages
-                        .binary_search_by_key(&(node.id(), base), |p| (p.node, p.offset))
-                        .is_err()
-                {
-                    if done != 0 {
-                        return Ok(false);
-                    }
-                    self.flush_batch(None)?;
+                let existing = self
+                    .writeback
+                    .pages
+                    .binary_search_by_key(&(node.id(), base), |p| (p.node, p.offset));
+                if self.writeback.count() >= MAX_DIRTY_PAGES && existing.is_err() {
+                    return Ok(false);
                 }
+                let version = self
+                    .writeback
+                    .version
+                    .checked_add(1)
+                    .ok_or(Error::IdentifierExhausted)?;
                 let key = CacheKey::new(identity, FilePageIndex::new(base / PAGE as u64));
+                let partial = within != 0 || count != valid;
+                if partial
+                    && length > base
+                    && self.cache.lookup_mapping(key)?.is_none()
+                    && fill.is_none()
+                {
+                    return Ok(false);
+                }
                 let page = match self
                     .cache
                     .write_page(key, valid, &node.record, |old, page| {
                         let bytes = page.bytes_mut();
-                        // Recycled storage is initialized, but may contain another
-                        // file. Explicitly zero newly exposed EOF/hole bytes.
                         bytes.fill(0);
-                        if within != 0 || count != valid {
+                        if partial {
                             if let Some(old) = old {
                                 let n = old.bytes().len().min(bytes.len());
                                 bytes[..n].copy_from_slice(&old.bytes()[..n]);
-                            } else {
-                                let existing =
-                                    length.saturating_sub(base).min(valid as u64) as usize;
-                                if existing != 0 {
-                                    let read = self
-                                        .volume
-                                        .read_at(path, base, &mut bytes[..existing])
-                                        .map_err(map)?;
-                                    if read != existing {
-                                        return Err(Error::InvalidBackendResult);
-                                    }
-                                }
+                            } else if let Some(fill) = fill {
+                                let n = fill.len().min(bytes.len());
+                                bytes[..n].copy_from_slice(&fill[..n]);
                             }
                         }
                         input.copy_range(done, &mut bytes[within..within + count])
                     }) {
-                    // Admission and allocation are separate fallible steps:
-                    // concurrent demand can consume the watermark headroom.
-                    // Nothing was published on error. Drain earlier accepted
-                    // pages before the caller falls back to direct I/O.
                     Err(Error::Allocation) => return Ok(false),
                     result => result?,
                 };
@@ -364,15 +520,13 @@ impl State {
                     offset: base,
                     page,
                     modified: crate::time::realtime().map(to_service_time),
+                    version,
                 };
-                match self
-                    .writeback
-                    .pages
-                    .binary_search_by_key(&(node.id(), base), |p| (p.node, p.offset))
-                {
-                    Ok(index) => self.writeback.pages[index] = dirty,
-                    Err(index) => self.writeback.pages.insert(index, dirty),
+                match existing {
+                    Ok(i) => self.writeback.pages[i] = dirty,
+                    Err(i) => self.writeback.pages.insert(i, dirty),
                 }
+                self.writeback.version = version;
                 self.writeback.changed = true;
                 self.writeback.notify_pressure();
                 Ok(true)
@@ -381,32 +535,114 @@ impl State {
                 Ok(true) => done += count,
                 Ok(false) => return Ok((done != 0).then_some(done)),
                 Err(_) if done != 0 => return Ok(Some(done)),
-                Err(error) => return Err(error),
+                Err(e) => return Err(e),
+            }
+            // A supplied partial-page image belongs only to the first page.
+            if fill.is_some() {
+                break;
             }
         }
         Ok(Some(done))
     }
+}
+impl Session<'_> {
+    pub(super) fn cache_write_filled(
+        &mut self,
+        node: &Node,
+        identity: FileIdentity,
+        length: u64,
+        offset: u64,
+        input: &WriteSource<'_>,
+    ) -> Result<Option<usize>, Error> {
+        if self.writeback.count() >= MAX_DIRTY_PAGES {
+            self.flush_batch(None)?;
+        }
+        if let Some(written) = self.cache_write(node, identity, length, offset, input, None)? {
+            return Ok(Some(written));
+        }
+        if !crate::mm::cache_memory::admission_allowed() {
+            return Ok(None);
+        }
+        let base = offset / PAGE as u64 * PAGE as u64;
+        let count = (PAGE - (offset - base) as usize).min(input.len());
+        let existing = length.saturating_sub(base).min(PAGE as u64) as usize;
+        if existing == 0 {
+            return Ok(None);
+        }
+        self.bind_path(node.id())?;
+        self.finish_batches()?;
+        self.backend_rpc(|backend| {
+            let fill = backend
+                .partial
+                .as_mut()
+                .ok_or(Error::InvalidBackendResult)?;
+            let read = backend
+                .volume
+                .read_at(&backend.path, base, &mut fill[..existing])
+                .map_err(map)?;
+            if read != existing {
+                return Err(Error::InvalidBackendResult);
+            }
+            Ok(())
+        })?;
+        let first = input.slice(0, count)?;
+        let Some(state) = &mut self.state else {
+            return Err(Error::InvalidBackendResult);
+        };
+        let fill = self
+            .backend
+            .partial
+            .as_ref()
+            .ok_or(Error::InvalidBackendResult)?;
+        state.cache_write(
+            node,
+            identity,
+            length,
+            offset,
+            &first,
+            Some(&fill[..existing]),
+        )
+    }
     pub(super) fn flush_writeback(&mut self) -> Result<(), Error> {
         self.flush_selected(None)
     }
+    pub(super) fn flush_node(&mut self, node: u64) -> Result<(), Error> {
+        self.flush_selected(Some(node))
+    }
     fn flush_selected(&mut self, selected: Option<u64>) -> Result<(), Error> {
-        while self.flush_batch(selected)? {}
+        self.check_writeback()?;
+        self.writeback.freeze(selected);
+        while self.submit_pair(selected)? {}
         Ok(())
     }
     pub(super) fn flush_batch(&mut self, selected: Option<u64>) -> Result<bool, Error> {
         self.check_writeback()?;
-        if self.writeback.pages.is_empty() {
-            return Ok(false);
+        if self.writeback.frozen.is_empty() {
+            self.writeback.freeze(selected);
         }
-        let result = self.submit_batch(selected);
-        if let Err(error) = result {
-            self.writeback.failure = Some(error);
-        }
-        result
+        self.submit_pair(selected)
     }
-    fn submit_batch(&mut self, selected: Option<u64>) -> Result<bool, Error> {
+    fn submit_pair(&mut self, selected: Option<u64>) -> Result<bool, Error> {
+        let mut any = false;
+        for slot in 0..BATCHES {
+            match self.submit_batch(selected, slot) {
+                Ok(false) => break,
+                Ok(true) => any = true,
+                Err(error) => {
+                    // Finish every acknowledged receipt before latching Health:
+                    // locally disabling Transport earlier would prevent reaping.
+                    return self
+                        .finish_batches_with_failure(Some(error))
+                        .map(|()| false);
+                }
+            }
+        }
+        self.finish_batches()?;
+        Ok(any)
+    }
+    fn submit_batch(&mut self, selected: Option<u64>, slot: usize) -> Result<bool, Error> {
         let Some(batch) = queue::select(
-            &self.writeback.pages,
+            &self.writeback.frozen,
             selected,
             self.writeback.cursor,
             BATCH_BYTES,
@@ -414,34 +650,145 @@ impl State {
         ) else {
             return Ok(false);
         };
-        self.invalidate_metadata()?;
-        let mut length = 0;
-        for page in &self.writeback.pages[batch.first..batch.end] {
-            let bytes = page.page.value().bytes();
-            self.writeback.scratch[length..length + bytes.len()].copy_from_slice(bytes);
-            length += bytes.len();
+        let Some(state) = &mut self.state else {
+            return Err(Error::InvalidBackendResult);
+        };
+        let path = state.records.path(batch.node)?;
+        let backend = &mut self.backend;
+        let target = &mut backend.batches.slots[slot];
+        if !target.pages.is_empty() {
+            return Err(Error::InvalidBackendResult);
         }
-        let actual = self
-            .volume
-            .write_at(
-                self.records.path(batch.node)?,
-                batch.offset,
-                &WriteSource::Bytes(&self.writeback.scratch[..batch.length]),
-            )
-            .map_err(map)?;
-        if actual != batch.length {
-            return Err(Error::Remote(BackendError::NoSpace));
-        }
-        if batch.last
-            && let Some(modified) = batch.modified
-        {
-            self.volume
-                .set_times(self.records.path(batch.node)?, None, Some(modified))
-                .map_err(map)?;
-        }
-        queue::retire(&mut self.writeback.pages, &batch);
-        self.writeback.cursor = batch.node;
+        target.path.clear();
+        target.path.push_str(path);
+        target.node = batch.node;
+        target.offset = batch.offset;
+        target.length = batch.length;
+        target.modified = batch.modified;
+        target.last = batch.last;
+        target.progress = BatchProgress::Prepared;
+        queue::take(&mut state.writeback.frozen, &batch, &mut target.pages);
+        state.writeback.cursor = batch.node;
+        state.writeback.flights[slot] = Some(Flight {
+            node: batch.node,
+            end: batch.offset + batch.length as u64,
+            modified: batch.modified,
+            pages: target.pages.len(),
+            bytes: batch.length,
+        });
+        let result = self.backend_rpc(|backend| {
+            let batch = &mut backend.batches.slots[slot];
+            let input = WriteSource::fragments(batch)?;
+            if backend.volume.supports_async_writeback().map_err(map)? {
+                let (token, accepted) = backend
+                    .volume
+                    .submit_writeback(&batch.path, batch.offset, &input)
+                    .map_err(map)?;
+                Ok(BatchProgress::Submitted { token, accepted })
+            } else {
+                let accepted = backend
+                    .volume
+                    .write_at(&batch.path, batch.offset, &input)
+                    .map_err(map)?;
+                Ok(BatchProgress::Completed { accepted })
+            }
+        });
+        self.backend.batches.slots[slot].progress = match result {
+            Ok(progress) => progress,
+            Err(error) => {
+                self.backend.batches.slots[slot].progress = BatchProgress::Failed(error);
+                return Err(error);
+            }
+        };
+        // A short acknowledged prefix still owns a receipt and must be reaped.
+        // finish_batches reports NoSpace only after that completion succeeds.
         Ok(true)
+    }
+    pub(super) fn finish_batches(&mut self) -> Result<(), Error> {
+        self.finish_batches_with_failure(None)
+    }
+    fn finish_batches_with_failure(&mut self, failure: Option<Error>) -> Result<(), Error> {
+        let mut failure = self.writeback.failure.or(failure);
+        for slot in 0..BATCHES {
+            if self.backend.batches.slots[slot].pages.is_empty() {
+                continue;
+            }
+            match self.backend.batches.slots[slot].progress {
+                BatchProgress::Submitted { token, accepted } => {
+                    let result = self.backend_rpc(|backend| {
+                        let completion = backend.volume.reap_writeback(token).map_err(map)?;
+                        if completion.batch != token || completion.accepted != accepted as u64 {
+                            backend.volume.health.fail();
+                            return Err(Error::InvalidBackendResult);
+                        }
+                        completion.result.map_err(map)
+                    });
+                    self.backend.batches.slots[slot].progress = match result {
+                        Ok(()) => BatchProgress::Completed { accepted },
+                        Err(error) => BatchProgress::Failed(error),
+                    };
+                    if let Err(error) = result {
+                        failure.get_or_insert(error);
+                    }
+                }
+                BatchProgress::Failed(error) => {
+                    failure.get_or_insert(error);
+                }
+                BatchProgress::Prepared => {
+                    failure.get_or_insert(Error::InvalidBackendResult);
+                }
+                BatchProgress::Completed { .. } => {}
+            }
+        }
+        if let Some(error) = failure {
+            return Err(self.fail_writeback(error));
+        }
+        for slot in 0..BATCHES {
+            if self.backend.batches.slots[slot].pages.is_empty() {
+                continue;
+            }
+            self.backend_rpc(|backend| {
+                let batch = &backend.batches.slots[slot];
+                let BatchProgress::Completed { accepted } = batch.progress else {
+                    return Err(Error::InvalidBackendResult);
+                };
+                if accepted != batch.length {
+                    // VFS already accepted the full dirty version. A provider's
+                    // short admission cannot leave an undetachable sticky mount.
+                    return Err(Error::Remote(BackendError::NoSpace));
+                }
+                if batch.last
+                    && let Some(modified) = batch.modified
+                {
+                    backend
+                        .volume
+                        .set_times(&batch.path, None, Some(modified))
+                        .map_err(map)?;
+                }
+                Ok(())
+            })
+            .inspect_err(|error| {
+                self.fail_writeback(*error);
+            })?;
+            let summary = self.writeback.flights[slot].ok_or(Error::InvalidBackendResult)?;
+            let modified = if self.backend.batches.slots[slot].last {
+                summary.modified
+            } else {
+                None
+            };
+            let Some(state) = &mut self.state else {
+                return Err(Error::InvalidBackendResult);
+            };
+            let path = &self.backend.batches.slots[slot].path;
+            state
+                .complete_attributes(summary.node, path, summary.end, modified)
+                .inspect_err(|error| {
+                    state.fail_writeback(*error);
+                })?;
+            self.writeback.flights[slot] = None;
+            self.backend.batches.slots[slot].pages.clear();
+        }
+        Ok(())
     }
     pub(super) fn sync_file_writeback(
         &mut self,
@@ -449,24 +796,18 @@ impl State {
         mode: hyper_filesystem::protocol::SyncMode,
     ) -> Result<(), Error> {
         self.flush_selected(Some(node))?;
-        if let Err(error) = self
-            .volume
-            .sync_file(self.records.path(node)?, mode)
-            .map_err(map)
-        {
-            self.writeback.failure = Some(error);
-            return Err(error);
-        }
-        // File recovery records do not replace the periodic volume checkpoint.
-        Ok(())
+        self.bind_path(node)?;
+        self.rpc_bound(|volume, path| volume.sync_file(path, mode))
+            .inspect_err(|error| {
+                self.fail_writeback(*error);
+            })
     }
     pub(super) fn sync_writeback(&mut self) -> Result<(), Error> {
         self.flush_writeback()?;
-        if let Err(error) = self.volume.sync().map_err(map) {
-            self.writeback.failure = Some(error);
-            return Err(error);
-        }
-        self.writeback.changed = false;
+        self.rpc(|volume| volume.sync()).inspect_err(|error| {
+            self.fail_writeback(*error);
+        })?;
+        self.writeback.changed = self.writeback.count() != 0;
         Ok(())
     }
 }

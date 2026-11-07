@@ -111,38 +111,57 @@ bytes and size. Partial writes preserve existing bytes, while complete pages
 avoid a backend read. Sparse extension and admission pressure drain earlier dirty
 pages before using the direct write path.
 
-Each writable-back mount owns at most 2,048 dirty pages (8 MiB) within the shared
-cache budget. Dirty pins prevent eviction and index detachment. Payloads and
-in-flight read pins remain charged even after replacement. Pressure causes
-bounded foreground submission rather than admitting an unbounded backlog.
-Submission groups adjacent pages of one file into at most 512 KiB requests. The
-backend retires data staging before replying; the same pages then become clean
-and reclaimable in VFS. F2FS retains its metadata, block allocation, GC and
-checkpoint implementation.
+Each writable-back mount owns at most 2,048 dirty page versions (8 MiB) within
+the shared cache budget. The limit includes newly pending, frozen and in-flight
+versions; redirty while an older version is submitted consumes another owner.
+Dirty pins prevent eviction and index detachment. Pressure causes bounded
+foreground submission or synchronous fallback, not an unbounded backlog.
 
-A dedicated weakly owned worker per participating mount wakes when dirty pages
-reach 6 MiB and drains toward 4 MiB. Its one-second timed wait also checks the
-fixed checkpoint deadline and global memory pressure. Completed batches rotate
-between files and release the volume gate before continuing. Foreground writes
-also yield the volume gate between bounded chunks while retaining their file's
-content gate; append ordering and same-file serialization remain intact. Pending
-modification time is carried to remaining dirty pages until the final data batch
-and its timestamp update succeed. The worker never runs in the allocator's reclaim
-path and does not serialize unrelated mounts. The volume gate orders cache
-publication, data submission and checkpoint. Periodic, volume and directory sync
-drain all earlier accepted writes before asking the backend to synchronize.
-File sync drains only the target file, preserving other files' dirty owners,
-and sends `SyncFile` with its data/all scope. The backend may use a recovery log
-or a stronger checkpoint; file sync does not clear the volume's changed state
-or postpone its periodic deadline. Native `FILE_SYNC_VOLUME` on a writable file
-explicitly selects its containing filesystem's volume fence. Ordinary file
-scopes remain file-local. Explicit and periodic fences retain the volume gate
-for their entire operation; bounded pressure drain does not remove checkpoint
-stalls or introduce a checkpoint per batch.
-Writes arriving during that fence wait for the volume gate. Truncation, rename,
-removal, metadata changes and unmount drain affected pending state before changing
-its backing identity. Writeback errors are sticky and are reported by subsequent
-writes and sync; a failed writeback never silently releases its dirty owners.
+`TakeWriteback` transfers periodic synchronization policy. The independently
+negotiated `ASYNC_WRITEBACK` capability additionally permits `SubmitWriteback` and
+`ReapWriteback`. Submission consumes the input window and acknowledges an accepted
+prefix; the request sequence identifies its receipt. Reaping returns that exact
+receipt's accepted length and completed I/O status. At most two batches, each at
+most 512 KiB, are outstanding. Ordinary `Write` keeps its completed-write contract,
+and providers without this capability retain synchronous submission. FAT does not
+opt into buffered writeback. Late or malformed receipts and ambiguous acceptance
+fail the session; a partial device failure is not permission to replay the batch.
+A short accepted prefix is reaped before the mount fails with a critical report;
+its retained dirty owners remain available to explicit failed detach.
+
+The VFS retains each exact immutable page owner through completion and any required
+final timestamp update. The source window is filled directly from those pages,
+without an intermediate contiguous VFS scratch buffer. An accepted source window
+can be reused once the provider has consumed it; the dirty page owners remain
+accounted until completion. F2FS retains block allocation, recovery, GC and
+checkpoint policy. VFS does not reinterpret a successful acceptance as durability.
+
+The backend transaction gate serializes RPC and namespace operations. A separate
+short state lock protects bindings, metadata and dirty publication. Lock order is
+file content, backend gate, state; cache-only writes take state without waiting for
+the backend gate. RPC, device completion and pressure waits release state. Slow
+metadata misses and partial-page fills obtain backend ownership only after leaving
+state. Completion never acquires a file-content gate, including when a syncing
+caller already holds that gate. Reacquiring state after a possibly committed RPC
+is cancellation-resistant cleanup; a stop is observed after ownership is restored.
+
+A dedicated weakly owned worker wakes at 6 MiB and drains toward 4 MiB. Its
+one-second timed wait also checks the configured checkpoint deadline and global
+memory pressure. Batches rotate between files. Periodic, volume and directory
+sync capture a finite set of dirty owners, drain that set and ask the backend to
+synchronize. Later writes publish into a separate pending set and cannot extend
+that fence indefinitely. File sync selects only the target file and uses its
+recovery-log/data/all contract; it does not clear the volume's changed state or
+postpone the periodic deadline. An unchanged periodic tick skips the checkpoint.
+
+Cached writes and known-length warm reads can progress during backend completion
+or checkpoint, subject to their own file-content serialization and memory budget.
+Cold operations can still wait for the ordered backend. Truncation, rename,
+removal, explicit metadata changes and unmount fence cache admission and drain
+prepared, submitted and accepted work before changing its backing identity.
+Writeback errors remain sticky. Failed detach reports exact retained dirty bytes
+and releases VFS batch owners; independently owned block payloads remain protected
+until device retirement. Ordinary unmount never discards dirty data.
 
 The common VFS layer owns file-content coherence. Ramfs nodes embed one
 `FileContent`; cacheable remote nodes share a `FileRecord` which owns it. Independent
@@ -210,6 +229,18 @@ same page permits, index accounting, pressure admission and reclaim paths apply
 to all three kinds. Remote identity bindings use individually charged balanced
 indices by ID and canonical path, with bounded successor-based cleanup rather
 than a full registry scan on each open.
+
+Bound paths use per-record attribute revisions; directory batches use a separate
+parent listing revision. A data write invalidates its file and dependent parent
+listing rather than unrelated bound files. Successful writeback publishes known
+completed size/timestamps under a new target revision, with optional cache
+retention. Pending and in-flight overlays remain separate from that completed
+base. Cache eviction or unavailable retention may still require a Stat RPC.
+Namespace changes and uncertain mutations retain conservative invalidation.
+Enumeration attributes also have an exact-name fallback revision that advances
+on metadata mutation. This permits a new binding incarnation to reuse a valid
+enumeration snapshot after idle-record reclamation, without treating an old
+binding ID as authority. Optional retention migrates that hit to the bound key.
 
 Cache capacity grows on demand rather than imposing a fixed byte budget. The
 `kio-reclaim` kernel thread grows metadata geometrically and reclaims cold clean

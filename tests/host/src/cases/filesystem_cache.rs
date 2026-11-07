@@ -113,6 +113,64 @@ fn name_cache_validates_full_key_and_revision_and_bypasses_oversize_keys() {
 }
 
 #[test]
+fn enumeration_fallback_survives_binding_turnover_but_not_metadata_mutation() {
+    let cache = crate::require_ok(FileDataCache::try_new(8));
+    cache::retain_entry(&cache, identity(1), "dir/item", &entry("item"), &());
+    let mut output = Entry::empty();
+    // A newly acquired binding has no canonical entry. Enumerated attributes
+    // must still satisfy lookup, and may be retained under its new identity.
+    assert!(cache::lookup_entry_with_fallback(
+        &cache,
+        identity(2),
+        identity(1),
+        "dir/item",
+        &mut output,
+        &()
+    ));
+    assert_eq!(output.size, 8192);
+    assert!(cache::lookup_entry(
+        &cache,
+        identity(2),
+        "dir/item",
+        &mut output
+    ));
+    // Reclaim may retire that binding. A different identity can use the same
+    // exact-name snapshot without a new backend Stat.
+    cache.set_admission(false);
+    assert!(cache::lookup_entry_with_fallback(
+        &cache,
+        identity(3),
+        identity(1),
+        "dir/item",
+        &mut output,
+        &()
+    ));
+    assert!(!cache::lookup_entry(
+        &cache,
+        identity(3),
+        "dir/item",
+        &mut output
+    ));
+    // Mutation advances the fallback revision as well as the affected binding.
+    assert!(!cache::lookup_entry_with_fallback(
+        &cache,
+        identity(4),
+        identity(5),
+        "dir/item",
+        &mut output,
+        &()
+    ));
+    assert!(!cache::lookup_entry_with_fallback(
+        &cache,
+        identity(3),
+        identity(1),
+        "dir/other",
+        &mut output,
+        &()
+    ));
+}
+
+#[test]
 fn colliding_name_hash_is_a_miss_not_an_alias() {
     let cache = crate::require_ok(FileDataCache::try_new(4));
     let mut encoded = [0; 1152];
