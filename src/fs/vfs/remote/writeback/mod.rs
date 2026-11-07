@@ -15,7 +15,11 @@ const BACKGROUND_HIGH_PAGES: usize = 1536;
 const BACKGROUND_LOW_PAGES: usize = 1024;
 const BATCH_BYTES: usize = hyper_filesystem::protocol::DATA_BYTES;
 const BATCH_PAGES: usize = BATCH_BYTES / PAGE;
-const BATCHES: usize = 2;
+const BATCHES: usize = hyper_filesystem::protocol::MAX_WRITEBACK_BATCHES;
+// Release backend ownership after a bounded pressure burst; explicit sync instead
+// drains its finite frozen cut. Rolling reuse must not monopolize cold operations.
+const PRESSURE_BATCHES: usize = BATCHES * 2;
+mod order;
 mod queue;
 type Dirty = queue::Pending<DirtyPage<CachePage>>;
 struct Wake {
@@ -187,6 +191,7 @@ enum BatchProgress {
 }
 pub(super) struct Batches {
     slots: [Batch; BATCHES],
+    order: order::Order<BATCHES>,
     _charge: Option<CommittedCharge>,
 }
 impl super::super::write_source::WriteFragments for Batch {
@@ -199,6 +204,7 @@ impl super::super::write_source::WriteFragments for Batch {
 }
 impl Batches {
     pub(super) fn abandon(&mut self) {
+        self.order = order::Order::new();
         for slot in &mut self.slots {
             slot.pages.clear();
             slot.progress = BatchProgress::Prepared;
@@ -237,6 +243,7 @@ impl Batches {
         };
         Ok(Self {
             slots: [slot()?, slot()?],
+            order: order::Order::new(),
             _charge: charge,
         })
     }
@@ -612,7 +619,7 @@ impl Session<'_> {
     fn flush_selected(&mut self, selected: Option<u64>) -> Result<(), Error> {
         self.check_writeback()?;
         self.writeback.freeze(selected);
-        while self.submit_pair(selected)? {}
+        self.pump_batches(selected, usize::MAX)?;
         Ok(())
     }
     pub(super) fn flush_batch(&mut self, selected: Option<u64>) -> Result<bool, Error> {
@@ -620,25 +627,55 @@ impl Session<'_> {
         if self.writeback.frozen.is_empty() {
             self.writeback.freeze(selected);
         }
-        self.submit_pair(selected)
+        self.pump_batches(selected, PRESSURE_BATCHES)
     }
-    fn submit_pair(&mut self, selected: Option<u64>) -> Result<bool, Error> {
-        let mut any = false;
-        for slot in 0..BATCHES {
-            match self.submit_batch(selected, slot) {
-                Ok(false) => break,
-                Ok(true) => any = true,
-                Err(error) => {
-                    // Finish every acknowledged receipt before latching Health:
-                    // locally disabling Transport earlier would prevent reaping.
+    fn pump_batches(&mut self, selected: Option<u64>, budget: usize) -> Result<bool, Error> {
+        let mut submitted = 0;
+        loop {
+            while submitted < budget {
+                let Some(slot) = self.backend.batches.order.vacant() else {
+                    break;
+                };
+                match self.submit_batch(selected, slot) {
+                    Ok(false) => break,
+                    Ok(true) => submitted += 1,
+                    Err(error) => {
+                        // Reap every acknowledged receipt before disabling transport.
+                        return self
+                            .finish_batches_with_failure(Some(error))
+                            .map(|()| false);
+                    }
+                }
+            }
+            let Some(slot) = self.backend.batches.order.oldest() else {
+                break;
+            };
+            // SetTimes is an ordinary ordered provider operation. Preserve the
+            // existing full-window fence at a file/cut tail, including failure
+            // ownership, rather than publishing metadata over pending data.
+            let metadata_fence = self.backend.batches.order.active().any(|index| {
+                let batch = &self.backend.batches.slots[index];
+                batch.last && batch.modified.is_some()
+            });
+            if metadata_fence || submitted == budget {
+                self.finish_batches()?;
+            } else {
+                if let Err(error) = self.complete_batch(slot) {
+                    return self
+                        .finish_batches_with_failure(Some(error))
+                        .map(|()| false);
+                }
+                if let Err(error) = self.retire_batch(slot) {
                     return self
                         .finish_batches_with_failure(Some(error))
                         .map(|()| false);
                 }
             }
+            if submitted == budget {
+                break;
+            }
         }
-        self.finish_batches()?;
-        Ok(any)
+        Ok(submitted != 0)
     }
     fn submit_batch(&mut self, selected: Option<u64>, slot: usize) -> Result<bool, Error> {
         let Some(batch) = queue::select(
@@ -676,6 +713,9 @@ impl Session<'_> {
             pages: target.pages.len(),
             bytes: batch.length,
         });
+        if !self.backend.batches.order.admit(slot) {
+            return Err(Error::InvalidBackendResult);
+        }
         let result = self.backend_rpc(|backend| {
             let batch = &mut backend.batches.slots[slot];
             let input = WriteSource::fragments(batch)?;
@@ -707,86 +747,86 @@ impl Session<'_> {
     pub(super) fn finish_batches(&mut self) -> Result<(), Error> {
         self.finish_batches_with_failure(None)
     }
+    fn complete_batch(&mut self, slot: usize) -> Result<(), Error> {
+        match self.backend.batches.slots[slot].progress {
+            BatchProgress::Submitted { token, accepted } => {
+                let result = self.backend_rpc(|backend| {
+                    let completion = backend.volume.reap_writeback(token).map_err(map)?;
+                    if completion.batch != token || completion.accepted != accepted as u64 {
+                        backend.volume.health.fail();
+                        return Err(Error::InvalidBackendResult);
+                    }
+                    completion.result.map_err(map)
+                });
+                self.backend.batches.slots[slot].progress = match result {
+                    Ok(()) => BatchProgress::Completed { accepted },
+                    Err(error) => BatchProgress::Failed(error),
+                };
+                result?;
+            }
+            BatchProgress::Failed(error) => {
+                return Err(error);
+            }
+            BatchProgress::Prepared => {
+                return Err(Error::InvalidBackendResult);
+            }
+            BatchProgress::Completed { .. } => {}
+        }
+        Ok(())
+    }
     fn finish_batches_with_failure(&mut self, failure: Option<Error>) -> Result<(), Error> {
         let mut failure = self.writeback.failure.or(failure);
-        for slot in 0..BATCHES {
-            if self.backend.batches.slots[slot].pages.is_empty() {
-                continue;
-            }
-            match self.backend.batches.slots[slot].progress {
-                BatchProgress::Submitted { token, accepted } => {
-                    let result = self.backend_rpc(|backend| {
-                        let completion = backend.volume.reap_writeback(token).map_err(map)?;
-                        if completion.batch != token || completion.accepted != accepted as u64 {
-                            backend.volume.health.fail();
-                            return Err(Error::InvalidBackendResult);
-                        }
-                        completion.result.map_err(map)
-                    });
-                    self.backend.batches.slots[slot].progress = match result {
-                        Ok(()) => BatchProgress::Completed { accepted },
-                        Err(error) => BatchProgress::Failed(error),
-                    };
-                    if let Err(error) = result {
-                        failure.get_or_insert(error);
-                    }
-                }
-                BatchProgress::Failed(error) => {
-                    failure.get_or_insert(error);
-                }
-                BatchProgress::Prepared => {
-                    failure.get_or_insert(Error::InvalidBackendResult);
-                }
-                BatchProgress::Completed { .. } => {}
+        for slot in self.backend.batches.order.active() {
+            if let Err(error) = self.complete_batch(slot) {
+                failure.get_or_insert(error);
             }
         }
         if let Some(error) = failure {
             return Err(self.fail_writeback(error));
         }
-        for slot in 0..BATCHES {
-            if self.backend.batches.slots[slot].pages.is_empty() {
-                continue;
-            }
-            self.backend_rpc(|backend| {
-                let batch = &backend.batches.slots[slot];
-                let BatchProgress::Completed { accepted } = batch.progress else {
-                    return Err(Error::InvalidBackendResult);
-                };
-                if accepted != batch.length {
-                    // VFS already accepted the full dirty version. A provider's
-                    // short admission cannot leave an undetachable sticky mount.
-                    return Err(Error::Remote(BackendError::NoSpace));
-                }
-                if batch.last
-                    && let Some(modified) = batch.modified
-                {
-                    backend
-                        .volume
-                        .set_times(&batch.path, None, Some(modified))
-                        .map_err(map)?;
-                }
-                Ok(())
-            })
-            .inspect_err(|error| {
+        while let Some(slot) = self.backend.batches.order.oldest() {
+            self.retire_batch(slot).inspect_err(|error| {
                 self.fail_writeback(*error);
             })?;
-            let summary = self.writeback.flights[slot].ok_or(Error::InvalidBackendResult)?;
-            let modified = if self.backend.batches.slots[slot].last {
-                summary.modified
-            } else {
-                None
-            };
-            let Some(state) = &mut self.state else {
+        }
+        Ok(())
+    }
+    fn retire_batch(&mut self, slot: usize) -> Result<(), Error> {
+        self.backend_rpc(|backend| {
+            let batch = &backend.batches.slots[slot];
+            let BatchProgress::Completed { accepted } = batch.progress else {
                 return Err(Error::InvalidBackendResult);
             };
-            let path = &self.backend.batches.slots[slot].path;
-            state
-                .complete_attributes(summary.node, path, summary.end, modified)
-                .inspect_err(|error| {
-                    state.fail_writeback(*error);
-                })?;
-            self.writeback.flights[slot] = None;
-            self.backend.batches.slots[slot].pages.clear();
+            if accepted != batch.length {
+                // VFS already accepted the full dirty version. A provider's
+                // short admission cannot leave an undetachable sticky mount.
+                return Err(Error::Remote(BackendError::NoSpace));
+            }
+            if batch.last
+                && let Some(modified) = batch.modified
+            {
+                backend
+                    .volume
+                    .set_times(&batch.path, None, Some(modified))
+                    .map_err(map)?;
+            }
+            Ok(())
+        })?;
+        let summary = self.writeback.flights[slot].ok_or(Error::InvalidBackendResult)?;
+        let modified = if self.backend.batches.slots[slot].last {
+            summary.modified
+        } else {
+            None
+        };
+        let Some(state) = &mut self.state else {
+            return Err(Error::InvalidBackendResult);
+        };
+        let path = &self.backend.batches.slots[slot].path;
+        state.complete_attributes(summary.node, path, summary.end, modified)?;
+        self.writeback.flights[slot] = None;
+        self.backend.batches.slots[slot].pages.clear();
+        if !self.backend.batches.order.retire(slot) {
+            return Err(Error::InvalidBackendResult);
         }
         Ok(())
     }

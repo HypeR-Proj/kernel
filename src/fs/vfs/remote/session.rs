@@ -163,30 +163,42 @@ impl Session<'_> {
                     .stat_into(path, &mut backend.metadata)
                     .map_err(map)
             })?;
-            let identity = self.entry_identity(path)?;
-            let backend = &self.backend;
-            let Some(state) = &mut self.state else {
-                return Err(Error::InvalidBackendResult);
-            };
-            state
-                .metadata
-                .as_mut()
-                .clone_from(backend.metadata.as_ref());
-            cache::retain_entry(
-                &state.cache,
-                identity,
-                path,
-                &state.metadata,
-                &state.root_record,
-            );
-            state.overlay_metadata(path);
+            self.retain_stat(path)?;
         }
         Ok(&self.metadata)
+    }
+    // Metadata publication owns cloning/cache scratch that is not needed while
+    // waiting for the provider. Keep this phase off the RPC wait stack, where
+    // an IRQ tail may also need to run the scheduler on the current stack.
+    #[inline(never)]
+    fn retain_stat(&mut self, path: &str) -> Result<(), Error> {
+        let identity = self.entry_identity(path)?;
+        let backend = &self.backend;
+        let Some(state) = &mut self.state else {
+            return Err(Error::InvalidBackendResult);
+        };
+        copy_metadata(&mut state.metadata, &backend.metadata);
+        cache::retain_entry(
+            &state.cache,
+            identity,
+            path,
+            &state.metadata,
+            &state.root_record,
+        );
+        state.overlay_metadata(path);
+        Ok(())
     }
     pub(super) fn is_directory(&mut self, path: &str) -> Result<bool, Error> {
         Ok(self.stat(path)?.directory())
     }
 }
+// Derived Entry cloning can materialize fixed-name scratch. Finish that copy
+// before cache publication enters allocator or scheduler paths.
+#[inline(never)]
+fn copy_metadata(destination: &mut Entry, source: &Entry) {
+    destination.clone_from(source);
+}
+
 impl Drop for Session<'_> {
     fn drop(&mut self) {
         if self.fenced {

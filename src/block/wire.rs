@@ -18,10 +18,13 @@ pub(crate) const REQUEST: u64 = 24576;
 pub(crate) const RESPONSE: u64 = REQUEST + 128;
 pub(crate) const DATA: u64 = 32768;
 pub(crate) const DATA_BYTES: usize = 128 * 1024;
-// Payload spans are independent of request heads. Use the already charged
-// transport extent so a 512 KiB command does not monopolize every data span.
+// Payload spans are independent of request heads. The smallest supported
+// contiguous grant that fits two maximum commands plus metadata is 2 MiB.
+// Use its remaining spans for smaller commands without increasing head count.
 pub(crate) const DATA_SLOTS: usize = ((MEMORY_BYTES - DATA) as usize) / DATA_BYTES;
 pub(crate) const RESPONSE_BYTES: usize = 108;
+
+const _: () = assert!(DATA + 2 * abi::HYPER_NATIVE_NATIVE_BLOCK_TRANSFER_BYTES <= MEMORY_BYTES);
 
 pub(crate) fn request(tag: u64, cdb: &[u8; 16]) -> [u8; 51] {
     let mut bytes = [0; 51];

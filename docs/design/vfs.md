@@ -129,6 +129,14 @@ fail the session; a partial device failure is not permission to replay the batch
 A short accepted prefix is reaped before the mount fails with a critical report;
 its retained dirty owners remain available to explicit failed detach.
 
+The VFS reaps receipts in submission order and refills a retired slot while the
+other receipt is still pending. Background and admission-pressure pumps submit
+at most four batches (2 MiB) before draining and releasing backend ownership;
+explicit sync drains its finite frozen cut. Later dirty versions do not extend
+that cut. File-tail timestamp updates drain the accepted window before publishing
+metadata. Every pump retires its remaining receipts before releasing the session;
+failed owners remain attached to the failed mount rather than being replayed.
+
 The VFS retains each exact immutable page owner through completion and any required
 final timestamp update. The source window is filled directly from those pages,
 without an intermediate contiguous VFS scratch buffer. An accepted source window
@@ -652,9 +660,14 @@ precision in memory.
 
 ### Block transport payload concurrency
 
-The Native block pump has four command heads and seven 128 KiB payload spans
-inside the existing 1 MiB transport mapping. Payload ownership is independent of
-command-head ownership: a 512 KiB merged command can coexist with a second command
-using the remaining spans. Each command still transfers at most 512 KiB; queue
-and resource-domain limits remain in effect. This uses the existing published
-I/O VM transport without increasing its queue count or shared-memory extent.
+The Native block pump has four command heads and fifteen 128 KiB payload spans
+inside each 2 MiB Native transport grant. Payload ownership is independent of
+command-head ownership: two full 512 KiB commands can coexist without splitting
+the second command. The grant is the smallest supported power-of-two contiguous
+allocation that holds those payloads and queue metadata. Four full 512 KiB
+commands do not fit simultaneously. The independent bootstrap discovery reader
+retains its 1 MiB window, as required by the published I/O VM protocol.
+
+Each command still transfers at most 512 KiB; queue count, queue admission and
+resource-domain limits remain in effect. The published I/O VM transport accepts
+the larger Native grant through its existing memory setup protocol.
