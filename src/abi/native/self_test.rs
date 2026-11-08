@@ -693,6 +693,25 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
     }
 
     impl MemoryServices for RejectingServices {
+        fn vmo_wait_u32(
+            &self,
+            _: &InvocationReceiver,
+            _: u64,
+            _: u32,
+            _: u64,
+        ) -> Result<crate::task::WaitOutcome, MemoryServiceError> {
+            self.calls.set(self.calls.get().saturating_add(1));
+            Err(MemoryServiceError::Process(ProcessError::Allocation))
+        }
+        fn vmo_wake_u32(
+            &self,
+            _: &InvocationReceiver,
+            _: u64,
+            _: u32,
+        ) -> Result<u64, MemoryServiceError> {
+            self.calls.set(self.calls.get().saturating_add(1));
+            Err(MemoryServiceError::Process(ProcessError::Allocation))
+        }
         fn set_memory_residency(
             &self,
             _: &InvocationReceiver,
@@ -1679,6 +1698,40 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
     let services = RejectingServices {
         calls: Cell::new(0),
     };
+    // Reject unsupported shared-wait flags and narrowing before any backing
+    // admission, population, timer allocation or notification can take place.
+    {
+        let atomic_services = RejectingServices {
+            calls: Cell::new(0),
+        };
+        for (operation, args) in [
+            (
+                NativeOperation::VmoWaitU32,
+                [0, u64::from(u32::MAX) + 1, 0, 0, 0, 0],
+            ),
+            (NativeOperation::VmoWaitU32, [0, 0, 0, 1, 0, 0]),
+            (NativeOperation::VmoWaitU32, [0, 0, 0, 1u64 << 63, 0, 0]),
+            (NativeOperation::VmoWaitU32, [0, 0, 0, 0, 1, 0]),
+            (NativeOperation::VmoWaitU32, [0, 0, 0, 0, 0, 1]),
+            (
+                NativeOperation::VmoWakeU32,
+                [0, u64::from(u32::MAX) + 1, 0, 0, 0, 0],
+            ),
+            (NativeOperation::VmoWakeU32, [0, 0, 1, 0, 0, 0]),
+            (NativeOperation::VmoWakeU32, [0, 0, 1u64 << 63, 0, 0, 0]),
+            (NativeOperation::VmoWakeU32, [0, 0, 0, 1, 0, 0]),
+            (NativeOperation::VmoWakeU32, [0, 0, 0, 0, 1, 0]),
+            (NativeOperation::VmoWakeU32, [0, 0, 0, 0, 0, 1]),
+        ] {
+            let result = harness.returning(&atomic_services, invoke(operation, args))?;
+            if result.status() != HYPER_NATIVE_STATUS_INVALID_ARGUMENT
+                || atomic_services.calls.get() != 0
+            {
+                return Err(SelfTestError::RecordEncoding);
+            }
+        }
+    }
+
     // Malformed queue controls cannot allocate, publish, wait or consume a completion.
     {
         use hyper::abi::native::*;

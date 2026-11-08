@@ -27,6 +27,8 @@ type NativeWritableVmo = WritableVmo<KernelPageBackend, DomainAccount>;
 type NativeSnapshotVmo = SnapshotVmo<KernelPageBackend, DomainAccount>;
 
 type NativeExecutableVmo = ExecutableVmo<KernelPageBackend, DomainAccount>;
+pub(crate) type NativeSharedAtomicWord =
+    super::vmo::SharedAtomicWord<KernelPageBackend, DomainAccount>;
 
 /// Stable writable VMO backing shared with a hardware address space.
 ///
@@ -359,6 +361,29 @@ impl VmoObject {
         let storage = self.writable().ok_or(MemoryObjectError::WrongVariant)?;
         storage.write(offset, source)?;
         Ok(())
+    }
+
+    /// Pin one ordinary writable-VMO word for an admitted shared atomic wait.
+    /// The caller retains object identity and charges wait metadata separately.
+    pub(crate) fn pin_shared_atomic_u32(
+        &self,
+        offset: u64,
+    ) -> Result<NativeSharedAtomicWord, MemoryObjectError> {
+        self.writable()
+            .ok_or(MemoryObjectError::WrongVariant)?
+            .pin_shared_atomic_u32(offset)
+            .map_err(MemoryObjectError::Vmo)
+    }
+
+    /// Validate a shared-wake address without reading or materializing backing.
+    pub(crate) fn validate_shared_atomic_offset(
+        &self,
+        offset: u64,
+    ) -> Result<(), MemoryObjectError> {
+        self.writable()
+            .ok_or(MemoryObjectError::WrongVariant)?
+            .validate_shared_atomic_offset(offset)
+            .map_err(MemoryObjectError::Vmo)
     }
 
     /// Derives a physically distinct immutable executable snapshot.

@@ -56,6 +56,7 @@ impl TransferBuffer {
 #[derive(Debug)]
 pub(crate) enum ServiceError {
     InvalidInput,
+    Wait(crate::object::ObjectWaitError),
     Machine(MachineError),
     MemoryObject(MemoryObjectError),
     Process(ProcessError),

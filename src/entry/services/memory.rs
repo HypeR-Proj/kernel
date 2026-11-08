@@ -11,6 +11,48 @@ use crate::capability::HandleValue;
 use crate::mm::user_space::UserSlice;
 
 impl MemoryServices for ProcessServices<'_> {
+    fn vmo_wait_u32(
+        &self,
+        receiver: &InvocationReceiver,
+        offset: u64,
+        expected: u32,
+        deadline: u64,
+    ) -> Result<crate::task::WaitOutcome, crate::mm::user_space::MemoryServiceError> {
+        use crate::authority::Rights;
+        use crate::mm::user_space::{MemoryServiceError, VmoObject};
+        let source = receiver
+            .resolve::<VmoObject>(Rights::READ.union(Rights::WRITE))
+            .map_err(crate::process::ProcessError::from)?;
+        let word = crate::process::atomic_wait::SharedWord::prepare(
+            source.into_operation_pin(),
+            offset,
+            &self.process.resource_domain(),
+        )
+        .map_err(MemoryServiceError::MemoryObject)?;
+        crate::process::atomic_wait::wait_shared(self.process, word, expected, deadline, || {
+            self.thread.snapshot().phase == crate::process::UserThreadPhase::StopRequested
+        })
+        .map_err(shared_atomic_error)
+    }
+
+    fn vmo_wake_u32(
+        &self,
+        receiver: &InvocationReceiver,
+        offset: u64,
+        count: u32,
+    ) -> Result<u64, crate::mm::user_space::MemoryServiceError> {
+        use crate::mm::user_space::{MemoryServiceError, VmoObject};
+        let source = receiver
+            .resolve::<VmoObject>(crate::authority::Rights::WRITE)
+            .map_err(crate::process::ProcessError::from)?;
+        source
+            .object()
+            .validate_shared_atomic_offset(offset)
+            .map_err(MemoryServiceError::MemoryObject)?;
+        crate::process::atomic_wait::wake_shared(source.koid(), offset, count)
+            .map_err(shared_atomic_error)
+    }
+
     fn create_contiguous_vmo(
         &self,
         size: u64,
@@ -128,5 +170,16 @@ impl MemoryServices for ProcessServices<'_> {
         vmar: &InvocationReceiver,
     ) -> Result<(), crate::mm::user_space::MemoryServiceError> {
         crate::mm::user_space::destroy_vmar(self.process, vmar)
+    }
+}
+
+fn shared_atomic_error(
+    error: crate::process::atomic_wait::Error,
+) -> crate::mm::user_space::MemoryServiceError {
+    use crate::mm::user_space::MemoryServiceError;
+    match error {
+        crate::process::atomic_wait::Error::Process(error) => MemoryServiceError::Process(error),
+        crate::process::atomic_wait::Error::Wait(error) => MemoryServiceError::Wait(error),
+        crate::process::atomic_wait::Error::InvalidInput => MemoryServiceError::InvalidInput,
     }
 }

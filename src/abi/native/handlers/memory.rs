@@ -295,3 +295,38 @@ fn memory_residency(
     })();
     NativeAction::Return(status_only(result))
 }
+
+#[inline(never)]
+pub(in crate::abi::native) fn sys_vmo_wait_u32(
+    services: &impl MemoryServices,
+    receiver: &InvocationReceiver,
+    arguments: &Arguments,
+) -> NativeAction {
+    let result = require_zero(&arguments[3..]).and_then(|()| {
+        let expected =
+            u32::try_from(arguments[1]).map_err(|_| HYPER_NATIVE_STATUS_INVALID_ARGUMENT)?;
+        services
+            .vmo_wait_u32(receiver, arguments[0], expected, arguments[2])
+            .map_err(status_from_memory_service_error)
+    });
+    NativeAction::Return(super::task::wait_status(result, false))
+}
+
+#[inline(never)]
+pub(in crate::abi::native) fn sys_vmo_wake_u32(
+    services: &impl MemoryServices,
+    receiver: &InvocationReceiver,
+    arguments: &Arguments,
+) -> NativeAction {
+    let result = require_zero(&arguments[2..]).and_then(|()| {
+        let count =
+            u32::try_from(arguments[1]).map_err(|_| HYPER_NATIVE_STATUS_INVALID_ARGUMENT)?;
+        services
+            .vmo_wake_u32(receiver, arguments[0], count)
+            .map_err(status_from_memory_service_error)
+    });
+    NativeAction::Return(match result {
+        Ok(count) => success([count, 0]),
+        Err(status) => failure(status),
+    })
+}

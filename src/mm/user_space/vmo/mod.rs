@@ -12,9 +12,11 @@ use hyper::sync::InterruptSpinLock;
 
 use super::contract::{MemoryAccount, MemoryCharge, PageBackend};
 
+mod atomic_word;
 mod direct_copy;
 mod file_source;
 mod private_view;
+pub(crate) use atomic_word::SharedAtomicWord;
 pub(super) use direct_copy::PinnedReadRange;
 use file_source::FileBacking;
 pub(crate) use file_source::FilePageSource;

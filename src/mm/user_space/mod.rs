@@ -79,7 +79,9 @@ pub(crate) use machine::{
     UserWriteReservation,
 };
 #[cfg(not(test))]
-pub(crate) use objects::{GuestMemoryBacking, MemoryObjectError, VmarObject, VmoObject};
+pub(crate) use objects::{
+    GuestMemoryBacking, MemoryObjectError, NativeSharedAtomicWord, VmarObject, VmoObject,
+};
 #[cfg(not(test))]
 pub(crate) use service::{ServiceError as MemoryServiceError, permissions as abi_permissions};
 #[cfg(not(test))]
