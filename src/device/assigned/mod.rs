@@ -265,16 +265,21 @@ impl Resource {
                 offset: 0,
             });
         }
-        let irq = crate::hal::irq::decode_platform(device.interrupt_cells()).ok();
-        let (interrupt, trigger) = match irq {
+        let irq = if device.interrupt_cells().is_empty() {
+            None
+        } else {
+            Some(crate::hal::irq::decode_platform(device.interrupt_cells()).ok()?)
+        };
+        let (interrupt, interrupt_count, trigger) = match irq {
             Some(irq) => (
                 irq.interrupt,
+                1,
                 match irq.trigger {
                     hyper_platform::PlatformInterruptTrigger::Level => InterruptTrigger::Level,
                     hyper_platform::PlatformInterruptTrigger::Edge => InterruptTrigger::Edge,
                 },
             ),
-            None => (0, InterruptTrigger::Level),
+            None => (0, 0, InterruptTrigger::Level),
         };
         let mut extra = [None; 7];
         extra.copy_from_slice(&windows[1..]);
@@ -285,7 +290,7 @@ impl Resource {
                 profile: Profile::Userspace,
                 domain,
                 interrupt: InterruptId::new(interrupt),
-                interrupt_count: u32::from(interrupt >= 32),
+                interrupt_count,
                 trigger,
             },
             firmware: device.id(),
@@ -323,8 +328,7 @@ impl Resource {
             .hardware
             .clone();
         if !matches!(irq.profile, Profile::Userspace)
-            || irq.interrupt.get() < 32
-            || !matches!(irq.trigger, InterruptTrigger::Level)
+            || !model::valid_bundle_interrupt(irq.interrupt.get(), irq.interrupt_count, irq.trigger)
             || !selected.iter().any(|entry| entry.0 == interrupt_owner)
         {
             return Err(Error::Unsupported);

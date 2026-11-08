@@ -40,6 +40,17 @@ pub(crate) const fn transport_profile(profile: u32) -> bool {
         || profile == hyper::abi::native::HYPER_NATIVE_DEVICE_PROFILE_PCI_FUNCTION as u32
 }
 
+/// An MMIO-only bundle has no interrupt constraints. A present interrupt must
+/// retain the supported shared, level-triggered physical-line contract.
+pub(crate) const fn valid_bundle_interrupt(
+    interrupt: u32,
+    count: u32,
+    trigger: hyper::hal::interrupt::InterruptTrigger,
+) -> bool {
+    count == 0
+        || (interrupt >= 32 && matches!(trigger, hyper::hal::interrupt::InterruptTrigger::Level))
+}
+
 pub(crate) fn valid_guest_interrupt(irq: u32) -> bool {
     use hyper::abi::native as abi;
     (abi::HYPER_NATIVE_VIRTUAL_PLATFORM_AARCH64_REFERENCE_DEVICE_INTERRUPT_BASE as u32
