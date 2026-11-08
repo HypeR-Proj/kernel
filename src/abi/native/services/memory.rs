@@ -14,6 +14,19 @@ pub(crate) trait UserMemoryServices {
 }
 
 pub(crate) trait MemoryServices {
+    fn vmo_wait_u32(
+        &self,
+        vmo: &InvocationReceiver,
+        offset: u64,
+        expected: u32,
+        deadline: u64,
+    ) -> Result<crate::task::WaitOutcome, MemoryServiceError>;
+    fn vmo_wake_u32(
+        &self,
+        vmo: &InvocationReceiver,
+        offset: u64,
+        count: u32,
+    ) -> Result<u64, MemoryServiceError>;
     fn create_contiguous_vmo(&self, size: u64) -> Result<HandleValue, MemoryServiceError>;
     fn create_vmo(&self, size: u64) -> Result<HandleValue, MemoryServiceError>;
     fn create_vmo_snapshot(

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 roolrz
 // SPDX-License-Identifier: Apache-2.0
 
-//! Process-private atomic waits, keyed by non-reused mapping identity.
+//! Atomic waits keyed by private mapping lineage or explicitly retained VMO identity.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 use hyper::sync::InterruptSpinLock;
@@ -44,11 +44,97 @@ struct State {
     scanned_waiters: u64,
 }
 
+/// Private and shared namespaces cannot alias even when they use the same page.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Key {
+    Private(AtomicWaitKey),
+    Shared {
+        vmo: crate::object::Koid,
+        offset: u64,
+    },
+}
+impl From<AtomicWaitKey> for Key {
+    fn from(value: AtomicWaitKey) -> Self {
+        Self::Private(value)
+    }
+}
+impl Key {
+    fn hash(self) -> u64 {
+        match self {
+            Self::Private(key) => key.hash(),
+            Self::Shared { vmo, offset } => {
+                fn mix(mut value: u64) -> u64 {
+                    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                    value ^ (value >> 31)
+                }
+                mix(vmo.get()) ^ mix(offset) ^ 1
+            }
+        }
+    }
+}
+
+/// Shared waits retain both storage admission and the object whose KOID is used
+/// as the namespace. A backing-only owner would allow that identity to retire.
+pub(crate) struct SharedWord {
+    word: crate::mm::user_space::NativeSharedAtomicWord,
+    object: crate::object::KernelRef<crate::mm::user_space::VmoObject, crate::object::OperationPin>,
+    offset: u64,
+    _pin_charge: CommittedCharge,
+}
+impl SharedWord {
+    /// Admit caller pin quota before touching source backing; source page
+    /// allocation remains charged to the VMO's own resource account.
+    pub(crate) fn prepare(
+        object: crate::object::KernelRef<
+            crate::mm::user_space::VmoObject,
+            crate::object::OperationPin,
+        >,
+        offset: u64,
+        domain: &crate::accounting::ResourceDomain,
+    ) -> Result<Self, crate::mm::user_space::MemoryObjectError> {
+        object.object().validate_shared_atomic_offset(offset)?;
+        let pin_charge = domain
+            .reserve(ResourceAmount::ZERO.with(ResourceKind::PinnedPages, 1))?
+            .commit();
+        let word = object.object().pin_shared_atomic_u32(offset)?;
+        Ok(Self {
+            word,
+            object,
+            offset,
+            _pin_charge: pin_charge,
+        })
+    }
+}
+
+enum RetainedWord {
+    Private(NativePinnedAtomicWord),
+    Shared(SharedWord),
+}
+
+impl RetainedWord {
+    fn key(&self) -> Key {
+        match self {
+            Self::Private(word) => Key::Private(word.key),
+            Self::Shared(word) => Key::Shared {
+                vmo: word.object.koid(),
+                offset: word.offset,
+            },
+        }
+    }
+    fn physical(&self) -> u64 {
+        match self {
+            Self::Private(word) => word.physical,
+            Self::Shared(word) => word.word.physical(),
+        }
+    }
+}
+
 /// One condition registration owned by the scheduler Thread, including its
 /// backing lease and resource admission. Bucket links are generation-qualified
 /// identities, never pointers into a suspended continuation.
 struct Waiter {
-    word: NativePinnedAtomicWord,
+    word: RetainedWord,
     ticket: WaitTicket,
     next: Option<WaitTicket>,
     _charge: CommittedCharge,
@@ -56,7 +142,7 @@ struct Waiter {
 
 #[derive(Clone, Copy)]
 struct WaiterSnapshot {
-    key: AtomicWaitKey,
+    key: Key,
     next: Option<WaitTicket>,
 }
 
@@ -93,7 +179,7 @@ impl ThreadWaiter {
         self.node.with(|node| {
             let waiter = Self::matching(node, ticket);
             WaiterSnapshot {
-                key: waiter.word.key,
+                key: waiter.word.key(),
                 next: waiter.next,
             }
         })
@@ -182,8 +268,8 @@ static BUCKETS: [Bucket; BUCKET_COUNT] = [const {
         scanned_waiters: 0,
     })
 }; BUCKET_COUNT];
-fn bucket(key: AtomicWaitKey) -> &'static Bucket {
-    &BUCKETS[key.hash() as usize % BUCKET_COUNT]
+fn bucket(key: impl Into<Key>) -> &'static Bucket {
+    &BUCKETS[key.into().hash() as usize % BUCKET_COUNT]
 }
 
 pub(crate) fn wait(
@@ -198,10 +284,42 @@ pub(crate) fn wait(
     }
     let word =
         process.retry_user_memory(|space| space.pin_atomic_u32(UserAddress::new(address)))?;
-    let linear = crate::mm::memory::linear_address(word.physical).ok_or(Error::InvalidInput)?;
+    wait_word(
+        process,
+        RetainedWord::Private(word),
+        expected,
+        deadline,
+        cancelled,
+    )
+}
+
+pub(crate) fn wait_shared(
+    process: &Process,
+    word: SharedWord,
+    expected: u32,
+    deadline: u64,
+    cancelled: impl Fn() -> bool,
+) -> Result<WaitOutcome, Error> {
+    wait_word(
+        process,
+        RetainedWord::Shared(word),
+        expected,
+        deadline,
+        cancelled,
+    )
+}
+
+fn wait_word(
+    process: &Process,
+    word: RetainedWord,
+    expected: u32,
+    deadline: u64,
+    cancelled: impl Fn() -> bool,
+) -> Result<WaitOutcome, Error> {
+    let linear = crate::mm::memory::linear_address(word.physical()).ok_or(Error::InvalidInput)?;
     // SAFETY: aligned u32 is wholly within a resident writable page. `word`
-    // retains its mapping lease and page until all accesses finish, even if
-    // userspace unmaps it. All accesses here are atomic, never user copies.
+    // retains mapping/storage admission through unlink, independently of unmap
+    // and handle closure. All accesses here are atomic, never byte copies.
     let atomic = unsafe { &*core::ptr::with_exposed_provenance::<AtomicU32>(linear) };
     if atomic.load(Ordering::Relaxed) != expected {
         return Ok(WaitOutcome::Notified);
@@ -221,7 +339,7 @@ pub(crate) fn wait(
         TimedWaitPreparation::Armed(prepared) => prepared,
     };
     let ticket = prepared.ticket();
-    let bucket = bucket(word.key);
+    let bucket = bucket(word.key());
     let mut candidate = Some(Waiter {
         word,
         ticket,
@@ -275,6 +393,14 @@ pub(crate) fn wake(process: &Process, address: u64, count: u32) -> Result<u64, E
     }
     let key =
         process.retry_user_memory(|space| space.atomic_wait_key(UserAddress::new(address)))?;
+    wake_key(Key::Private(key), count)
+}
+
+pub(crate) fn wake_shared(vmo: crate::object::Koid, offset: u64, count: u32) -> Result<u64, Error> {
+    wake_key(Key::Shared { vmo, offset }, count)
+}
+
+fn wake_key(key: Key, count: u32) -> Result<u64, Error> {
     bucket(key).with(|state| {
         let mut woke = 0;
         let mut current = state.waiters;
@@ -364,7 +490,7 @@ pub(crate) fn waiter_count(process: &Process, address: u64) -> Result<usize, Err
         while let Some(ticket) = current {
             let waiter = with_waiter(ticket, |slot| slot.snapshot(ticket));
             current = waiter.next;
-            if waiter.key == word.key {
+            if waiter.key == Key::Private(word.key) {
                 count += 1;
             }
         }
@@ -397,7 +523,7 @@ pub(crate) fn verify_exit_guard(process: &Process, address: u64) -> Result<bool,
     bucket.with(|state| {
         with_waiter(ticket, |slot| {
             slot.install(Waiter {
-                word,
+                word: RetainedWord::Private(word),
                 ticket,
                 next: state.waiters,
                 _charge: charge,

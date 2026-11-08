@@ -9,6 +9,7 @@ use hyper::mm::PAGE_SIZE;
 use hyper::sync::InterruptSpinLock;
 
 mod contention;
+mod shared;
 
 use super::{Error, IMAGE_BASE, prepare_process, retire_process};
 use {
@@ -256,7 +257,7 @@ fn exercise(process: &Process) -> Result<(), Error> {
     if FAILED.load(Ordering::Acquire) || domain.usage() != baseline {
         return Err(Error::AtomicWait("worker result or accounting"));
     }
-    Ok(())
+    shared::run(process)
 }
 
 fn wait_done(count: usize) -> Result<(), Error> {

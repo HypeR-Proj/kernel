@@ -853,7 +853,7 @@ subscriptions belong to the WaitSet, independently of a Thread blocking on it.
 The scheduler's `WaitRecord` remains in CPU-owned scheduling state; the stable
 resource context does not change scheduler lock ownership or migration rules.
 
-Native atomic wait/wake currently use process-private aligned writable u32
+`atomic_wait` and `atomic_wake` use process-private aligned writable u32
 words. The key contains the address-space, non-reused mapping lineage, and virtual
 byte address. Range fragmentation and permission changes retain that lineage;
 management tokens still change to invalidate stale mapping observations. Unmapping
@@ -879,9 +879,34 @@ must keep mappings live until their waits finish. Aliases and other Processes
 have separate wait domains. Removing write permission prevents new wait/wake
 operations on that range; restoring it on the same live mapping preserves the
 wait domain. Neither unmap nor protect synchronously cancels an admitted wait:
-timeout and Thread/Process stop retain their normal cleanup paths. Shared VMO
-keys, requeue and priority inheritance
-remain separately specified extensions, not implemented contracts.
+timeout and Thread/Process stop retain their normal cleanup paths.
+
+`vmo_wait_u32(offset, expected, deadline, options)` and
+`vmo_wake_u32(offset, count, options)` explicitly select a shared wait namespace.
+Their receiver is an ordinary writable RAM VMO, including contiguous RAM. Wait
+requires READ|WRITE and wake requires WRITE; neither requires a mapping or MAP.
+Offset is four-byte aligned and the complete u32 must fit within the VMO. Options
+and unused arguments are zero. Expected/count must fit u32. A mismatching value
+returns success immediately; otherwise the same absolute deadline and Thread
+cancellation rules apply. Wake returns the number of registrations it actually
+notified, bounded by count; count zero still validates authority, kind and range.
+
+The shared key is retained VMO identity plus byte offset, independent of process
+or virtual address, and never matches a private wait. Closing a handle or
+unmapping does not cancel an admitted shared wait. The waiter retains the object
+identity and stable backing until unlink. Caller pin quota is admitted before
+accessing the word; pin, waiter and timer charges belong to the caller, while a
+new backing page belongs to the VMO's original resource account. Wait admission
+coexists with writable mappings but excludes ordinary kernel byte copies,
+snapshot publication and exclusive hardware access across the entire VMO. Immutable, executable and
+observation VMOs are rejected. Wake does not read or populate memory or acquire
+a backing lease; it may therefore return zero during an exclusive hardware lease.
+
+All concurrent accesses to a shared condition use aligned atomic u32 operations.
+The kernel does not implement lock ownership: callers publish state, wake, and
+recheck their condition after every return using their own atomic ordering.
+Spurious wakes are permitted. This adds no requeue, priority inheritance, robust
+owner recovery or implicit writable-file-mapping support.
 
 ## Process, memory, and user-copy safety
 
@@ -1082,7 +1107,7 @@ contracts. These are representative implemented families; consult the
 | Tasks | ExecutionContext for current execution; ProcessBuilder construction/seal/start/abort; Process stop and exit; Thread create/start/exit/yield/sleep/request-stop |
 | Memory | VMO creation/read/write/snapshot; protected file mappings; VMAR allocate/map/private-map/unmap/protect/destroy |
 | IPC | ObjectFactory creation; ByteChannel queues, CapabilityChannel rendezvous, Event create/signal |
-| Wait | Object wait-one/wait-many; WaitSet create/add/rearm/remove/wait; atomic wait/wake |
+| Wait | Object wait-one/wait-many; WaitSet create/add/rearm/remove/wait/batch; private and VMO-shared atomic wait/wake |
 | Filesystem | Capability-relative Directory operations, File data/metadata/sync, content protection and advisory locks; authorized ramfs mount and atomic root switching |
 | Virtualization | Creation leases, PendingVirtualMachine construction/install/abort, VM stop and power completion, vCPU start/affinity/MMIO completion, VirtualSerial |
 | Physical devices and I/O | DeviceAssignmentAuthority, PhysicalDevice claims/MMIO/IRQ, GuestMemory, GuestMapping, GuestMailbox, GuestNotification, GuestInterrupt and NativeBlock |

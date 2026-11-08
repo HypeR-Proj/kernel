@@ -1752,6 +1752,200 @@ fn exclusive_hardware_write_lease_closes_native_access_until_release() {
 }
 
 #[test]
+fn shared_atomic_word_checks_geometry_without_materializing_or_admitting_wake() {
+    let (backend, account) = fixtures();
+    let writable = crate::require_ok(WritableVmo::try_new(
+        PAGE_SIZE * 2,
+        backend.clone(),
+        account.clone(),
+    ));
+    let baseline = account.0.charge_calls.load(Ordering::Relaxed);
+    for offset in [0, 4, PAGE_SIZE - 4, PAGE_SIZE, PAGE_SIZE * 2 - 4] {
+        crate::require_ok(writable.validate_shared_atomic_offset(offset));
+    }
+    for offset in [1, 2, PAGE_SIZE - 1, PAGE_SIZE * 2, u64::MAX - 3, u64::MAX] {
+        assert!(matches!(
+            writable.validate_shared_atomic_offset(offset),
+            Err(VmoError::InvalidRange)
+        ));
+        assert!(matches!(
+            writable.pin_shared_atomic_u32(offset),
+            Err(VmoError::InvalidRange)
+        ));
+    }
+    assert_eq!(account.0.charge_calls.load(Ordering::Relaxed), baseline);
+    assert_eq!(backend.0.allocation_calls.load(Ordering::Relaxed), 0);
+    let hardware = crate::require_ok(writable.try_exclusive_hardware_write_lease());
+    let baseline = account.0.charge_calls.load(Ordering::Relaxed);
+    crate::require_ok(writable.validate_shared_atomic_offset(PAGE_SIZE));
+    assert!(matches!(
+        writable.pin_shared_atomic_u32(0),
+        Err(VmoError::Busy)
+    ));
+    assert_eq!(account.0.charge_calls.load(Ordering::Relaxed), baseline);
+    assert_eq!(backend.0.allocation_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(backend.0.read_calls.load(Ordering::Relaxed), 0);
+    drop(hardware);
+    let word = crate::require_ok(writable.pin_shared_atomic_u32(PAGE_SIZE + 4));
+    assert_eq!(
+        word.physical(),
+        crate::require_ok(writable.resident_physical_page(PAGE_SIZE)).get() + 4
+    );
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn shared_atomic_word_retains_backing_without_per_wait_owner_charge() {
+    let (backend, account) = fixtures();
+    let writable = crate::require_ok(WritableVmo::try_new(
+        PAGE_SIZE,
+        backend.clone(),
+        account.clone(),
+    ));
+    let first = crate::require_ok(writable.pin_shared_atomic_u32(0));
+    let calls = account.0.charge_calls.load(Ordering::Relaxed);
+    let bytes = account.0.bytes.load(Ordering::Relaxed);
+    let objects = account.0.objects.load(Ordering::Relaxed);
+    // Exhausting the source's metadata budget cannot prevent another wait on
+    // an already materialized page. The wait engine charges the caller instead.
+    account.0.fail_next.store(true, Ordering::Relaxed);
+    let second = crate::require_ok(writable.pin_shared_atomic_u32(PAGE_SIZE - 4));
+    assert_eq!(second.physical(), first.physical() + PAGE_SIZE - 4);
+    assert_eq!(account.0.charge_calls.load(Ordering::Relaxed), calls);
+    assert!(account.0.fail_next.swap(false, Ordering::Relaxed));
+    assert_eq!(account.0.bytes.load(Ordering::Relaxed), bytes);
+    assert_eq!(account.0.objects.load(Ordering::Relaxed), objects);
+    assert_eq!(account.0.pinned.load(Ordering::Relaxed), 0);
+    assert_eq!(backend.0.allocation_calls.load(Ordering::Relaxed), 1);
+    drop(writable);
+    drop(first);
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), 1);
+    drop(second);
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), 0);
+    assert_eq!(account.0.bytes.load(Ordering::Relaxed), 0);
+    assert_eq!(account.0.objects.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn shared_atomic_word_coexists_with_writable_mapping_and_survives_unmap() {
+    let (backend, account) = fixtures();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0xf0_000, PAGE_SIZE),
+        backend.clone(),
+        account.clone(),
+    ));
+    let writable = crate::require_ok(WritableVmo::try_new(PAGE_SIZE, backend, account.clone()));
+    crate::require_ok(writable.populate(0, PAGE_SIZE));
+    let map = crate::require_ok(space.prepare_map_writable(
+        space.root_vmar(),
+        slice(0xf0_000, PAGE_SIZE),
+        writable.clone(),
+        0,
+        Permissions::read_write(),
+        Permissions::read_write(),
+    ));
+    complete(crate::require_ok(map.commit_for_test()));
+    let word = crate::require_ok(writable.pin_shared_atomic_u32(4));
+    let physical = word.physical();
+    let unmap =
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0xf0_000, PAGE_SIZE)));
+    complete(crate::require_ok(unmap.commit_for_test()));
+    assert_eq!(word.physical(), physical);
+    let mut bytes = [0; 4];
+    assert!(matches!(writable.read(0, &mut bytes), Err(VmoError::Busy)));
+    assert!(matches!(writable.write(0, &[1; 4]), Err(VmoError::Busy)));
+    assert!(matches!(
+        writable.try_snapshot(account),
+        Err(VmoError::Busy)
+    ));
+    assert!(matches!(
+        writable.try_executable_snapshot(&ExecutableProvenance::for_test(), &()),
+        Err(VmoError::Busy)
+    ));
+    assert!(matches!(
+        writable.try_exclusive_hardware_write_lease(),
+        Err(VmoError::Busy)
+    ));
+    // Additional writable admissions remain legal until the last shared word
+    // and writable mapping lease have independently retired.
+    let mapping = crate::require_ok(writable.try_mapping_write_lease());
+    drop(word);
+    assert!(matches!(writable.write(0, &[1; 4]), Err(VmoError::Busy)));
+    drop(mapping);
+    crate::require_ok(writable.write(0, &[1; 4]));
+    crate::require_ok(writable.read(0, &mut bytes));
+    assert_eq!(bytes, [1; 4]);
+}
+
+#[test]
+fn shared_atomic_word_failed_first_touch_releases_admission_and_charges() {
+    for account_failure in [false, true] {
+        let (backend, account) = fixtures();
+        let writable = crate::require_ok(WritableVmo::try_new(
+            PAGE_SIZE,
+            backend.clone(),
+            account.clone(),
+        ));
+        let baseline = account.0.bytes.load(Ordering::Relaxed);
+        if account_failure {
+            account.0.fail_next.store(true, Ordering::Relaxed);
+        } else {
+            backend.0.fail_allocation_at.store(1, Ordering::Relaxed);
+        }
+        assert!(writable.pin_shared_atomic_u32(0).is_err());
+        assert_eq!(account.0.bytes.load(Ordering::Relaxed), baseline);
+        assert_eq!(account.0.pages.load(Ordering::Relaxed), 0);
+        backend.0.fail_allocation_at.store(0, Ordering::Relaxed);
+        // Both exclusive admissions succeeding prove that a failed first touch
+        // did not leave the shared word's writable admission counted.
+        drop(crate::require_ok(
+            writable.try_exclusive_hardware_write_lease(),
+        ));
+        let snapshot = crate::require_ok(writable.try_snapshot(account.clone()));
+        drop(snapshot);
+        crate::require_ok(writable.write(0, &[7; 4]));
+        drop(crate::require_ok(writable.pin_shared_atomic_u32(0)));
+        drop(writable);
+        assert_eq!(account.0.bytes.load(Ordering::Relaxed), 0);
+        assert_eq!(account.0.pages.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[test]
+fn shared_atomic_word_rejects_in_flight_direct_copy_and_snapshot() {
+    for snapshot in [false, true] {
+        let (backend, account) = fixtures();
+        let writable = crate::require_ok(WritableVmo::try_new(
+            PAGE_SIZE,
+            backend.clone(),
+            account.clone(),
+        ));
+        crate::require_ok(writable.write(0, &[3; 4]));
+        backend.0.block_next_read.store(true, Ordering::Release);
+        let source = writable.clone();
+        let copying = std::thread::spawn(move || {
+            if snapshot {
+                source.try_snapshot(account).map(|_| ())
+            } else {
+                source.read(0, &mut [0; 4])
+            }
+        });
+        backend.0.read_entered.wait();
+        let result = writable.pin_shared_atomic_u32(0);
+        backend.0.read_release.wait();
+        assert!(matches!(result, Err(VmoError::Busy)));
+        let result = match copying.join() {
+            Ok(result) => result,
+            Err(_) => panic!("shared atomic admission copy thread panicked"),
+        };
+        crate::require_ok(result);
+        drop(crate::require_ok(writable.pin_shared_atomic_u32(0)));
+        crate::require_ok(writable.write(0, &[4; 4]));
+    }
+}
+
+#[test]
 fn direct_write_uses_exposed_access_with_a_read_only_machine_mapping() {
     let (backend, account) = fixtures();
     let address_space = crate::require_ok(UserAddressSpace::try_new(

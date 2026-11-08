@@ -269,7 +269,7 @@ pub(in crate::abi::native) fn sys_thread_sleep(
     )
 }
 
-fn wait_status(
+pub(super) fn wait_status(
     result: Result<crate::task::WaitOutcome, HyperNativeStatus>,
     sleep: bool,
 ) -> NativeResult {

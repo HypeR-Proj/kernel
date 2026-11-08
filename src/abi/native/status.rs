@@ -454,6 +454,7 @@ pub(super) const fn status_from_vmo_error(
 pub(super) fn status_from_memory_service_error(error: MemoryServiceError) -> HyperNativeStatus {
     match error {
         MemoryServiceError::InvalidInput => HYPER_NATIVE_STATUS_INVALID_ARGUMENT,
+        MemoryServiceError::Wait(error) => status_from_object_wait_error(error),
         MemoryServiceError::Machine(error) => status_from_machine_error(error),
         MemoryServiceError::MemoryObject(error) => status_from_memory_object_error(error),
         MemoryServiceError::Process(error) => status_from_process_error(error),
