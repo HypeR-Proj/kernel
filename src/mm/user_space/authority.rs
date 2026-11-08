@@ -16,13 +16,6 @@ use {
 
 /// Failure while preparing an accounted executable-authority object.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    not(all(feature = "kernel-test", feature = "kernel-self-test")),
-    expect(
-        dead_code,
-        reason = "reserved authority is currently constructed only by capability self-tests"
-    )
-)]
 pub(crate) enum ExecutableAuthorityError {
     AllocationSize,
     Resource(ResourceError),
@@ -38,26 +31,13 @@ impl From<ResourceError> for ExecutableAuthorityError {
 ///
 /// The payload is intentionally stateless. Possession of the object reference
 /// proves only identity; the `CREATE_EXECUTABLE` right on the resolving handle
-/// grants the operation. Writable VMO authority is a distinct required input.
-#[cfg_attr(
-    not(all(feature = "kernel-test", feature = "kernel-self-test")),
-    expect(
-        dead_code,
-        reason = "reserved authority is currently constructed only by capability self-tests"
-    )
-)]
+/// grants the operation. READ authority on an ordinary writable VMO is a
+/// distinct required input; WRITE is not required on the source handle.
 pub(crate) struct ExecutableAuthority {
     _object_charge: CommittedCharge,
 }
 
 impl ExecutableAuthority {
-    #[cfg_attr(
-        not(all(feature = "kernel-test", feature = "kernel-self-test")),
-        expect(
-            dead_code,
-            reason = "reserved authority is currently constructed only by capability self-tests"
-        )
-    )]
     pub(crate) fn try_new(sponsor: &ResourceDomain) -> Result<Self, ExecutableAuthorityError> {
         let bytes = object_allocation_size::<Self>()
             .and_then(|value| u64::try_from(value).ok())
@@ -78,10 +58,6 @@ impl ExecutableAuthority {
     ///
     /// Callers may reach this method only after resolving an authority handle
     /// with `CREATE_EXECUTABLE`; the proof itself never crosses the subsystem.
-    #[expect(
-        dead_code,
-        reason = "reserved conversion has no Native syscall consumer yet"
-    )]
     pub(super) const fn provenance(&self) -> super::ExecutableProvenance {
         super::ExecutableProvenance::for_capability()
     }

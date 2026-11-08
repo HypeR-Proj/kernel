@@ -122,6 +122,10 @@ struct BackendState {
     fail_allocation_at: AtomicU64,
     fail_read_at: AtomicU64,
     fail_write_at: AtomicU64,
+    publication_calls: AtomicU64,
+    published_pages: AtomicU64,
+    largest_publication: AtomicU64,
+    fail_publication_at: AtomicU64,
     block_next_read: AtomicBool,
     read_entered: Barrier,
     read_release: Barrier,
@@ -139,6 +143,10 @@ impl Default for BackendState {
             fail_allocation_at: AtomicU64::new(0),
             fail_read_at: AtomicU64::new(0),
             fail_write_at: AtomicU64::new(0),
+            publication_calls: AtomicU64::new(0),
+            published_pages: AtomicU64::new(0),
+            largest_publication: AtomicU64::new(0),
+            fail_publication_at: AtomicU64::new(0),
             block_next_read: AtomicBool::new(false),
             read_entered: Barrier::new(2),
             read_release: Barrier::new(2),
@@ -289,7 +297,21 @@ impl PageBackend for Backend {
         _context: &Self::InstructionPublicationContext,
         mut pages: impl FnMut(&mut dyn FnMut(&mut Self::Page)),
     ) -> Result<(), Self::Error> {
-        pages(&mut |_page| {});
+        let call = self.0.publication_calls.fetch_add(1, Ordering::Relaxed) + 1;
+        let mut first = Vec::new();
+        let mut second = Vec::new();
+        pages(&mut |page| first.push(page.physical.get()));
+        pages(&mut |page| second.push(page.physical.get()));
+        assert_eq!(first, second);
+        self.0
+            .largest_publication
+            .fetch_max(first.len() as u64, Ordering::Relaxed);
+        if self.0.fail_publication_at.load(Ordering::Relaxed) == call {
+            return Err(PageError);
+        }
+        self.0
+            .published_pages
+            .fetch_add(first.len() as u64, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -299,6 +321,18 @@ fn fixtures() -> (Backend, Account) {
         Backend(Arc::new(BackendState::default())),
         Account(Arc::new(Usage::default())),
     )
+}
+
+/// Existing mapping-admission probes need a complete image, while publication
+/// tests below drive each real preparation stage independently.
+fn executable_snapshot(
+    source: &WritableVmo<Backend, Account>,
+) -> Result<user::ExecutableVmo<Backend, Account>, VmoError<PageError, AccountError>> {
+    let (_, destination) = fixtures();
+    let mut prepared =
+        source.prepare_executable_snapshot(&ExecutableProvenance::for_test(), destination)?;
+    while !prepared.publish_next(&())? {}
+    prepared.finish()
 }
 
 fn slice(base: u64, length: u64) -> UserSlice {
@@ -614,8 +648,7 @@ fn executable_snapshot_is_distinct_and_wx_is_rejected() {
         account.clone(),
     ));
     assert!(writable.write(0, &[1, 2, 3]).is_ok());
-    let executable =
-        crate::require_ok(writable.try_executable_snapshot(&ExecutableProvenance::for_test(), &()));
+    let executable = crate::require_ok(executable_snapshot(&writable));
     assert!(writable.write(0, &[9, 9, 9]).is_ok());
     let mut bytes = [0; 3];
     assert!(executable.read(0, &mut bytes).is_ok());
@@ -638,6 +671,206 @@ fn executable_snapshot_is_distinct_and_wx_is_rejected() {
         ),
         Err(AddressSpaceError::WritableExecutableBacking)
     ));
+}
+
+#[test]
+fn executable_preparation_charges_destination_and_publishes_only_complete_batches() {
+    let (backend, source_account) = fixtures();
+    let (_, destination) = fixtures();
+    let size = PAGE_SIZE * 33;
+    let source = crate::require_ok(WritableVmo::try_new(
+        size,
+        backend.clone(),
+        source_account.clone(),
+    ));
+    crate::require_ok(source.write(0, &[7]));
+    crate::require_ok(source.write(size - 1, &[9]));
+    let source_bytes = source_account.0.bytes.load(Ordering::Relaxed);
+    let prepare = || {
+        source.prepare_executable_snapshot(&ExecutableProvenance::for_test(), destination.clone())
+    };
+    let incomplete = crate::require_ok(prepare());
+    assert_eq!(destination.0.pages.load(Ordering::Relaxed), 33);
+    assert!(matches!(incomplete.finish(), Err(VmoError::Busy)));
+    assert_eq!(destination.0.pages.load(Ordering::Relaxed), 0);
+    assert_eq!(destination.0.bytes.load(Ordering::Relaxed), 0);
+    assert_eq!(backend.0.publication_calls.load(Ordering::Relaxed), 0);
+
+    let mut prepared = crate::require_ok(prepare());
+    assert_eq!(source_account.0.bytes.load(Ordering::Relaxed), source_bytes);
+    assert_eq!(source_account.0.pages.load(Ordering::Relaxed), 2);
+    // Copying is complete and source admission has ended even before the first
+    // cache batch. These later writes cannot reach the unpublished target.
+    crate::require_ok(source.write(0, &[3]));
+    assert!(!crate::require_ok(prepared.publish_next(&())));
+    assert_eq!(backend.0.published_pages.load(Ordering::Relaxed), 16);
+    assert!(!crate::require_ok(prepared.publish_next(&())));
+    assert_eq!(backend.0.published_pages.load(Ordering::Relaxed), 32);
+    assert!(crate::require_ok(prepared.publish_next(&())));
+    assert_eq!(backend.0.published_pages.load(Ordering::Relaxed), 33);
+    assert!(crate::require_ok(prepared.publish_next(&())));
+    assert_eq!(backend.0.publication_calls.load(Ordering::Relaxed), 3);
+    assert_eq!(backend.0.largest_publication.load(Ordering::Relaxed), 16);
+    let executable = crate::require_ok(prepared.finish());
+    let mut byte = [0];
+    crate::require_ok(executable.read(0, &mut byte));
+    assert_eq!(byte, [7]);
+    crate::require_ok(executable.read(PAGE_SIZE, &mut byte));
+    assert_eq!(byte, [0]);
+    crate::require_ok(executable.read(size - 1, &mut byte));
+    assert_eq!(byte, [9]);
+    drop(executable);
+    assert_eq!(destination.0.pages.load(Ordering::Relaxed), 0);
+    assert_eq!(destination.0.bytes.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn executable_preparation_rolls_back_quota_allocation_and_publication_failures() {
+    let (backend, source_account) = fixtures();
+    let (_, destination) = fixtures();
+    let source = crate::require_ok(WritableVmo::try_new(
+        PAGE_SIZE * 17,
+        backend.clone(),
+        source_account,
+    ));
+    crate::require_ok(source.write(0, &[1]));
+    crate::require_ok(source.write(PAGE_SIZE, &[5]));
+    for failure in 0..5 {
+        match failure {
+            0 => destination.0.fail_next.store(true, Ordering::Relaxed),
+            1 => destination.0.fail_at_call.store(
+                destination.0.charge_calls.load(Ordering::Relaxed) + 3,
+                Ordering::Relaxed,
+            ),
+            2 => backend.0.fail_allocation_at.store(
+                backend.0.allocation_calls.load(Ordering::Relaxed) + 2,
+                Ordering::Relaxed,
+            ),
+            3 => backend.0.fail_read_at.store(
+                backend.0.read_calls.load(Ordering::Relaxed) + 2,
+                Ordering::Relaxed,
+            ),
+            _ => backend.0.fail_write_at.store(
+                backend.0.write_calls.load(Ordering::Relaxed) + 2,
+                Ordering::Relaxed,
+            ),
+        }
+        assert!(
+            source
+                .prepare_executable_snapshot(&ExecutableProvenance::for_test(), destination.clone())
+                .is_err()
+        );
+        destination.0.fail_at_call.store(0, Ordering::Relaxed);
+        backend.0.fail_allocation_at.store(0, Ordering::Relaxed);
+        backend.0.fail_read_at.store(0, Ordering::Relaxed);
+        backend.0.fail_write_at.store(0, Ordering::Relaxed);
+        assert_eq!(destination.0.pages.load(Ordering::Relaxed), 0);
+        assert_eq!(destination.0.bytes.load(Ordering::Relaxed), 0);
+        crate::require_ok(source.write(0, &[1]));
+    }
+    let mut prepared = crate::require_ok(
+        source.prepare_executable_snapshot(&ExecutableProvenance::for_test(), destination.clone()),
+    );
+    assert!(!crate::require_ok(prepared.publish_next(&())));
+    backend.0.fail_publication_at.store(2, Ordering::Relaxed);
+    assert!(matches!(
+        prepared.publish_next(&()),
+        Err(VmoError::Backend(_))
+    ));
+    assert!(matches!(prepared.finish(), Err(VmoError::Busy)));
+    assert_eq!(destination.0.pages.load(Ordering::Relaxed), 0);
+    assert_eq!(destination.0.bytes.load(Ordering::Relaxed), 0);
+    crate::require_ok(source.write(0, &[2]));
+}
+
+#[test]
+fn executable_preparation_keeps_source_frozen_until_copy_returns() {
+    let (backend, source_account) = fixtures();
+    let (_, destination) = fixtures();
+    let source = crate::require_ok(WritableVmo::try_new(
+        PAGE_SIZE,
+        backend.clone(),
+        source_account,
+    ));
+    crate::require_ok(source.write(0, &[1]));
+    backend.0.block_next_read.store(true, Ordering::Release);
+    let copying = source.clone();
+    let target_account = destination.clone();
+    let worker = std::thread::spawn(move || {
+        copying.prepare_executable_snapshot(&ExecutableProvenance::for_test(), target_account)
+    });
+    backend.0.read_entered.wait();
+    let direct = source.write(0, &[2]);
+    let atomic = source.pin_shared_atomic_u32(0);
+    backend.0.read_release.wait();
+    assert!(matches!(direct, Err(VmoError::Busy)));
+    assert!(matches!(atomic, Err(VmoError::Busy)));
+    let prepared = match worker.join() {
+        Ok(result) => crate::require_ok(result),
+        Err(_) => panic!("executable preparation thread panicked"),
+    };
+    crate::require_ok(source.write(0, &[2]));
+    assert_eq!(backend.0.publication_calls.load(Ordering::Relaxed), 0);
+    drop(prepared);
+    assert_eq!(destination.0.pages.load(Ordering::Relaxed), 0);
+    assert_eq!(destination.0.bytes.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn private_executable_view_requires_all_bounded_cache_batches() {
+    let (backend, source_account) = fixtures();
+    let (_, destination) = fixtures();
+    let source = crate::require_ok(WritableVmo::try_new(
+        PAGE_SIZE * 33,
+        backend.clone(),
+        source_account.clone(),
+    ));
+    let snapshot = crate::require_ok(source.try_snapshot(source_account));
+    let builder = || {
+        user::PrivateViewBuilder::try_new(
+            snapshot.clone(),
+            PAGE_SIZE * 33,
+            0,
+            PAGE_SIZE * 33,
+            0,
+            user::PrivateMappingMode::CopyOnWrite,
+            backend.clone(),
+            destination.clone(),
+        )
+    };
+    let unfinished = crate::require_ok(
+        crate::require_ok(builder()).prepare_executable(&ExecutableProvenance::for_test()),
+    );
+    assert!(matches!(unfinished.finish(), Err(VmoError::Busy)));
+    assert_eq!(destination.0.bytes.load(Ordering::Relaxed), 0);
+    let mut prepared = crate::require_ok(
+        crate::require_ok(builder()).prepare_executable(&ExecutableProvenance::for_test()),
+    );
+    assert!(!crate::require_ok(prepared.publish_next(&())));
+    backend.0.fail_publication_at.store(2, Ordering::Relaxed);
+    assert!(matches!(
+        prepared.publish_next(&()),
+        Err(VmoError::Backend(_))
+    ));
+    assert!(matches!(prepared.finish(), Err(VmoError::Busy)));
+    assert_eq!(destination.0.bytes.load(Ordering::Relaxed), 0);
+    backend.0.fail_publication_at.store(0, Ordering::Relaxed);
+    let mut prepared = crate::require_ok(
+        crate::require_ok(builder()).prepare_executable(&ExecutableProvenance::for_test()),
+    );
+    let mut calls = 0;
+    loop {
+        calls += 1;
+        if crate::require_ok(prepared.publish_next(&())) {
+            break;
+        }
+    }
+    assert_eq!(calls, 3);
+    assert_eq!(backend.0.largest_publication.load(Ordering::Relaxed), 16);
+    let view = crate::require_ok(prepared.finish());
+    assert_eq!(view.size(), PAGE_SIZE * 33);
+    drop(view);
+    assert_eq!(destination.0.bytes.load(Ordering::Relaxed), 0);
 }
 
 #[test]
@@ -1583,7 +1816,7 @@ fn executable_snapshot_waits_for_retired_writable_translation_authority() {
     complete(crate::require_ok(map.commit_for_test()));
 
     assert!(matches!(
-        snapshot_source.try_executable_snapshot(&ExecutableProvenance::for_test(), &()),
+        executable_snapshot(&snapshot_source),
         Err(VmoError::Busy)
     ));
     let protect = crate::require_ok(address_space.prepare_protect(
@@ -1593,16 +1826,12 @@ fn executable_snapshot_waits_for_retired_writable_translation_authority() {
     ));
     let retired_writable = crate::require_ok(protect.commit_for_test());
     assert!(matches!(
-        snapshot_source.try_executable_snapshot(&ExecutableProvenance::for_test(), &()),
+        executable_snapshot(&snapshot_source),
         Err(VmoError::Busy)
     ));
 
     complete(retired_writable);
-    assert!(
-        snapshot_source
-            .try_executable_snapshot(&ExecutableProvenance::for_test(), &())
-            .is_ok()
-    );
+    assert!(executable_snapshot(&snapshot_source).is_ok());
 }
 
 #[test]
@@ -1637,15 +1866,11 @@ fn abandoned_or_stale_write_upgrade_releases_snapshot_admission() {
         Permissions::read_write(),
     ));
     assert!(matches!(
-        snapshot_source.try_executable_snapshot(&ExecutableProvenance::for_test(), &()),
+        executable_snapshot(&snapshot_source),
         Err(VmoError::Busy)
     ));
     drop(abandoned);
-    assert!(
-        snapshot_source
-            .try_executable_snapshot(&ExecutableProvenance::for_test(), &())
-            .is_ok()
-    );
+    assert!(executable_snapshot(&snapshot_source).is_ok());
 
     let stale = crate::require_ok(address_space.prepare_protect(
         address_space.root_vmar(),
@@ -1667,11 +1892,7 @@ fn abandoned_or_stale_write_upgrade_releases_snapshot_admission() {
         stale.commit_for_test(),
         Err(AddressSpaceError::StaleTransaction)
     ));
-    assert!(
-        snapshot_source
-            .try_executable_snapshot(&ExecutableProvenance::for_test(), &())
-            .is_ok()
-    );
+    assert!(executable_snapshot(&snapshot_source).is_ok());
 }
 
 #[test]
@@ -1734,7 +1955,7 @@ fn exclusive_hardware_write_lease_closes_native_access_until_release() {
     ));
     assert!(matches!(retained.write(0, &[0xa5]), Err(VmoError::Busy)));
     assert!(matches!(
-        retained.try_executable_snapshot(&ExecutableProvenance::for_test(), &()),
+        executable_snapshot(&retained),
         Err(VmoError::Busy)
     ));
     assert!(matches!(
@@ -1860,7 +2081,7 @@ fn shared_atomic_word_coexists_with_writable_mapping_and_survives_unmap() {
         Err(VmoError::Busy)
     ));
     assert!(matches!(
-        writable.try_executable_snapshot(&ExecutableProvenance::for_test(), &()),
+        executable_snapshot(&writable),
         Err(VmoError::Busy)
     ));
     assert!(matches!(
@@ -3509,11 +3730,7 @@ fn snapshots_copy_sparse_pages_and_release_failed_destinations() {
         ] {
             failure.store(calls.load(Ordering::Relaxed) + 2, Ordering::Relaxed);
             if executable {
-                assert!(
-                    writable
-                        .try_executable_snapshot(&ExecutableProvenance::for_test(), &())
-                        .is_err()
-                );
+                assert!(executable_snapshot(&writable).is_err());
             } else {
                 assert!(writable.try_snapshot(snapshot_account.clone()).is_err());
             }
@@ -3533,8 +3750,7 @@ fn snapshots_copy_sparse_pages_and_release_failed_destinations() {
         }
     }
     let snapshot = crate::require_ok(writable.try_snapshot(snapshot_account));
-    let executable =
-        crate::require_ok(writable.try_executable_snapshot(&ExecutableProvenance::for_test(), &()));
+    let executable = crate::require_ok(executable_snapshot(&writable));
     let mut expected = vec![0; PAGE_SIZE as usize * 3];
     expected[7] = 0x31;
     expected[PAGE_SIZE as usize * 2 + 19] = 0x73;

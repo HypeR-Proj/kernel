@@ -23,9 +23,9 @@ use super::Error;
 use super::bootstrap::{self, BootProcess};
 
 #[cfg(not(all(feature = "kernel-test", feature = "kernel-self-test")))]
-const CORE_HANDLE_COUNT: usize = 12;
+const CORE_HANDLE_COUNT: usize = 13;
 #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
-const CORE_HANDLE_COUNT: usize = 11;
+const CORE_HANDLE_COUNT: usize = 12;
 
 const HAS_VM_AUTHORITY: bool = crate::hal::vm::userspace_vm_lifecycle_available();
 const HAS_DEVICE_AUTHORITY: bool = crate::device::assigned::available();
@@ -44,6 +44,7 @@ const CORE_PURPOSES: [u32; CORE_HANDLE_COUNT] = [
     purpose(hyper::abi::native::HYPER_NATIVE_STARTUP_HANDLE_PURPOSE_ROOT_VMAR),
     purpose(hyper::abi::native::HYPER_NATIVE_STARTUP_HANDLE_PURPOSE_INITIAL_STACK_VMAR),
     purpose(hyper::abi::native::HYPER_NATIVE_STARTUP_HANDLE_PURPOSE_BOOT_COMMAND_LINE),
+    purpose(hyper::abi::native::HYPER_NATIVE_STARTUP_HANDLE_PURPOSE_EXECUTABLE_AUTHORITY),
     #[cfg(not(all(feature = "kernel-test", feature = "kernel-self-test")))]
     purpose(hyper::abi::native::HYPER_NATIVE_STARTUP_HANDLE_PURPOSE_CONSOLE),
 ];
@@ -180,7 +181,7 @@ fn prepare_handles(
     }
     #[cfg(not(all(feature = "kernel-test", feature = "kernel-self-test")))]
     {
-        handles[11] = Some(prepare_handle(
+        handles[12] = Some(prepare_handle(
             crate::device::console::SystemConsole::try_publication(domain)
                 .map_err(Error::ConsoleObject)?,
             Rights::DUPLICATE
@@ -206,6 +207,13 @@ fn prepare_handles(
                     .union(Rights::MAP_DMA),
             )?);
     }
+    handles[11] = Some(prepare_handle(
+        ObjectPublication::try_new(
+            user_space::ExecutableAuthority::try_new(domain).map_err(Error::ExecutableAuthority)?,
+        )
+        .map_err(Error::Object)?,
+        user_space::ExecutableAuthority::SUPPORTED_RIGHTS,
+    )?);
     handles[10] = Some(prepare_boot_command_line(domain)?);
     // Prepare the root VMAR last. Its one-per-address-space publication claim
     // needs explicit rollback, while every earlier handle is self-contained.

@@ -14,13 +14,16 @@ use super::contract::{MemoryAccount, MemoryCharge, PageBackend};
 
 mod atomic_word;
 mod direct_copy;
+mod executable;
 mod file_source;
 mod private_view;
 pub(crate) use atomic_word::SharedAtomicWord;
 pub(super) use direct_copy::PinnedReadRange;
+pub(crate) use executable::{EXECUTABLE_PUBLICATION_BATCH_PAGES, PreparedExecutableVmo};
 use file_source::FileBacking;
 pub(crate) use file_source::FilePageSource;
-pub(super) use private_view::{PinnedPrivateRange, PrivateView, PrivateViewBuilder};
+pub(super) use private_view::{PinnedPrivateRange, PrivateView};
+pub(crate) use private_view::{PreparedExecutableView, PrivateViewBuilder};
 
 #[cfg(not(test))]
 pub(super) type UserMemoryLock<T> = InterruptSpinLock<T, crate::hal::irq::LocalMask>;
@@ -729,34 +732,6 @@ impl<Backend: PageBackend, Account: MemoryAccount> WritableVmo<Backend, Account>
         })
     }
 
-    /// Produces a coherent, fully backed, physically distinct image.
-    ///
-    /// Snapshot admission excludes new writers and waits for no context: it
-    /// reports `Busy` while a writer is active. The returned type exposes no
-    /// write operation, and no source page is shared with executable backing.
-    pub(crate) fn try_executable_snapshot(
-        &self,
-        _provenance: &ExecutableProvenance,
-        publication_context: &Backend::InstructionPublicationContext,
-    ) -> Result<ExecutableVmo<Backend, Account>, VmoError<Backend::Error, Account::Error>> {
-        let freeze = SnapshotGuard::acquire(&self.inner)?;
-        let snapshot = WritableVmo::try_new(
-            self.inner.size,
-            self.inner.backend.clone(),
-            self.inner.account.clone(),
-        )?;
-        let page_count = page_count(self.inner.size)?;
-        snapshot
-            .prepare_pages(0, page_count)
-            .map_err(|failure| failure.cause)?;
-        self.copy_frozen_pages_to(&snapshot)?;
-        drop(freeze);
-        snapshot.publish_instruction_pages(publication_context)?;
-        Ok(ExecutableVmo {
-            inner: snapshot.inner,
-        })
-    }
-
     /// Caller holds the source snapshot guard and exclusively owns a fully
     /// populated, zeroed destination which has never been published. VMO
     /// construction requires a page-aligned size, so every copy is a full page.
@@ -777,30 +752,6 @@ impl<Backend: PageBackend, Account: MemoryAccount> WritableVmo<Backend, Account>
                         .map_err(VmoError::Backend)
                 })
             })?;
-        }
-        Ok(())
-    }
-
-    fn publish_instruction_pages(
-        &self,
-        publication_context: &Backend::InstructionPublicationContext,
-    ) -> Result<(), VmoError<Backend::Error, Account::Error>> {
-        let count = page_count(self.inner.size)?;
-        let mut missing = false;
-        self.inner
-            .backend
-            .publish_instruction_pages(publication_context, |visit| {
-                for index in 0..count {
-                    let Some(page) = optional_page_ref(&self.inner, index).ok().flatten() else {
-                        missing = true;
-                        continue;
-                    };
-                    page.with(|owned| visit(&mut owned.page));
-                }
-            })
-            .map_err(VmoError::Backend)?;
-        if missing {
-            return Err(VmoError::InvalidRange);
         }
         Ok(())
     }

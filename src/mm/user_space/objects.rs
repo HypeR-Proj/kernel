@@ -29,6 +29,8 @@ type NativeSnapshotVmo = SnapshotVmo<KernelPageBackend, DomainAccount>;
 type NativeExecutableVmo = ExecutableVmo<KernelPageBackend, DomainAccount>;
 pub(crate) type NativeSharedAtomicWord =
     super::vmo::SharedAtomicWord<KernelPageBackend, DomainAccount>;
+pub(crate) type NativePreparedExecutableVmo =
+    super::vmo::PreparedExecutableVmo<KernelPageBackend, DomainAccount>;
 
 /// Stable writable VMO backing shared with a hardware address space.
 ///
@@ -388,22 +390,21 @@ impl VmoObject {
 
     /// Derives a physically distinct immutable executable snapshot.
     ///
-    /// The caller must have independently resolved both the writable VMO with
-    /// `READ` and the authority object with `CREATE_EXECUTABLE`. The pinned
-    /// execution proof supplies the architecture cache-publication context.
-    #[expect(
-        dead_code,
-        reason = "reserved executable-authority conversion has no Native syscall consumer yet"
-    )]
-    pub(crate) fn try_executable_snapshot<P: hyper::cpu::PinnedExecution + 'static>(
+    /// The caller must independently resolve the writable VMO with `READ` and
+    /// the authority with `CREATE_EXECUTABLE`. The result remains unpublished
+    /// until all bounded instruction-cache maintenance batches finish.
+    pub(crate) fn prepare_executable_snapshot(
         &self,
         authority: &ExecutableAuthority,
-        pin: &P,
         sponsor: &ResourceDomain,
-    ) -> Result<Self, MemoryObjectError> {
+    ) -> Result<NativePreparedExecutableVmo, MemoryObjectError> {
         let writable = self.writable().ok_or(MemoryObjectError::WrongVariant)?;
-        let executable = writable.try_executable_snapshot(&authority.provenance(), pin)?;
-        Self::from_executable(executable, sponsor)
+        writable
+            .prepare_executable_snapshot(
+                &authority.provenance(),
+                DomainAccount::new(sponsor.clone()),
+            )
+            .map_err(MemoryObjectError::Vmo)
     }
 }
 

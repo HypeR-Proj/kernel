@@ -11,6 +11,14 @@ use crate::capability::HandleValue;
 use crate::mm::user_space::UserSlice;
 
 impl MemoryServices for ProcessServices<'_> {
+    fn executable_publish(
+        &self,
+        authority: &InvocationReceiver,
+        source: HandleValue,
+    ) -> Result<(HandleValue, u64), crate::mm::user_space::MemoryServiceError> {
+        crate::mm::user_space::executable_publish(self.process, authority, source)
+    }
+
     fn vmo_wait_u32(
         &self,
         receiver: &InvocationReceiver,

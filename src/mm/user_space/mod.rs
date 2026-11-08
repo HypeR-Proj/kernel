@@ -15,6 +15,8 @@ pub(crate) use address_space::{VmarDetailError, VmarDetailRecord};
 #[cfg(not(test))]
 mod authority;
 mod contract;
+#[cfg(not(test))]
+mod executable;
 mod free_ranges;
 mod index;
 mod inline_buffer;
@@ -44,7 +46,7 @@ pub(crate) use address_space::{
 };
 #[cfg(not(test))]
 pub(crate) use authority::ExecutableAuthority;
-#[cfg(all(not(test), all(feature = "kernel-test", feature = "kernel-self-test")))]
+#[cfg(not(test))]
 pub(crate) use authority::ExecutableAuthorityError;
 pub(crate) use contract::{
     Access, AddressError, MemoryAccount, MemoryCharge, Permissions, ResidencyAction,
@@ -97,6 +99,8 @@ pub(crate) use vmo::{
 };
 
 #[cfg(not(test))]
+pub(crate) use executable::{PublicationError, executable_publish, publish_snapshot, publish_view};
+#[cfg(not(test))]
 pub(crate) use service::{PrivateMappingRequest, create_vmo_snapshot, map_file, map_private};
 
 #[cfg(test)]
@@ -106,3 +110,6 @@ pub(crate) use contract::{PageBackend, UserAddressWindow};
 
 #[cfg(test)]
 pub(crate) use vmo::FilePageSource;
+
+#[cfg(test)]
+pub(crate) use vmo::PrivateViewBuilder;

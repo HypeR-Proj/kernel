@@ -210,7 +210,7 @@ initial set can use the existing batch reservation and publication transaction.
 
 The production init transaction reserves and writes only the authorities init
 currently consumes: the root `ResourceDomain`, root `TaskGroup`,
-`TaskFactory`, root `Directory`, system `TaskInspector`, `ObjectInspector`,
+`TaskFactory`, `ExecutableAuthority`, root `Directory`, system `TaskInspector`, `ObjectInspector`,
 `MemoryInspector` and `CpuInspector` views, the process root VMAR, the
 runtime-owned initial stack VMAR, and (when available) Console, VM creation and
 device-assignment authorities. Future handle values are encoded while unresolved
@@ -219,7 +219,10 @@ initial Thread can run. No self-Process handle is installed in its own table.
 The root VMAR and executable File are delegated with narrowly typed rights for
 runtime linking. File mappings require READ and a matching process-local
 protection token, plus EXECUTE for executable segments; writes cannot obtain
-executable authority.
+executable authority. The separately delegated `ExecutableAuthority` can publish
+an immutable executable copy of a readable writable VMO; it does not permit
+RWX mappings or modify existing executable bytes. Bootstrap passes it to the
+formal supervisor, which exports it only through explicit component policy.
 
 The initial root Directory is an explicit namespace-root anchor and includes
 `MANAGE_NAMESPACE`. Duplicates retain the anchor; opened directories remain

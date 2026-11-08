@@ -330,3 +330,22 @@ pub(in crate::abi::native) fn sys_vmo_wake_u32(
         Err(status) => failure(status),
     })
 }
+
+#[inline(never)]
+pub(in crate::abi::native) fn sys_executable_publish(
+    services: &impl MemoryServices,
+    receiver: &InvocationReceiver,
+    arguments: &Arguments,
+) -> NativeAction {
+    let result = (|| {
+        require_zero(&arguments[1..])?;
+        let source = parse_handle(arguments[0])?;
+        services
+            .executable_publish(receiver, source)
+            .map_err(status_from_memory_service_error)
+    })();
+    NativeAction::Return(match result {
+        Ok((handle, size)) => success([handle_wire::to_abi(handle), size]),
+        Err(status) => failure(status),
+    })
+}
