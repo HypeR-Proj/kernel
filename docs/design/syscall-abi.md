@@ -1137,8 +1137,16 @@ quarantined devices may retain it until host reboot.
 
 Timer, EventPair, Counter, exception endpoint/token, atomic requeue, and generic
 DMA-map/revoke calls are not current Native operations. `ExecutableAuthority`
-and its creation right remain reserved; file EXECUTE authorizes executable
-protected mappings, not an exported file snapshot VMO. Reserved rights or accounting fields do not establish callable APIs.
+with `CREATE_EXECUTABLE` authorizes `executable_publish`: a coherent, physically
+distinct executable copy of an ordinary writable RAM VMO readable by the caller.
+The result has no WRITE right, is charged to the caller, and is exposed only
+after instruction-cache publication. Active writable mappings, shared atomic
+waits or exclusive hardware ownership report BUSY. Authority is explicitly
+delegated from init, with no ambient factory mint or default application grant.
+File EXECUTE separately authorizes executable protected mappings, not an exported
+file snapshot VMO. See the
+[publication contract](https://github.com/HypeR-Proj/abi/blob/main/docs/native.md#executable_publish).
+Other reserved rights or accounting fields do not establish callable APIs.
 
 ## AArch64 Tier-1 execution
 
