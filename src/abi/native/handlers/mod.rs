@@ -77,7 +77,7 @@ pub(super) use memory::{
 pub(super) use object::{
     sys_event_create, sys_event_signal, sys_object_wait_many, sys_object_wait_one,
     sys_wait_set_add, sys_wait_set_create, sys_wait_set_rearm, sys_wait_set_remove,
-    sys_wait_set_wait,
+    sys_wait_set_wait, sys_wait_set_wait_batch,
 };
 pub(super) use process_builder::{
     sys_process_builder_abort, sys_process_builder_add_handle, sys_process_builder_create,

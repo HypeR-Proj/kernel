@@ -188,3 +188,34 @@ pub(in crate::abi::native) fn sys_wait_set_wait(
     })();
     NativeAction::Return(status_only(result))
 }
+
+#[inline(never)]
+pub(in crate::abi::native) fn sys_wait_set_wait_batch(
+    services: &impl ObjectServices,
+    receiver: &InvocationReceiver,
+    arguments: &Arguments,
+) -> NativeAction {
+    let result = (|| {
+        let capacity = arguments[2];
+        if capacity == 0
+            || capacity > hyper::abi::native::HYPER_NATIVE_WAIT_SET_BATCH_MAX_EVENTS
+            || arguments[4] != 0
+            || arguments[5] != 0
+        {
+            return Err(HYPER_NATIVE_STATUS_INVALID_ARGUMENT);
+        }
+        let stride = crate::abi::native::wire::validate_record_stride(arguments[3], 24)?;
+        let length = capacity
+            .checked_mul(stride as u64)
+            .ok_or(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)?;
+        let output = UserSlice::new(UserAddress::new(arguments[1]), length)
+            .map_err(status_from_address_error)?;
+        services
+            .wait_set_wait_batch(receiver, arguments[0], output, capacity as usize, stride)
+            .map_err(status_from_object_service_error)
+    })();
+    NativeAction::Return(match result {
+        Ok(count) => success([count as u64, 0]),
+        Err(status) => failure(status),
+    })
+}

@@ -140,6 +140,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ]
         };
         println!("cargo:rerun-if-changed=tests/kernel/native_user_entry/capabilities.h");
+        println!("cargo:rerun-if-changed=tests/kernel/native_user_entry/wait-set-aarch64.S");
         for (source, name) in sources {
             println!("cargo:rerun-if-changed={source}");
             let object = output_directory.join(name);

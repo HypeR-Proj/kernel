@@ -816,6 +816,20 @@ busy until successful consumption. Final active-handle close detaches all
 subscriptions and wakes blocked consumers. Source pins retain lifetime without
 becoming active userspace authority.
 
+`wait_set_wait_batch` accepts an output array of 1 through 64 records, an
+8-byte-aligned record stride from 24 through 4096 bytes, an absolute deadline
+and zero options. It waits only for the first event and then drains immediately
+available events up to capacity. Each event commits after its full record,
+including the zero-filled unknown tail, is copied successfully. Success returns
+the committed count; a later copy fault, close or cancellation returns that
+successful prefix, while a failure before any commit returns its error. Only
+the returned prefix is valid; a faulting next record may have been modified.
+Failed copyout restores that event unless removal or closure cancelled it.
+Events arriving or rearmed during the call may join the batch; this is not a
+snapshot or reservation of all ready events. Committed records may describe
+registrations subsequently removed by another thread. The original single-event
+operation retains its existing result and failure contract.
+
 Every relevant assert and deassert advances the object's observation sequence,
 even when no subscription is armed. Bind and rearm atomically compare
 `{typed_level_state, sequence}` with event publication. This lets Native

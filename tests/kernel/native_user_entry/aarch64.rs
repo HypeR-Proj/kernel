@@ -72,6 +72,11 @@ native_program!(
     aarch64_native_atomic_wait_start,
     aarch64_native_atomic_wait_end
 );
+native_program!(
+    wait_set_batch_program,
+    aarch64_native_wait_set_batch_start,
+    aarch64_native_wait_set_batch_end
+);
 
 #[derive(Clone, Copy)]
 enum SiblingSetup {
@@ -265,6 +270,28 @@ pub(crate) fn run() -> Result<(), Error> {
         return Err(Error::Terminal);
     }
     crate::pr_info!("HypeR test: Native execution refaulted after resident file-page retirement");
+
+    let batch = run_program(
+        &domain,
+        &group,
+        wait_set_batch_program(),
+        "selftest/el0-wait-set-batch",
+        SiblingSetup::None,
+        RunControl::Join,
+        ThreadAuthority::None,
+    )?;
+    if batch.thread != (TerminalReason::ThreadExited { status: 0 })
+        || batch.process != (TerminalReason::LastThreadExited { status: 0 })
+    {
+        crate::pr_err!(
+            "HypeR test: Native WaitSet batch failed: {:?}",
+            batch.thread
+        );
+        return Err(Error::Terminal);
+    }
+    crate::pr_info!(
+        "HypeR test: Native WaitSet batch FIFO, copyout recovery and legacy wait passed"
+    );
 
     super::atomic_wait::run(&domain, &group, program())?;
     verify_pending_creation_exit()?;

@@ -284,6 +284,9 @@ pub(super) fn dispatch_operation(
         abi::NativeOperation::WaitSetWait => {
             handlers::sys_wait_set_wait(services, receiver, arguments)
         }
+        abi::NativeOperation::WaitSetWaitBatch => {
+            handlers::sys_wait_set_wait_batch(services, receiver, arguments)
+        }
         abi::NativeOperation::ProcessGetCurrentId => {
             handlers::sys_process_get_current_id(services, arguments)
         }
