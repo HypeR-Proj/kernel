@@ -5,7 +5,14 @@
 
 use super::*;
 
-pub(super) fn batch_delivery(domain: &ResourceDomain) -> Result<(), WaitSetError> {
+pub(super) fn batch_delivery(parent: &ResourceDomain) -> Result<(), WaitSetError> {
+    // Previously published objects may still retire against the parent's
+    // budget. Only this test owns charges in the child, so equality below
+    // measures batch allocation rather than unrelated reaper progress.
+    let isolated = parent
+        .try_new_child(crate::accounting::ResourceLimits::UNLIMITED)
+        .map_err(WaitSetError::Resource)?;
+    let domain = &isolated;
     let set = WaitSet::try_new(3, domain)?;
     let make = |id| -> Result<_, WaitSetError> {
         let charge = domain

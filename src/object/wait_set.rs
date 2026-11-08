@@ -489,7 +489,6 @@ fn invariant() -> ! {
 #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub(crate) fn test_delivery_rollback(domain: &ResourceDomain) -> Result<(), WaitSetError> {
     test_subscription_budget(domain)?;
-    tests::batch_delivery(domain)?;
     let set = WaitSet::try_new(1, domain)?;
     let charge = domain
         .reserve(ResourceAmount::ZERO.with(
@@ -679,3 +678,8 @@ fn test_subscription_budget(parent: &ResourceDomain) -> Result<(), WaitSetError>
 #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 #[path = "wait_set/tests.rs"]
 mod tests;
+
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+pub(crate) fn test_batch_delivery(domain: &ResourceDomain) -> Result<(), WaitSetError> {
+    tests::batch_delivery(domain)
+}

@@ -98,6 +98,8 @@ pub(crate) enum SelfTestError {
     VmErrorMapping,
     ChannelErrorMapping,
     RecordEncoding,
+    WaitSetDelivery,
+    WaitSetBatch,
     ValidationReachedService,
     DispatchAction,
 }
@@ -2897,7 +2899,9 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
     )
     .map_err(|_| SelfTestError::RecordEncoding)?;
     crate::object::test_delivery_rollback(&inspection_domain)
-        .map_err(|_| SelfTestError::RecordEncoding)?;
+        .map_err(|_| SelfTestError::WaitSetDelivery)?;
+    crate::object::test_batch_delivery(&inspection_domain)
+        .map_err(|_| SelfTestError::WaitSetBatch)?;
     crate::mm::user_space::test_transfer_budget().map_err(|_| SelfTestError::RecordEncoding)?;
     memory_contract::run().map_err(|_| SelfTestError::RecordEncoding)?;
     let event = Event::try_new(&inspection_domain).map_err(|_| SelfTestError::RecordEncoding)?;

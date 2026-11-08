@@ -43,7 +43,7 @@ pub(crate) use wait::{
 };
 
 #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
-pub(crate) use wait_set::test_delivery_rollback;
+pub(crate) use wait_set::{test_batch_delivery, test_delivery_rollback};
 
 #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub(crate) use signals::SignalNotificationMetrics;
