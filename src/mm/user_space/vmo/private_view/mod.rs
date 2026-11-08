@@ -11,7 +11,7 @@ use super::{
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicBool, Ordering};
-use hyper::mm::{FallibleArc, PAGE_SIZE};
+use hyper::mm::{FallibleArc, PAGE_SIZE, UniqueFallibleArc};
 
 pub(super) struct PrivatePage<B: PageBackend, A: MemoryAccount> {
     pub(super) owner: PageRef<B, A>,
@@ -433,6 +433,45 @@ pub(crate) struct PrivateViewBuilder<B: PageBackend, A: MemoryAccount> {
     view: FallibleArc<PrivateView<B, A>>,
 }
 
+/// An unpublished private view whose cache publication can yield between batches.
+pub(crate) struct PreparedExecutableView<B: PageBackend, A: MemoryAccount> {
+    view: UniqueFallibleArc<PrivateView<B, A>>,
+    next_page: usize,
+}
+
+impl<B: PageBackend, A: MemoryAccount> PreparedExecutableView<B, A> {
+    pub(crate) fn publish_next(
+        &mut self,
+        context: &B::InstructionPublicationContext,
+    ) -> VmoResult<B, A, bool> {
+        if self.next_page == self.view.pages.len() {
+            return Ok(true);
+        }
+        let end = self
+            .next_page
+            .saturating_add(super::EXECUTABLE_PUBLICATION_BATCH_PAGES)
+            .min(self.view.pages.len());
+        self.view
+            .backend
+            .publish_instruction_pages(context, |visit| {
+                for page in self.view.pages[self.next_page..end].iter().flatten() {
+                    page.owner.with(|owned| visit(&mut owned.page));
+                }
+            })
+            .map_err(VmoError::Backend)?;
+        self.next_page = end;
+        Ok(self.next_page == self.view.pages.len())
+    }
+
+    pub(crate) fn finish(mut self) -> VmoResult<B, A, FallibleArc<PrivateView<B, A>>> {
+        if self.next_page != self.view.pages.len() {
+            return Err(VmoError::Busy);
+        }
+        self.view.executable = true;
+        Ok(self.view.into_shared())
+    }
+}
+
 impl<B: PageBackend, A: MemoryAccount> PrivateViewBuilder<B, A> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn try_new(
@@ -461,20 +500,11 @@ impl<B: PageBackend, A: MemoryAccount> PrivateViewBuilder<B, A> {
     pub(crate) fn finish(self) -> FallibleArc<PrivateView<B, A>> {
         self.view
     }
-    pub(crate) fn finish_executable(
+    pub(crate) fn prepare_executable(
         self,
         _provenance: &ExecutableProvenance,
-        context: &B::InstructionPublicationContext,
-    ) -> VmoResult<B, A, FallibleArc<PrivateView<B, A>>> {
-        let mut view = self.view.try_into_unique().map_err(|_| VmoError::Busy)?;
-        view.backend
-            .publish_instruction_pages(context, |visit| {
-                for page in view.pages.iter().flatten() {
-                    page.owner.with(|owned| visit(&mut owned.page));
-                }
-            })
-            .map_err(VmoError::Backend)?;
-        view.executable = true;
-        Ok(view.into_shared())
+    ) -> VmoResult<B, A, PreparedExecutableView<B, A>> {
+        let view = self.view.try_into_unique().map_err(|_| VmoError::Busy)?;
+        Ok(PreparedExecutableView { view, next_page: 0 })
     }
 }

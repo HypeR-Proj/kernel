@@ -14,6 +14,11 @@ pub(crate) trait UserMemoryServices {
 }
 
 pub(crate) trait MemoryServices {
+    fn executable_publish(
+        &self,
+        authority: &InvocationReceiver,
+        source: HandleValue,
+    ) -> Result<(HandleValue, u64), MemoryServiceError>;
     fn vmo_wait_u32(
         &self,
         vmo: &InvocationReceiver,

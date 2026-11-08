@@ -240,15 +240,10 @@ pub(crate) fn map_private(
                     mode,
                 )
                 .map_err(MachineError::Logical)?;
-            // Allocation and sanitization precede CPU pinning. Only the unpublished
-            // builder can seal derived executable pages; the source capability
-            // supplies EXECUTE authority and no writable alias is published.
-            let pin = crate::task::scheduler::preempt_disable().map_err(ServiceError::Scheduler)?;
-            let view =
-                builder.finish_executable(&super::ExecutableProvenance::for_capability(), &pin);
-            crate::task::scheduler::preempt_enable_without_reschedule(pin)
-                .map_err(ServiceError::Scheduler)?;
-            let view = view.map_err(MemoryObjectError::Vmo)?;
+            let prepared = builder
+                .prepare_executable(&super::ExecutableProvenance::for_capability())
+                .map_err(MemoryObjectError::Vmo)?;
+            let view = super::publish_view(prepared)?;
             space
                 .logical()
                 .prepare_map_private_view(

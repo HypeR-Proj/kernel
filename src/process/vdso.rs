@@ -63,17 +63,20 @@ fn prepare(domain: &ResourceDomain) -> Result<Pair, Error> {
     let code = VmoObject::try_new_writable(size, domain).map_err(Error::Memory)?;
     code.write(0, IMAGE).map_err(Error::Memory)?;
     let storage = code.writable().ok_or(Error::Layout)?;
-    let pin = crate::task::scheduler::preempt_disable().map_err(Error::Scheduler)?;
+    let prepared = storage
+        .prepare_executable_snapshot(
+            &ExecutableProvenance::for_native_image_loader(),
+            crate::mm::user_space::DomainAccount::new(domain.clone()),
+        )
+        .map_err(|error| Error::Memory(MemoryObjectError::Vmo(error)))?;
     let executable =
-        storage.try_executable_snapshot(&ExecutableProvenance::for_native_image_loader(), &pin);
-    crate::task::scheduler::preempt_enable_without_reschedule(pin).map_err(Error::Scheduler)?;
-    let code = VmoObject::from_executable(
-        executable
-            .map_err(MemoryObjectError::Vmo)
-            .map_err(Error::Memory)?,
-        domain,
-    )
-    .map_err(Error::Memory)?;
+        crate::mm::user_space::publish_snapshot(prepared).map_err(|error| match error {
+            crate::mm::user_space::PublicationError::Vmo(error) => {
+                Error::Memory(MemoryObjectError::Vmo(error))
+            }
+            crate::mm::user_space::PublicationError::Scheduler(error) => Error::Scheduler(error),
+        })?;
+    let code = VmoObject::from_executable(executable, domain).map_err(Error::Memory)?;
     let data = VmoObject::try_new_writable(4096, domain).map_err(Error::Memory)?;
     let storage = data.writable_clone().ok_or(Error::Layout)?;
     storage

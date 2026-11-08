@@ -611,7 +611,8 @@ references rather than paying for private handle-table lookups.
 Writable, immutable snapshot and executable VMO variants share one ABI kind but
 publish different per-instance rights ceilings. A writable VMO cannot acquire
 `EXECUTE`. Immutable snapshots grant `READ` and `MAP`; executable provenance is
-internal to kernel loader preparation; ordinary userspace file mappings use
+created by kernel loader preparation or explicit `ExecutableAuthority` publication.
+Ordinary userspace file mappings use
 File EXECUTE authority plus content protection instead of an exported snapshot.
 Neither immutable variant can acquire `WRITE`. Executable views may share the
 same instruction-coherent immutable pages. A root VMAR
@@ -973,6 +974,20 @@ require immutable executable provenance; writable authority cannot be upgraded
 to executable authority. W^X is the default. A mapping operation consumes
 typed user addresses and checked lengths, never Rust pointers.
 
+`executable_publish` requires `CREATE_EXECUTABLE` on an ExecutableAuthority
+and `READ` on an ordinary writable memory VMO. It freezes the source while
+copying physically distinct pages charged to the calling process's resource
+domain. Active writable mappings, shared atomic waits and exclusive hardware
+writers reject preparation with `BUSY`. The source remains writable after the
+copy; later changes never affect the executable result. The new VMO grants
+`READ|MAP|EXECUTE` plus handle administration, never `WRITE`. Options and reserved
+arguments must be zero. Allocation and copying occur outside CPU pins;
+instruction-cache publication uses batches of at most sixteen pages, observing
+pending rescheduling between batches. Only a fully published copy receives a
+handle. Private executable views follow the same bounded publication discipline.
+The initial supervisor receives the authority; delegation to applications is
+explicit policy, not an ObjectFactory right or a default application grant.
+
 `vmo_create_snapshot` captures coherent immutable memory-VMO bytes while
 excluding writable mappings and exclusive hardware writers. Files have no
 userspace snapshot-VMO operation.
@@ -1122,8 +1137,16 @@ quarantined devices may retain it until host reboot.
 
 Timer, EventPair, Counter, exception endpoint/token, atomic requeue, and generic
 DMA-map/revoke calls are not current Native operations. `ExecutableAuthority`
-and its creation right remain reserved; file EXECUTE authorizes executable
-protected mappings, not an exported file snapshot VMO. Reserved rights or accounting fields do not establish callable APIs.
+with `CREATE_EXECUTABLE` authorizes `executable_publish`: a coherent, physically
+distinct executable copy of an ordinary writable RAM VMO readable by the caller.
+The result has no WRITE right, is charged to the caller, and is exposed only
+after instruction-cache publication. Active writable mappings, shared atomic
+waits or exclusive hardware ownership report BUSY. Authority is explicitly
+delegated from init, with no ambient factory mint or default application grant.
+File EXECUTE separately authorizes executable protected mappings, not an exported
+file snapshot VMO. See the
+[publication contract](https://github.com/HypeR-Proj/abi/blob/main/docs/native.md#executable_publish).
+Other reserved rights or accounting fields do not establish callable APIs.
 
 ## AArch64 Tier-1 execution
 

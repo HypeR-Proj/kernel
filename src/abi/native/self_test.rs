@@ -693,6 +693,15 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
     }
 
     impl MemoryServices for RejectingServices {
+        fn executable_publish(
+            &self,
+            _: &InvocationReceiver,
+            _: HandleValue,
+        ) -> Result<(HandleValue, u64), MemoryServiceError> {
+            self.calls.set(self.calls.get().saturating_add(1));
+            Err(MemoryServiceError::Process(ProcessError::Allocation))
+        }
+
         fn vmo_wait_u32(
             &self,
             _: &InvocationReceiver,
@@ -1729,6 +1738,24 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
             {
                 return Err(SelfTestError::RecordEncoding);
             }
+        }
+    }
+
+    // Reserved publication fields reject before source resolution or allocation.
+    for index in 1..6 {
+        let publication_services = RejectingServices {
+            calls: Cell::new(0),
+        };
+        let mut arguments = [0x0f37_79b9_7f4a_7c12, 0, 0, 0, 0, 0];
+        arguments[index] = 1u64 << 63;
+        let result = harness.returning(
+            &publication_services,
+            invoke(NativeOperation::ExecutablePublish, arguments),
+        )?;
+        if result.status() != HYPER_NATIVE_STATUS_INVALID_ARGUMENT
+            || publication_services.calls.get() != 0
+        {
+            return Err(SelfTestError::RecordEncoding);
         }
     }
 

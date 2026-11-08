@@ -120,6 +120,9 @@ pub(super) fn dispatch_operation(
         abi::NativeOperation::ObjectGetBasicInfo => NativeAction::Return(
             handlers::sys_object_get_basic_info(services, receiver, arguments),
         ),
+        abi::NativeOperation::ExecutablePublish => {
+            handlers::sys_executable_publish(services, receiver, arguments)
+        }
         abi::NativeOperation::VmoCreateSnapshot => {
             handlers::sys_vmo_create_snapshot(services, receiver, arguments)
         }

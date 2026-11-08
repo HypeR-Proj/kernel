@@ -27,6 +27,7 @@ pub(crate) enum Error {
     IncompleteThreadPublication,
     Scheduler(scheduler::Error),
     MemoryObject(crate::mm::user_space::MemoryObjectError),
+    ExecutableAuthority(crate::mm::user_space::ExecutableAuthorityError),
     Object(crate::object::ObjectCreationError),
     Process(ProcessError),
     Resource(ResourceError),
@@ -57,6 +58,10 @@ impl core::fmt::Debug for Error {
             Self::Inspection(error) => formatter.debug_tuple("Inspection").field(error).finish(),
             Self::IncompleteThreadPublication => formatter.write_str("IncompleteThreadPublication"),
             Self::Scheduler(error) => formatter.debug_tuple("Scheduler").field(error).finish(),
+            Self::ExecutableAuthority(error) => formatter
+                .debug_tuple("ExecutableAuthority")
+                .field(error)
+                .finish(),
             Self::MemoryObject(error) => {
                 formatter.debug_tuple("MemoryObject").field(error).finish()
             }

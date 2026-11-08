@@ -49,14 +49,20 @@ Schema, generated C/Rust bindings, kernel routing, installed SDK consumers and
 contract tests must change together. Pre-release ABI revision remains zero; it
 does not permit partial producer/consumer migrations.
 
-## Reserved executable conversion
+## Controlled executable publication
 
-`ExecutableAuthority` and `CREATE_EXECUTABLE` are reserved foundations, not an
-available Native issuance/conversion API. The callable file path uses
-`file_protect` and `vmar_map_file`: File READ|EXECUTE plus active content
-protection authorizes executable mappings, without exposing a snapshot VMO.
-Converting arbitrary
-writable bytes requires a separately issued authority, immutable snapshot and
-architecture instruction-publication proof. Do not expose it implicitly through
-ordinary VMO write/map rights. There is no current app consumer that justifies
-adding a new authority-distribution policy as part of syscall regrouping.
+`executable_publish` requires `CREATE_EXECUTABLE` on an explicitly delegated
+`ExecutableAuthority` and READ on an ordinary writable RAM VMO. It copies the
+whole source into physically distinct immutable executable backing and returns
+a new VMO with READ|MAP|EXECUTE and administrative rights, never WRITE. Active
+writable mappings, shared atomic waits or exclusive hardware ownership report
+BUSY. The calling process pays for the copy; architecture instruction-cache
+publication completes before the handle becomes visible. Options and unused
+arguments must be zero. The kernel does not validate the generated instructions.
+
+Only init initially receives publication authority; userspace explicitly routes
+it to selected components. Ordinary VMO write/map rights and ObjectFactory
+access do not imply publication authority. The separate file path uses
+`file_protect` and `vmar_map_file`: File READ|EXECUTE plus active content protection
+authorizes executable mappings without exposing a snapshot VMO. See the
+[publication contract](https://github.com/HypeR-Proj/abi/blob/main/docs/native.md#executable_publish).

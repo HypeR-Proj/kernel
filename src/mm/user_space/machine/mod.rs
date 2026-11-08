@@ -277,19 +277,13 @@ impl NativeImageSegment {
             )?,
             ImageStorage::Private(storage) => {
                 let storage = if self.permissions.contains(Access::Execute) {
-                    // Instruction publication requires a stable CPU, but mapping
-                    // commit may yield while another loader owns the cross-call
-                    // transport. Release this pin before preparing that commit,
-                    // including when executable publication fails.
-                    let pin =
-                        crate::task::scheduler::preempt_disable().map_err(|_| Error::Transport)?;
-                    let published = storage.finish_executable(
+                    let prepared = storage.prepare_executable(
                         &super::ExecutableProvenance::for_native_image_loader(),
-                        &pin,
-                    );
-                    crate::task::scheduler::preempt_enable_without_reschedule(pin)
-                        .map_err(|_| Error::Transport)?;
-                    published?
+                    )?;
+                    super::publish_view(prepared).map_err(|error| match error {
+                        super::executable::PublicationError::Vmo(error) => Error::Vmo(error),
+                        super::executable::PublicationError::Scheduler(_) => Error::Transport,
+                    })?
                 } else {
                     storage.finish()
                 };
