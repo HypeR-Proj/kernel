@@ -95,6 +95,15 @@ pub(crate) trait ObjectServices {
         output: UserSlice,
     ) -> Result<(), ObjectServiceError>;
 
+    fn wait_set_wait_batch(
+        &self,
+        set: &InvocationReceiver,
+        deadline: u64,
+        output: UserSlice,
+        capacity: usize,
+        stride: usize,
+    ) -> Result<usize, ObjectServiceError>;
+
     fn create_event(&self) -> Result<HandleValue, ObjectServiceError>;
     fn signal_event(
         &self,

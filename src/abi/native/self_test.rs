@@ -285,6 +285,17 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
             Err(ObjectServiceError::InvalidInput)
         }
 
+        fn wait_set_wait_batch(
+            &self,
+            _set: &InvocationReceiver,
+            _deadline: u64,
+            _output: UserSlice,
+            _capacity: usize,
+            _stride: usize,
+        ) -> Result<usize, ObjectServiceError> {
+            Err(ObjectServiceError::InvalidInput)
+        }
+
         fn create_event(&self) -> Result<HandleValue, ObjectServiceError> {
             self.calls.set(self.calls.get().saturating_add(1));
             Err(ProcessError::Allocation.into())

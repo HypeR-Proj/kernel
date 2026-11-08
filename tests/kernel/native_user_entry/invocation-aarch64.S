@@ -155,3 +155,5 @@ program aarch64_native_atomic_wait
 1:
     brk #4
 end_program aarch64_native_atomic_wait
+
+#include "wait-set-aarch64.S"

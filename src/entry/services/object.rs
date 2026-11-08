@@ -98,6 +98,58 @@ impl ObjectServices for ProcessServices<'_> {
         Ok(())
     }
 
+    fn wait_set_wait_batch(
+        &self,
+        set: &InvocationReceiver,
+        deadline: u64,
+        output: UserSlice,
+        capacity: usize,
+        stride: usize,
+    ) -> Result<usize, ObjectServiceError> {
+        let set = set
+            .resolve::<object::WaitSet>(Rights::WAIT)
+            .map_err(crate::process::ProcessError::from)?;
+        set.object().read_batch(
+            deadline,
+            capacity,
+            &self.process.resource_domain(),
+            || self.thread.snapshot().phase == UserThreadPhase::StopRequested,
+            |index, record| {
+                let offset = index
+                    .checked_mul(stride)
+                    .ok_or(ObjectServiceError::InvalidInput)?;
+                let end = offset
+                    .checked_add(stride)
+                    .ok_or(ObjectServiceError::InvalidInput)?;
+                if stride < record.len() || end as u64 > output.length() {
+                    return Err(ObjectServiceError::InvalidInput);
+                }
+                let base = output
+                    .base()
+                    .checked_add(offset as u64)
+                    .ok_or(ObjectServiceError::InvalidInput)?;
+                let prefix = UserSlice::new(base, record.len() as u64)
+                    .map_err(|_| ObjectServiceError::InvalidInput)?;
+                self.process.copy_to_user(prefix, record)?;
+                // Unknown output tails are zero, just like other strided ABI
+                // records. Faulting even in the tail retains this event.
+                let zero = [0u8; 64];
+                let mut done = record.len();
+                while done < stride {
+                    let length = (stride - done).min(zero.len());
+                    let address = base
+                        .checked_add(done as u64)
+                        .ok_or(ObjectServiceError::InvalidInput)?;
+                    let tail = UserSlice::new(address, length as u64)
+                        .map_err(|_| ObjectServiceError::InvalidInput)?;
+                    self.process.copy_to_user(tail, &zero[..length])?;
+                    done += length;
+                }
+                Ok(())
+            },
+        )
+    }
+
     fn create_event(&self) -> Result<HandleValue, ObjectServiceError> {
         let event = Event::try_new(&self.process.resource_domain())?;
         Ok(self

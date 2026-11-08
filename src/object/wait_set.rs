@@ -353,19 +353,8 @@ impl WaitSet {
         cancelled: impl Fn() -> bool,
     ) -> Result<Delivery, WaitSetError> {
         loop {
-            let ready = self.queue.state.with(|state| {
-                if state.closed {
-                    return Err(WaitSetError::Closed);
-                }
-                let ready = state.ready.pop_front();
-                self.queue.update(!state.ready.is_empty());
-                Ok(ready)
-            })?;
-            if let Some(ready) = ready {
-                return Ok(Delivery {
-                    queue: self.queue.clone(),
-                    ready: Some(ready),
-                });
+            if let Some(delivery) = self.try_take()? {
+                return Ok(delivery);
             }
             match super::wait_one(
                 SignalSource::new(&self.queue.signals, ReadyQueue::READABLE),
@@ -381,6 +370,66 @@ impl WaitSet {
                 SignalWaitOutcome::Cancelled => return Err(WaitSetError::Closed),
             }
         }
+    }
+
+    /// Claim only currently queued work; an empty queue never arms a timer.
+    fn try_take(&self) -> Result<Option<Delivery>, WaitSetError> {
+        let ready = self.queue.state.with(|state| {
+            if state.closed {
+                return Err(WaitSetError::Closed);
+            }
+            let ready = state.ready.pop_front();
+            self.queue.update(!state.ready.is_empty());
+            Ok(ready)
+        })?;
+        Ok(ready.map(|ready| Delivery {
+            queue: self.queue.clone(),
+            ready: Some(ready),
+        }))
+    }
+
+    /// Commit each record after its complete copy. Later errors cannot hide an
+    /// already delivered prefix. The callback runs outside object locks; one
+    /// Delivery retains rollback ownership until that callback succeeds.
+    pub(crate) fn read_batch<E: From<WaitSetError>>(
+        &self,
+        deadline: u64,
+        capacity: usize,
+        domain: &ResourceDomain,
+        cancelled: impl Fn() -> bool,
+        mut copy: impl FnMut(usize, &[u8; 24]) -> Result<(), E>,
+    ) -> Result<usize, E> {
+        if capacity == 0
+            || capacity > hyper::abi::native::HYPER_NATIVE_WAIT_SET_BATCH_MAX_EVENTS as usize
+        {
+            return Err(WaitSetError::InvalidInput.into());
+        }
+        let mut count = 0;
+        while count < capacity {
+            let step = (|| {
+                if cancelled() {
+                    return Err(WaitSetError::Closed.into());
+                }
+                let delivery = if count == 0 {
+                    Some(self.wait(deadline, domain, &cancelled).map_err(E::from)?)
+                } else {
+                    self.try_take().map_err(E::from)?
+                };
+                let Some(delivery) = delivery else {
+                    return Ok(false);
+                };
+                copy(count, &delivery.record())?;
+                delivery.complete();
+                Ok(true)
+            })();
+            match step {
+                Ok(true) => count += 1,
+                Ok(false) => break,
+                Err(error) if count == 0 => return Err(error),
+                Err(_) => break,
+            }
+        }
+        Ok(count)
     }
 
     fn close(&self) {
@@ -440,6 +489,7 @@ fn invariant() -> ! {
 #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
 pub(crate) fn test_delivery_rollback(domain: &ResourceDomain) -> Result<(), WaitSetError> {
     test_subscription_budget(domain)?;
+    tests::batch_delivery(domain)?;
     let set = WaitSet::try_new(1, domain)?;
     let charge = domain
         .reserve(ResourceAmount::ZERO.with(
@@ -625,3 +675,7 @@ fn test_subscription_budget(parent: &ResourceDomain) -> Result<(), WaitSetError>
         .complete();
     result
 }
+
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+#[path = "wait_set/tests.rs"]
+mod tests;
