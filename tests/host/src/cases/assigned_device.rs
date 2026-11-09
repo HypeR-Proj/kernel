@@ -5,6 +5,21 @@
 mod model;
 
 #[test]
+fn mmio_only_bundles_do_not_require_a_fabricated_physical_interrupt() {
+    use hyper::hal::interrupt::InterruptTrigger::{Edge, Level};
+    assert!(model::valid_bundle_interrupt(0, 0, Level));
+    // An absent line's placeholder trigger cannot invent interrupt authority.
+    assert!(model::valid_bundle_interrupt(0, 0, Edge));
+    assert!(model::valid_bundle_interrupt(32, 1, Level));
+    assert!(model::valid_bundle_interrupt(122, 1, Level));
+    for interrupt in [0, 15, 16, 31] {
+        assert!(!model::valid_bundle_interrupt(interrupt, 1, Level));
+    }
+    assert!(!model::valid_bundle_interrupt(32, 1, Edge));
+    assert!(!model::valid_bundle_interrupt(122, 1, Edge));
+}
+
+#[test]
 fn admitted_virtio_kinds_keep_firmware_selection_unambiguous() {
     use model::VirtioKind;
     assert_eq!(VirtioKind::from_device_id(8), Some(VirtioKind::Scsi));
