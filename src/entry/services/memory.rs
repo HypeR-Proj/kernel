@@ -98,6 +98,21 @@ impl MemoryServices for ProcessServices<'_> {
     ) -> Result<(), crate::mm::user_space::MemoryServiceError> {
         crate::mm::user_space::map_private(self.process, vmar, snapshot, request)
     }
+    fn map_file_shared(
+        &self,
+        vmar: &InvocationReceiver,
+        file: HandleValue,
+        request: crate::mm::user_space::SharedFileMappingRequest,
+    ) -> Result<(), crate::mm::user_space::MemoryServiceError> {
+        crate::mm::user_space::map_file_shared(self.process, vmar, file, request)
+    }
+    fn sync_file_range(
+        &self,
+        vmar: &InvocationReceiver,
+        request: crate::mm::user_space::SharedFileSyncRequest,
+    ) -> Result<(), crate::mm::user_space::MemoryServiceError> {
+        crate::mm::user_space::sync_file_range(self.process, vmar, request)
+    }
     fn read_vmo(
         &self,
         vmo: &InvocationReceiver,

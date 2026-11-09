@@ -26,6 +26,7 @@ pub(super) struct FileContent {
 struct ContentState {
     revision: NonZeroU64,
     known_length: Option<u64>,
+    shared: Option<hyper::mm::FallibleArc<super::shared::SharedFile>>,
 }
 
 pub(super) struct ContentGuard<'a> {
@@ -39,6 +40,7 @@ impl FileContent {
             state: Mutex::new(ContentState {
                 revision: NonZeroU64::MIN,
                 known_length: None,
+                shared: None,
             }),
             protections: ProtectionState::new(),
         }
@@ -74,12 +76,26 @@ impl ContentGuard<'_> {
     /// The content mutex excludes existing writers and new protection
     /// acquisition until this count is visible. Releases may run concurrently.
     pub(super) fn acquire_protection(&self) -> Result<(), Error> {
+        if self.shared().is_some_and(|file| file.writable_mapped()) {
+            return Err(Error::Busy);
+        }
         self.protections
             .acquire()
             .then_some(())
             .ok_or(Error::IdentifierExhausted)
     }
 
+    pub(super) fn shared(&self) -> Option<hyper::mm::FallibleArc<super::shared::SharedFile>> {
+        self.state.shared.clone()
+    }
+    pub(super) fn promote(
+        &mut self,
+        file: &hyper::mm::FallibleArc<super::shared::SharedFile>,
+    ) -> Result<(), Error> {
+        self.begin_mutation()?;
+        self.state.shared = Some(file.clone());
+        Ok(())
+    }
     pub(super) fn known_length(&self) -> Option<u64> {
         self.state.known_length
     }
@@ -97,7 +113,7 @@ impl ContentGuard<'_> {
             return Ok(length);
         }
         let length = read_length()?;
-        self.state.known_length = Some(length);
+        self.set_length(length);
         Ok(length)
     }
 
@@ -126,5 +142,8 @@ impl ContentGuard<'_> {
 
     pub(super) fn set_length(&mut self, length: u64) {
         self.state.known_length = Some(length);
+        if let Some(shared) = &self.state.shared {
+            shared.set_length(length);
+        }
     }
 }

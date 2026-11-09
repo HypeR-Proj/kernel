@@ -9,10 +9,14 @@
 use super::super::contract::{Access, MemoryAccount, PageBackend, UserSlice};
 use super::super::inline_buffer::InlineBuffer;
 use super::super::vmo::{MappingObject, VmoError, WritableMappingLease, WritableVmo};
+use super::super::{SharedAdmission, SharedPage};
+use super::AddressSpaceLock;
 use super::{
     AddressSpaceError, AddressSpaceId, AddressSpaceSnapshot, SpaceResult, UserAddressSpace,
     UserWriteRange, address_space_invariant_violation, intersection,
 };
+use alloc::vec::Vec;
+use hyper::mm::{FallibleArc, PAGE_SIZE};
 
 impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Account> {
     pub(crate) fn copy_from_user(
@@ -28,21 +32,23 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
         if source.length() == 0 {
             return Ok(());
         }
-        let plan = self.prepare_copy(source, Access::Read)?;
-        let mut copied = 0usize;
-        for segment in plan.segments.iter() {
-            let length =
-                usize::try_from(segment.length).map_err(|_| AddressSpaceError::SizeOverflow)?;
-            let end = copied
-                .checked_add(length)
-                .ok_or(AddressSpaceError::SizeOverflow)?;
-            let target = destination
-                .get_mut(copied..end)
-                .ok_or(AddressSpaceError::SizeOverflow)?;
-            segment.object.read_exposed(segment.object_offset, target)?;
-            copied = end;
+        let mut plan = self.prepare_copy(source, Access::Read)?;
+        for segment in plan.segments.iter_mut() {
+            if let CopyBacking::Mapping(object) = &segment.object
+                && object.shared_file().is_some()
+            {
+                segment.object = CopyBacking::Read(object.pin_read_range(
+                    segment.object_offset,
+                    usize::try_from(segment.length).map_err(|_| AddressSpaceError::SizeOverflow)?,
+                    &self.account,
+                )?);
+            }
         }
-        Ok(())
+        PreparedUserRead {
+            plan,
+            length: source.length(),
+        }
+        .copy_to_slice(0, destination)
     }
 
     /// Resolves and retains every source page before a caller acquires I/O
@@ -84,22 +90,8 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
             return Ok(());
         }
         let plan = self.prepare_copy(destination, Access::Write)?;
-        let mut copied = 0usize;
-        for segment in plan.segments.iter() {
-            let length =
-                usize::try_from(segment.length).map_err(|_| AddressSpaceError::SizeOverflow)?;
-            let end = copied
-                .checked_add(length)
-                .ok_or(AddressSpaceError::SizeOverflow)?;
-            let source = source
-                .get(copied..end)
-                .ok_or(AddressSpaceError::SizeOverflow)?;
-            segment
-                .object
-                .write_exposed(segment.object_offset, source)?;
-            copied = end;
-        }
-        Ok(())
+        let _admission = plan.admit_shared_write()?;
+        plan.copy_from(source)
     }
 
     /// Pins the current writable mapping set for a later transactional copy.
@@ -333,6 +325,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
                 .checked_add(delta)
                 .ok_or(AddressSpaceError::SizeOverflow)?;
             if access == Access::Write
+                && mapping.object.shared_file().is_none()
                 && !mapping.object.writable_backing(
                     object_offset,
                     usize::try_from(overlap.length())
@@ -340,6 +333,12 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
                 )?
             {
                 return Err(AddressSpaceError::CowRequired);
+            }
+            if let Some(view) = mapping.object.shared_file() {
+                let end = (object_offset + overlap.length()).div_ceil(PAGE_SIZE);
+                for index in object_offset / PAGE_SIZE..end {
+                    view.page(index as usize)?;
+                }
             }
             segments.push(CopySegment {
                 object: CopyBacking::Mapping(mapping.object.clone()),
@@ -356,8 +355,87 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
         if cursor != range.end() {
             return Err(AddressSpaceError::NotMapped);
         }
+        // A physical pin keeps bytes alive but does not retain namespace or
+        // mount authority. Keep a separate operation lease even after read
+        // segments are converted to bare physical owners. Last unmap can then
+        // retire its mapping lease without making an admitted copy invisible
+        // to unlink, rename or unmount.
+        let shared_count=segments.iter().filter(|segment|matches!(&segment.object,CopyBacking::Mapping(object) if object.shared_file().is_some())).count();
+        let source_charge = self.try_storage_charge::<Backend::SharedSource>(shared_count)?;
+        let mut sources = Vec::new();
+        sources
+            .try_reserve_exact(shared_count)
+            .map_err(|_| AddressSpaceError::Allocation)?;
+        for segment in segments.iter() {
+            if let CopyBacking::Mapping(object) = &segment.object
+                && let Some(view) = object.shared_file()
+            {
+                sources.push(view.retain_sync()?);
+            }
+        }
+        let has_shared = access == Access::Write && segments.iter().any(|segment| matches!(&segment.object, CopyBacking::Mapping(object) if object.shared_file().is_some()));
+        let shared = if has_shared {
+            let charge = Some(
+                self.account
+                    .try_charge(super::super::MemoryCharge {
+                        kernel_bytes:
+                            FallibleArc::<SharedOutputState<Backend, Account>>::allocation_size()
+                                as u64,
+                        ..Default::default()
+                    })
+                    .map_err(AddressSpaceError::Account)?,
+            );
+            let count = segments.iter().filter(|segment|matches!(&segment.object,CopyBacking::Mapping(object) if object.shared_file().is_some())).try_fold(0usize,|total,segment| total.checked_add(((segment.object_offset%PAGE_SIZE+segment.length).div_ceil(PAGE_SIZE)) as usize).ok_or(AddressSpaceError::SizeOverflow))?;
+            let pin_charge = self
+                .account
+                .try_charge(super::super::MemoryCharge {
+                    kernel_bytes: count
+                        .checked_mul(
+                            core::mem::size_of::<<Backend::SharedPage as SharedPage>::Pin>(),
+                        )
+                        .ok_or(AddressSpaceError::SizeOverflow)?
+                        as u64,
+                    ..Default::default()
+                })
+                .map_err(AddressSpaceError::Account)?;
+            let mut pins = Vec::new();
+            pins.try_reserve_exact(count)
+                .map_err(|_| AddressSpaceError::Allocation)?;
+            for segment in segments.iter() {
+                let CopyBacking::Mapping(object) = &segment.object else {
+                    continue;
+                };
+                let Some(view) = object.shared_file() else {
+                    continue;
+                };
+                for index in segment.object_offset / PAGE_SIZE
+                    ..(segment.object_offset + segment.length).div_ceil(PAGE_SIZE)
+                {
+                    pins.push(
+                        view.page(index as usize)?
+                            .try_pin()
+                            .map_err(super::super::vmo::shared_error::<Backend, Account>)?,
+                    );
+                }
+            }
+            Some(
+                FallibleArc::try_new(SharedOutputState {
+                    current: AddressSpaceLock::new(None),
+                    account: self.account.clone(),
+                    _charge: charge,
+                    _pins: pins,
+                    _pin_charge: pin_charge,
+                })
+                .map_err(|_| AddressSpaceError::Allocation)?,
+            )
+        } else {
+            None
+        };
         Ok(CopyPlan {
             segments,
+            shared,
+            _shared_sources: sources,
+            _shared_source_charge: source_charge,
             _temporary_charge: temporary_charge,
         })
     }
@@ -400,6 +478,9 @@ struct CopySegment<Backend: PageBackend, Account: MemoryAccount> {
 struct CopyPlan<Backend: PageBackend, Account: MemoryAccount> {
     segments: InlineBuffer<CopySegment<Backend, Account>>,
     _temporary_charge: Option<Account::Charge>,
+    shared: Option<FallibleArc<SharedOutputState<Backend, Account>>>,
+    _shared_sources: Vec<Backend::SharedSource>,
+    _shared_source_charge: Option<Account::Charge>,
 }
 
 impl<Backend: PageBackend, Account: MemoryAccount> CopyPlan<Backend, Account> {
@@ -443,7 +524,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> CopyPlan<Backend, Account> {
             let bytes = source
                 .get(copied..end)
                 .ok_or(AddressSpaceError::SizeOverflow)?;
-            segment.object.write_exposed(segment.object_offset, bytes)?;
+            self.write_segment(segment, segment.object_offset, bytes)?;
             copied = end;
         }
         Ok(())
@@ -472,9 +553,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> CopyPlan<Backend, Account> {
                     source = parts.next().ok_or(AddressSpaceError::SizeMismatch)?;
                 }
                 let count = source.len().min((segment.length - copied) as usize);
-                segment
-                    .object
-                    .write_exposed(segment.object_offset + copied, &source[..count])?;
+                self.write_segment(segment, segment.object_offset + copied, &source[..count])?;
                 source = &source[count..];
                 copied += count as u64;
             }
@@ -515,7 +594,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> CopyPlan<Backend, Account> {
             let bytes = source
                 .get(copied..end)
                 .ok_or(AddressSpaceError::SizeOverflow)?;
-            segment.object.write_exposed(segment.object_offset, bytes)?;
+            self.write_segment(segment, segment.object_offset, bytes)?;
             copied = end;
         }
         if copied != source.len() {
@@ -656,10 +735,151 @@ pub(crate) struct PreparedUserWrite<Backend: PageBackend, Account: MemoryAccount
     completed: bool,
 }
 
+impl<B: PageBackend, A: MemoryAccount> PreparedUserWrite<B, A> {
+    pub(crate) fn admit_shared_write(&self) -> SpaceResult<B, A, SharedOutputAdmission<B, A>> {
+        self.plan.admit_shared_write()
+    }
+}
+
 impl<Backend: PageBackend, Account: MemoryAccount> Drop for PreparedUserWrite<Backend, Account> {
     fn drop(&mut self) {
         if !self.completed {
             address_space_invariant_violation();
         }
+    }
+}
+
+struct SharedMutationSet<B: PageBackend, A: MemoryAccount> {
+    entries: Vec<(u64, <B::SharedPage as SharedPage>::Mutation)>,
+    _charge: A::Charge,
+}
+struct SharedOutputState<B: PageBackend, A: MemoryAccount> {
+    current: AddressSpaceLock<Option<FallibleArc<SharedMutationSet<B, A>>>>,
+    account: A,
+    _charge: Option<A::Charge>,
+    _pins: Vec<<B::SharedPage as SharedPage>::Pin>,
+    _pin_charge: A::Charge,
+}
+/// Owns only short mutation admissions; never retain across peer waits.
+pub(crate) struct SharedOutputAdmission<B: PageBackend, A: MemoryAccount> {
+    state: Option<FallibleArc<SharedOutputState<B, A>>>,
+}
+impl<B: PageBackend, A: MemoryAccount> Drop for SharedOutputAdmission<B, A> {
+    fn drop(&mut self) {
+        if let Some(state) = &self.state {
+            let retired = state.current.with(Option::take);
+            drop(retired);
+        }
+    }
+}
+impl<B: PageBackend, A: MemoryAccount> CopyPlan<B, A> {
+    fn admit_shared_write(&self) -> SpaceResult<B, A, SharedOutputAdmission<B, A>> {
+        let Some(state) = &self.shared else {
+            return Ok(SharedOutputAdmission { state: None });
+        };
+        if state.current.with(|current| current.is_some()) {
+            return Err(AddressSpaceError::Busy);
+        }
+        let count=self.segments.iter().try_fold(0usize,|count,segment| {
+            if matches!(&segment.object,CopyBacking::Mapping(object) if object.shared_file().is_some()) {
+                count.checked_add(((segment.object_offset%PAGE_SIZE+segment.length).div_ceil(PAGE_SIZE)) as usize).ok_or(AddressSpaceError::SizeOverflow)
+            } else {Ok(count)}
+        })?;
+        let bytes = count
+            .checked_mul(core::mem::size_of::<(
+                u64,
+                <B::SharedPage as SharedPage>::Mutation,
+            )>())
+            .and_then(|bytes| {
+                bytes.checked_add(FallibleArc::<SharedMutationSet<B, A>>::allocation_size())
+            })
+            .ok_or(AddressSpaceError::SizeOverflow)?;
+        let charge = state
+            .account
+            .try_charge(super::super::MemoryCharge {
+                kernel_bytes: bytes as u64,
+                ..Default::default()
+            })
+            .map_err(AddressSpaceError::Account)?;
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(count)
+            .map_err(|_| AddressSpaceError::Allocation)?;
+        for segment in self.segments.iter() {
+            let CopyBacking::Mapping(object) = &segment.object else {
+                continue;
+            };
+            let Some(view) = object.shared_file() else {
+                continue;
+            };
+            for index in segment.object_offset / PAGE_SIZE
+                ..(segment.object_offset + segment.length).div_ceil(PAGE_SIZE)
+            {
+                let page = view.page(index as usize)?;
+                if entries
+                    .iter()
+                    .any(|(identity, _)| *identity == page.identity())
+                {
+                    continue;
+                }
+                let guard = page
+                    .try_begin_write()
+                    .map_err(super::super::vmo::shared_error::<B, A>)?;
+                entries.push((page.identity(), guard));
+            }
+        }
+        let owned = FallibleArc::try_new(SharedMutationSet {
+            entries,
+            _charge: charge,
+        })
+        .map_err(|_| AddressSpaceError::Allocation)?;
+        state.current.with(|current| {
+            if current.is_some() {
+                return Err(AddressSpaceError::Busy);
+            }
+            *current = Some(owned.clone());
+            Ok(())
+        })?;
+        Ok(SharedOutputAdmission {
+            state: Some(state.clone()),
+        })
+    }
+    fn write_segment(
+        &self,
+        segment: &CopySegment<B, A>,
+        offset: u64,
+        bytes: &[u8],
+    ) -> SpaceResult<B, A, ()> {
+        let CopyBacking::Mapping(object) = &segment.object else {
+            return Ok(segment.object.write_exposed(offset, bytes)?);
+        };
+        let Some(view) = object.shared_file() else {
+            return Ok(segment.object.write_exposed(offset, bytes)?);
+        };
+        let state = self.shared.as_ref().ok_or(AddressSpaceError::Busy)?;
+        let admitted = state
+            .current
+            .with(|current| current.clone())
+            .ok_or(AddressSpaceError::Busy)?;
+        let mut copied = 0;
+        while copied < bytes.len() {
+            let absolute = offset + copied as u64;
+            let page = view.page((absolute / PAGE_SIZE) as usize)?;
+            let guard = &admitted
+                .entries
+                .iter()
+                .find(|(id, _)| *id == page.identity())
+                .ok_or(AddressSpaceError::Busy)?
+                .1;
+            if !guard.valid() {
+                return Err(AddressSpaceError::Busy);
+            }
+            let at = (absolute % PAGE_SIZE) as usize;
+            let length = (bytes.len() - copied).min(PAGE_SIZE as usize - at);
+            page.write_exposed(guard, at, &bytes[copied..copied + length])
+                .map_err(super::super::vmo::shared_error::<B, A>)?;
+            copied += length;
+        }
+        Ok(())
     }
 }

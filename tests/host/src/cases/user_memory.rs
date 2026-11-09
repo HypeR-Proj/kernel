@@ -110,6 +110,7 @@ struct Page {
     physical: PhysicalAddress,
     bytes: Arc<[u8; PAGE_SIZE as usize]>,
     retained_block: Option<Arc<Vec<u8>>>,
+    shared: Option<(TestSharedPage, Arc<TestPinOwner>)>,
 }
 
 struct BackendState {
@@ -175,6 +176,20 @@ impl Backend {
 
 impl PageBackend for Backend {
     type Page = Page;
+    type SharedPage = TestSharedPage;
+    type SharedSource = TestSharedSource;
+    fn retain_shared_page(
+        &self,
+        shared: Self::SharedPage,
+        pin: <Self::SharedPage as user::SharedPage>::Pin,
+    ) -> Self::Page {
+        Page {
+            physical: shared.physical,
+            bytes: Arc::new([0; PAGE_SIZE as usize]),
+            retained_block: None,
+            shared: Some((shared, pin)),
+        }
+    }
     type Error = PageError;
     type InstructionPublicationContext = ();
 
@@ -202,6 +217,7 @@ impl PageBackend for Backend {
             physical: PhysicalAddress::new(physical),
             bytes: Arc::new([0; PAGE_SIZE as usize]),
             retained_block: None,
+            shared: None,
         })
     }
 
@@ -279,6 +295,10 @@ impl PageBackend for Backend {
         offset: usize,
         destination: &mut [u8],
     ) -> Result<(), Self::Error> {
+        if let Some((shared, _)) = &page.shared {
+            return user::SharedPage::read_exposed(shared, offset, destination)
+                .map_err(|_| PageError);
+        }
         self.read_owned(page, offset, destination)
     }
 
@@ -5150,4 +5170,567 @@ fn translation_deltas_preserve_fragments_cow_reclaim_and_refault() {
         &mut model,
     );
     assert!(model.is_empty());
+}
+
+type TestAliases =
+    Arc<std::sync::Mutex<Vec<hyper::mm::WeakFallibleArc<Box<dyn user::SharedAlias>>>>>;
+#[derive(Clone)]
+struct TestSharedPage {
+    physical: PhysicalAddress,
+    bytes: Arc<std::sync::Mutex<[u8; PAGE_SIZE as usize]>>,
+    epoch: Arc<AtomicU64>,
+    frozen: Arc<AtomicBool>,
+    active: Arc<AtomicU64>,
+    pins: Arc<AtomicU64>,
+    aliases: TestAliases,
+}
+struct TestPinOwner {
+    page: TestSharedPage,
+}
+impl Drop for TestPinOwner {
+    fn drop(&mut self) {
+        self.page.pins.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+struct TestAdmission {
+    page: TestSharedPage,
+    epoch: u64,
+}
+impl user::SharedAdmission for TestAdmission {
+    fn epoch(&self) -> u64 {
+        self.epoch
+    }
+    fn valid(&self) -> bool {
+        self.epoch == self.page.epoch.load(Ordering::Acquire)
+    }
+}
+impl Drop for TestAdmission {
+    fn drop(&mut self) {
+        self.page.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+impl user::SharedPage for TestSharedPage {
+    type Mutation = TestAdmission;
+    type Install = TestAdmission;
+    type Pin = Arc<TestPinOwner>;
+    fn try_pin(&self) -> Result<Self::Pin, user::SharedFileError> {
+        self.pins.fetch_add(1, Ordering::AcqRel);
+        Ok(Arc::new(TestPinOwner { page: self.clone() }))
+    }
+    fn identity(&self) -> u64 {
+        self.physical.get()
+    }
+    fn physical_address(&self) -> PhysicalAddress {
+        self.physical
+    }
+    fn try_begin_write(&self) -> Result<TestAdmission, user::SharedFileError> {
+        if self.frozen.load(Ordering::Acquire) {
+            return Err(user::SharedFileError::Busy);
+        }
+        self.active.fetch_add(1, Ordering::AcqRel);
+        Ok(TestAdmission {
+            page: self.clone(),
+            epoch: self.epoch.load(Ordering::Acquire),
+        })
+    }
+    fn try_begin_install(&self) -> Result<TestAdmission, user::SharedFileError> {
+        self.try_begin_write()
+    }
+    fn register_alias(
+        &self,
+        alias: hyper::mm::WeakFallibleArc<Box<dyn user::SharedAlias>>,
+    ) -> Result<(), user::SharedFileError> {
+        let mut aliases = self
+            .aliases
+            .lock()
+            .map_err(|_| user::SharedFileError::Unavailable)?;
+        aliases.retain(|entry| entry.is_alive());
+        if aliases.iter().any(|entry| entry.ptr_eq(&alias)) {
+            return Ok(());
+        }
+        if aliases.len() == 64 {
+            return Err(user::SharedFileError::Allocation);
+        }
+        aliases.push(alias);
+        Ok(())
+    }
+    fn read_exposed(&self, offset: usize, bytes: &mut [u8]) -> Result<(), user::SharedFileError> {
+        let storage = self
+            .bytes
+            .lock()
+            .map_err(|_| user::SharedFileError::Unavailable)?;
+        bytes.copy_from_slice(
+            storage
+                .get(offset..offset + bytes.len())
+                .ok_or(user::SharedFileError::InvalidRange)?,
+        );
+        Ok(())
+    }
+    fn write_exposed(
+        &self,
+        guard: &TestAdmission,
+        offset: usize,
+        bytes: &[u8],
+    ) -> Result<(), user::SharedFileError> {
+        if !user::SharedAdmission::valid(guard) {
+            return Err(user::SharedFileError::Busy);
+        }
+        self.bytes
+            .lock()
+            .map_err(|_| user::SharedFileError::Unavailable)?
+            .get_mut(offset..offset + bytes.len())
+            .ok_or(user::SharedFileError::InvalidRange)?
+            .copy_from_slice(bytes);
+        Ok(())
+    }
+}
+struct TestOperationLease {
+    count: Arc<AtomicU64>,
+}
+impl Drop for TestOperationLease {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+#[derive(Clone)]
+struct TestSharedSource {
+    operations: Arc<AtomicU64>,
+    require_idle_fill: bool,
+    operation: Option<Arc<TestOperationLease>>,
+    size: u64,
+    pages: Arc<Vec<TestSharedPage>>,
+    retired: Arc<AtomicBool>,
+}
+impl user::SharedSource for TestSharedSource {
+    type Page = TestSharedPage;
+    fn identity(&self) -> (u64, u64) {
+        (1, 1)
+    }
+    fn size(&self) -> u64 {
+        self.size
+    }
+    fn page(&self, offset: u64) -> Result<TestSharedPage, user::SharedFileError> {
+        if self.require_idle_fill
+            && self
+                .pages
+                .iter()
+                .any(|page| page.active.load(Ordering::Acquire) != 0)
+        {
+            return Err(user::SharedFileError::Busy);
+        }
+        if self.retired.load(Ordering::Acquire) {
+            return Err(user::SharedFileError::Unavailable);
+        }
+        self.pages
+            .get((offset / PAGE_SIZE) as usize)
+            .cloned()
+            .ok_or(user::SharedFileError::InvalidRange)
+    }
+    fn retain_sync(&self) -> Result<Self, user::SharedFileError> {
+        if self.retired.load(Ordering::Acquire) {
+            return Err(user::SharedFileError::Unavailable);
+        }
+        let mut source = self.clone();
+        source.operations.fetch_add(1, Ordering::AcqRel);
+        source.operation = Some(Arc::new(TestOperationLease {
+            count: self.operations.clone(),
+        }));
+        Ok(source)
+    }
+    fn sync(&self, _: u32) -> Result<(), user::SharedFileError> {
+        Ok(())
+    }
+    fn retire(&self) {
+        self.retired.store(true, Ordering::Release);
+    }
+}
+
+struct TestSharedAlias;
+impl user::SharedAlias for TestSharedAlias {
+    fn withdraw(&self, _: u64, _: u64, _: bool) -> Result<(), ()> {
+        Ok(())
+    }
+}
+fn test_shared_source(count: usize) -> TestSharedSource {
+    TestSharedSource {
+        operations: Arc::new(AtomicU64::new(0)),
+        require_idle_fill: false,
+        operation: None,
+        size: count as u64 * PAGE_SIZE,
+        pages: Arc::new(
+            (0..count)
+                .map(|index| TestSharedPage {
+                    physical: PhysicalAddress::new(0x100000 + index as u64 * PAGE_SIZE),
+                    bytes: Arc::new(std::sync::Mutex::new([0; PAGE_SIZE as usize])),
+                    epoch: Arc::new(AtomicU64::new(1)),
+                    frozen: Arc::new(AtomicBool::new(false)),
+                    active: Arc::new(AtomicU64::new(0)),
+                    pins: Arc::new(AtomicU64::new(0)),
+                    aliases: Arc::new(std::sync::Mutex::new(Vec::new())),
+                })
+                .collect(),
+        ),
+        retired: Arc::new(AtomicBool::new(false)),
+    }
+}
+fn map_shared_test(
+    space: &UserAddressSpace<Backend, Account>,
+    source: TestSharedSource,
+    count: usize,
+) {
+    let alias: Box<dyn user::SharedAlias> = Box::new(TestSharedAlias);
+    let view = crate::require_ok(space.prepare_shared_view(
+        source,
+        crate::require_ok(hyper::mm::FallibleArc::try_new(alias)),
+        0,
+        count as u64 * PAGE_SIZE,
+    ));
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_map_shared_view(
+            space.root_vmar(),
+            slice(0x1000, count as u64 * PAGE_SIZE),
+            view,
+            Permissions::read_write(),
+            Permissions::read_write(),
+        ))
+        .commit_for_test(),
+    ));
+}
+
+#[test]
+fn mm01_reserved_withdrawal_preserves_immutable_grants_and_needs_no_allocation() {
+    let (backend, account) = fixtures();
+    let source = test_shared_source(1);
+    let page = source.pages[0].clone();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, 4 * PAGE_SIZE),
+        backend,
+        account.clone(),
+    ));
+    map_shared_test(&space, source, 1);
+    let populated = crate::require_some(crate::require_ok(
+        space.prepare_shared_population(slice(0x1000, PAGE_SIZE), true),
+    ));
+    let token = crate::require_some(populated.snapshots().next()).token;
+    let old = crate::require_ok(populated.resident_pages(token));
+    assert!(old.page_is_writable(0));
+    let (read_only, absent) =
+        crate::require_some(crate::require_ok(populated.prepare_shared_reserves()));
+    let published = crate::require_ok(populated.commit_for_test());
+    assert!(page.active.load(Ordering::Acquire) > 0);
+    complete(published);
+    assert_eq!(page.active.load(Ordering::Acquire), 0);
+    // VMAR-only authority updates cannot make pre-reserved revocation stale.
+    crate::require_ok(space.try_create_vmar(space.root_vmar(), slice(0x3000, PAGE_SIZE)));
+    let prepared = crate::require_ok(read_only.into_prepared(&space, space.mapping_epoch()));
+    let current = crate::require_ok(prepared.resident_pages(token));
+    assert!(!current.page_is_writable(0));
+    drop(current);
+    // Both prebuilt revocation commits remain possible under quota failure.
+    account.0.fail_next.store(true, Ordering::Release);
+    complete(crate::require_ok(prepared.commit_for_test()));
+    assert!(old.page_is_writable(0));
+    complete(crate::require_ok(
+        crate::require_ok(absent.into_prepared(&space, space.mapping_epoch())).commit_for_test(),
+    ));
+    assert!(matches!(
+        space.copy_from_user(slice(0x1000, 1), &mut [0]),
+        Err(AddressSpaceError::BackingNotResident)
+    ));
+}
+
+#[test]
+fn mm01_output_reservation_has_no_dirty_admission_until_copy_and_freeze_is_retriable() {
+    let (backend, account) = fixtures();
+    let source = test_shared_source(2);
+    let pages = source.pages.clone();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, 4 * PAGE_SIZE),
+        backend,
+        account,
+    ));
+    map_shared_test(&space, source, 2);
+    let populate = crate::require_some(crate::require_ok(
+        space.prepare_shared_population(slice(0x1000, 2 * PAGE_SIZE), false),
+    ));
+    let (_, absent) = crate::require_some(crate::require_ok(populate.prepare_shared_reserves()));
+    complete(crate::require_ok(populate.commit_for_test()));
+    let output = crate::require_ok(space.prepare_user_write_for_test(slice(0x1000, 2 * PAGE_SIZE)));
+    assert_eq!(pages[0].active.load(Ordering::Acquire), 0);
+    assert_eq!(pages[1].active.load(Ordering::Acquire), 0);
+    assert_eq!(pages[0].pins.load(Ordering::Acquire), 1);
+    assert_eq!(pages[1].pins.load(Ordering::Acquire), 1);
+    pages[1].frozen.store(true, Ordering::Release);
+    assert!(output.admit_shared_write().is_err());
+    assert_eq!(pages[0].active.load(Ordering::Acquire), 0);
+    pages[1].frozen.store(false, Ordering::Release);
+    let admission = crate::require_ok(output.admit_shared_write());
+    crate::require_ok(space.write_user_reservation_prefix_for_test(&output, &[11, 12]));
+    drop(admission);
+    assert_eq!(pages[0].active.load(Ordering::Acquire), 0);
+    let mut actual = [0; 2];
+    crate::require_ok(space.copy_from_user(slice(0x1000, 2), &mut actual));
+    assert_eq!(actual, [11, 12]);
+    // Retained output ranges do not veto translation withdrawal.
+    complete(crate::require_ok(
+        crate::require_ok(absent.into_prepared(&space, space.mapping_epoch())).commit_for_test(),
+    ));
+    let admission = crate::require_ok(output.admit_shared_write());
+    crate::require_ok(space.write_user_reservation_prefix_for_test(&output, &[13, 14]));
+    drop(admission);
+    space.release_user_write_for_test(output);
+    assert_eq!(pages[0].pins.load(Ordering::Acquire), 0);
+    assert_eq!(pages[1].pins.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn mm01_last_mapping_source_retires_only_after_ack_even_with_observation_pins() {
+    let (backend, account) = fixtures();
+    let source = test_shared_source(2);
+    let retired = source.retired.clone();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, 4 * PAGE_SIZE),
+        backend,
+        account,
+    ));
+    map_shared_test(&space, source, 2);
+    let population = crate::require_some(crate::require_ok(
+        space.prepare_shared_population(slice(0x1000, 2 * PAGE_SIZE), false),
+    ));
+    let token = crate::require_some(population.snapshots().next()).token;
+    let observation = crate::require_ok(population.resident_pages(token));
+    complete(crate::require_ok(population.commit_for_test()));
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x1000, PAGE_SIZE)))
+            .commit_for_test(),
+    ));
+    assert!(!retired.load(Ordering::Acquire));
+    let last = crate::require_ok(
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x2000, PAGE_SIZE)))
+            .commit_for_test(),
+    );
+    assert!(!retired.load(Ordering::Acquire));
+    complete(last);
+    assert!(retired.load(Ordering::Acquire));
+    drop(observation);
+}
+
+#[test]
+fn mm01_shared_files_reject_implicit_residency_and_atomic_wait_contracts() {
+    let (backend, account) = fixtures();
+    let source = test_shared_source(1);
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, 4 * PAGE_SIZE),
+        backend,
+        account.clone(),
+    ));
+    map_shared_test(&space, source, 1);
+    let calls = account.0.charge_calls.load(Ordering::Acquire);
+    assert!(matches!(
+        space.prepare_residency(space.root_vmar(), None, true),
+        Err(AddressSpaceError::UnsupportedBacking)
+    ));
+    assert_eq!(account.0.charge_calls.load(Ordering::Acquire), calls);
+    assert!(matches!(
+        space.pin_atomic_u32(UserAddress::new(0x1000)),
+        Err(AddressSpaceError::UnsupportedBacking)
+    ));
+    assert!(matches!(
+        space.atomic_wait_key(UserAddress::new(0x1000)),
+        Err(AddressSpaceError::UnsupportedBacking)
+    ));
+}
+
+#[test]
+fn mm01_sparse_mapping_charges_resident_metadata_not_the_virtual_file_size() {
+    let (backend, account) = fixtures();
+    let mut source = test_shared_source(1);
+    let size = 1 << 30;
+    source.size = size;
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, size),
+        backend,
+        account.clone(),
+    ));
+    let before = account.0.bytes.load(Ordering::Acquire);
+    let alias: Box<dyn user::SharedAlias> = Box::new(TestSharedAlias);
+    let view = crate::require_ok(space.prepare_shared_view(
+        source,
+        crate::require_ok(hyper::mm::FallibleArc::try_new(alias)),
+        0,
+        size,
+    ));
+    let mapping = crate::require_ok(space.prepare_map_shared_view(
+        space.root_vmar(),
+        slice(0x1000, size),
+        view,
+        Permissions::read_write(),
+        Permissions::read_write(),
+    ));
+    let mut initial_maps = 0;
+    crate::require_ok(mapping.visit_updates(|update| {
+        if matches!(update, hyper::hal::user::MappingUpdate::Map(_)) {
+            initial_maps += 1;
+        }
+    }));
+    assert_eq!(initial_maps, 0);
+    complete(crate::require_ok(mapping.commit_for_test()));
+    assert!(account.0.bytes.load(Ordering::Acquire) - before < 65536);
+    let populated = crate::require_some(crate::require_ok(
+        space.prepare_shared_population(slice(0x1000, PAGE_SIZE), true),
+    ));
+    let (ro, absent) = crate::require_some(crate::require_ok(populated.prepare_shared_reserves()));
+    let mut changes = 0;
+    crate::require_ok(ro.visit_updates(|_| changes += 1));
+    assert_eq!(changes, 1);
+    let mut removals = 0;
+    crate::require_ok(absent.visit_updates(|_| removals += 1));
+    assert_eq!(removals, 1);
+    assert!(account.0.bytes.load(Ordering::Acquire) - before < 65536);
+    complete(crate::require_ok(populated.commit_for_test()));
+}
+
+#[test]
+fn mm01_prepared_read_retains_operation_authority_after_last_mapping_retirement() {
+    let (backend, account) = fixtures();
+    let source = test_shared_source(1);
+    let retired = source.retired.clone();
+    let operations = source.operations.clone();
+    let page = source.pages[0].clone();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, 2 * PAGE_SIZE),
+        backend,
+        account,
+    ));
+    map_shared_test(&space, source, 1);
+    let population = crate::require_some(crate::require_ok(
+        space.prepare_shared_population(slice(0x1000, PAGE_SIZE), false),
+    ));
+    complete(crate::require_ok(population.commit_for_test()));
+    let read = crate::require_ok(space.prepare_user_read(slice(0x1000, 1)));
+    assert_eq!(operations.load(Ordering::Acquire), 1);
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x1000, PAGE_SIZE)))
+            .commit_for_test(),
+    ));
+    assert!(retired.load(Ordering::Acquire));
+    assert_eq!(operations.load(Ordering::Acquire), 1);
+    assert_eq!(page.pins.load(Ordering::Acquire), 1);
+    let mut output = [0];
+    crate::require_ok(read.copy_to_slice(0, &mut output));
+    drop(read);
+    assert_eq!(operations.load(Ordering::Acquire), 0);
+    assert_eq!(page.pins.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn mm01_retired_mapping_aliases_expire_with_live_address_space_and_old_observers() {
+    let (backend, account) = fixtures();
+    let canonical = test_shared_source(1).pages[0].clone();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, 4 * PAGE_SIZE),
+        backend,
+        account,
+    ));
+    let mut observers = Vec::new();
+    for _ in 0..100 {
+        let mut source = test_shared_source(1);
+        source.pages = Arc::new(vec![canonical.clone()]);
+        map_shared_test(&space, source, 1);
+        let prepared = crate::require_some(crate::require_ok(
+            space.prepare_shared_population(slice(0x1000, PAGE_SIZE), false),
+        ));
+        let token = crate::require_some(prepared.snapshots().next()).token;
+        observers.push(crate::require_ok(prepared.resident_pages(token)));
+        complete(crate::require_ok(prepared.commit_for_test()));
+        assert_eq!(
+            crate::require_ok(canonical.aliases.lock())
+                .iter()
+                .filter(|alias| alias.is_alive())
+                .count(),
+            1
+        );
+        complete(crate::require_ok(
+            crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x1000, PAGE_SIZE)))
+                .commit_for_test(),
+        ));
+        assert_eq!(
+            crate::require_ok(canonical.aliases.lock())
+                .iter()
+                .filter(|alias| alias.is_alive())
+                .count(),
+            0
+        );
+    }
+    assert_eq!(observers.len(), 100);
+}
+
+#[test]
+fn mm01_pending_installer_keeps_reverse_edge_until_stale_transaction_aborts() {
+    let (backend, account) = fixtures();
+    let source = test_shared_source(1);
+    let page = source.pages[0].clone();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, 4 * PAGE_SIZE),
+        backend,
+        account,
+    ));
+    map_shared_test(&space, source, 1);
+    let pending = crate::require_some(crate::require_ok(
+        space.prepare_shared_population(slice(0x1000, PAGE_SIZE), false),
+    ));
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x1000, PAGE_SIZE)))
+            .commit_for_test(),
+    ));
+    assert_eq!(
+        crate::require_ok(page.aliases.lock())
+            .iter()
+            .filter(|alias| alias.is_alive())
+            .count(),
+        1
+    );
+    assert!(matches!(
+        pending.commit_for_test(),
+        Err(AddressSpaceError::StaleTransaction)
+    ));
+    assert_eq!(
+        crate::require_ok(page.aliases.lock())
+            .iter()
+            .filter(|alias| alias.is_alive())
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn mm01_population_loads_all_source_pages_before_install_or_mutation_admission() {
+    let (backend, account) = fixtures();
+    let mut source = test_shared_source(2);
+    source.require_idle_fill = true;
+    let pages = source.pages.clone();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, 4 * PAGE_SIZE),
+        backend,
+        account,
+    ));
+    map_shared_test(&space, source, 2);
+    let prepared = crate::require_some(crate::require_ok(
+        space.prepare_shared_population(slice(0x1000, 2 * PAGE_SIZE), true),
+    ));
+    assert!(
+        pages[0].active.load(Ordering::Acquire) > 0 && pages[1].active.load(Ordering::Acquire) > 0
+    );
+    complete(crate::require_ok(prepared.commit_for_test()));
+    assert_eq!(pages[0].active.load(Ordering::Acquire), 0);
+    assert_eq!(pages[1].active.load(Ordering::Acquire), 0);
 }

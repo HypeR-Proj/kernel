@@ -753,3 +753,99 @@ pub(crate) fn set_memory_residency(
         Ok(())
     })
 }
+
+#[derive(Clone, Copy)]
+pub(crate) struct SharedFileMappingRequest {
+    pub(crate) file_offset: u64,
+    pub(crate) address: u64,
+    pub(crate) length: u64,
+    pub(crate) permissions: u32,
+    pub(crate) options: u32,
+}
+#[derive(Clone, Copy)]
+pub(crate) struct SharedFileSyncRequest {
+    pub(crate) address: u64,
+    pub(crate) length: u64,
+    pub(crate) scope: u32,
+    pub(crate) options: u32,
+}
+
+pub(crate) fn map_file_shared(
+    process: &Process,
+    vmar: &InvocationReceiver,
+    file: HandleValue,
+    request: SharedFileMappingRequest,
+) -> Result<(), ServiceError> {
+    let permission = permissions(request.permissions.into()).ok_or(ServiceError::InvalidInput)?;
+    if request.options != 0 || permission == Permissions::NONE || !permission.is_valid() {
+        return Err(ServiceError::InvalidInput);
+    }
+    if permission.contains(Access::Execute) {
+        return Err(ServiceError::Vfs(VfsError::AccessDenied));
+    }
+    let range = aligned_range(request.address, request.length)?;
+    if !request.file_offset.is_multiple_of(PAGE_SIZE) {
+        return Err(ServiceError::InvalidInput);
+    }
+    let file = process.resolve_handle::<FileObject>(file, Rights::READ)?;
+    let writable = file.rights().contains(Rights::WRITE);
+    if permission.contains(Access::Write) && !writable {
+        return Err(ServiceError::Vfs(VfsError::AccessDenied));
+    }
+    let maximum = if writable {
+        Permissions::read_write()
+    } else {
+        Permissions::read_only()
+    };
+    let vmar = vmar
+        .resolve::<VmarObject>(Rights::MAP)
+        .map_err(ProcessError::from)?;
+    let space = vmar.object().address_space();
+    let current = process.address_space_owner()?;
+    if !core::ptr::eq(space, &*current) {
+        return Err(ServiceError::Vfs(VfsError::AccessDenied));
+    }
+    let alias = super::NativeAddressSpace::shared_file_alias(&current)?;
+    retry_mapping_transaction(process, || {
+        let source = file.object().shared_mapping_source(
+            request.file_offset,
+            request.length,
+            writable,
+            &process.resource_domain(),
+        )?;
+        let view = space
+            .logical()
+            .prepare_shared_view(source, alias.clone(), request.file_offset, request.length)
+            .map_err(MachineError::Logical)?;
+        let prepared = space
+            .logical()
+            .prepare_map_shared_view(vmar.object().token(), range, view, permission, maximum)
+            .map_err(MachineError::Logical)?;
+        space.prepare_change(prepared)?.commit()?;
+        Ok(())
+    })
+}
+
+pub(crate) fn sync_file_range(
+    process: &Process,
+    vmar: &InvocationReceiver,
+    request: SharedFileSyncRequest,
+) -> Result<(), ServiceError> {
+    if request.options != 0 || request.scope > 1 {
+        return Err(ServiceError::InvalidInput);
+    }
+    let range = aligned_range(request.address, request.length)?;
+    let vmar = vmar
+        .resolve::<VmarObject>(Rights::MAP)
+        .map_err(ProcessError::from)?;
+    let space = vmar.object().address_space();
+    let current = process.address_space_owner()?;
+    if !core::ptr::eq(space, &*current) {
+        return Err(ServiceError::Vfs(VfsError::AccessDenied));
+    }
+    space
+        .logical()
+        .sync_shared_range(vmar.object().token(), range, request.scope)
+        .map_err(MachineError::Logical)?;
+    Ok(())
+}

@@ -1051,6 +1051,52 @@ Ordinary shared writable VMOs and exclusive hardware backing retain
 their stable-page lease contract. This is not a live address-space clone or a
 snapshot of concurrently hardware-written guest memory.
 
+`vmar_map_file_shared(file, request, request_size)` maps canonical VFS file
+pages into the calling Process's VMAR. The extensible request contains file
+offset, virtual address, length, permissions, options and zero reserved fields.
+The File requires READ. Its captured WRITE right determines the maximum write
+permission, including for a mapping initially requested read-only. Shared file
+pages never acquire EXECUTE, raw VMO or shared atomic-wait authority. They are
+distinct from protected private file views and executable publication.
+
+The initial implementation accepts complete existing pages from a healthy
+remote filesystem which delegated periodic writeback ownership to VFS. Backend
+eligibility follows that negotiated policy, not its filesystem name or its
+asynchronous transport flag. Synchronous FAT and RAMFS are not eligible. File
+mapping residency locks are also unsupported in this initial scope; a successful
+mapping does not implicitly pin its pages. File
+offset, address and nonzero length must be page-aligned; partial EOF pages and
+extending a file through a mapping are rejected. Actual size changes return
+BUSY while any shared mapping retains the file extent. Potential write authority
+excludes FileProtection even while hardware mappings are currently read-only.
+
+Mapped stores and ordinary file reads/writes use the same mutable page. Concurrent
+unsynchronized accesses do not promise an atomic byte snapshot. Closing the File
+does not invalidate its mapping; unmap and process exit do not imply sync. A
+mapping retains mount/file authority, and normal unlink or unmount remains BUSY
+while that authority is live. Kernel output copies use short dirty admissions;
+a blocked IPC receive retains backing without holding an active mutation.
+Already admitted kernel copies and range synchronization retain independent
+file-operation leases. Last unmap releases the mapping's lease after translation
+retirement; these operations keep their extent and potential-write exclusion
+until completion, even if the original mapping has disappeared.
+
+`vmar_sync_file_range(request, request_size)` accepts a nonempty page-aligned
+contiguous range of the same shared file, with DATA or ALL scope. The range
+requires retained write authority. Success includes writes ordered before its
+finite synchronization boundary and may use a stronger whole-file fence. It
+does not promise persistence of later writes or an atomic image of concurrent
+writers. VOLUME scope is rejected; F2FS retains its existing file-sync recovery
+and periodic checkpoint policy. Neither operation is a POSIX mmap/msync ABI.
+
+Before publishing shared-file translations, the mapper reserves logical and
+machine roots sufficient to withdraw writes and then all access without new
+allocation. Snapshot capture waits for short kernel mutations and acknowledged
+withdrawal of every writable alias, then reopens a new dirty generation before
+backend I/O. Provider failure closes new admissions and revokes resident aliases;
+unresolved hardware faults retain the existing fatal-fault policy. Mapping a
+file does not guarantee future residency or suppress resource-limit errors.
+
 Explicit `GuestMemory` READ and WRITE rights allow a userspace device backend
 to copy up to 4096 guest bytes per call. They do not reopen direct VMO writes
 or writable Native mappings. `guest_memory_scalar` provides naturally aligned

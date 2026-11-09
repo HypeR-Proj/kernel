@@ -138,6 +138,12 @@ pub(super) fn dispatch_operation(
         abi::NativeOperation::VmarMapFile => {
             handlers::sys_vmar_map_file(services, receiver, arguments)
         }
+        abi::NativeOperation::VmarMapFileShared => {
+            handlers::sys_vmar_map_file_shared(services, receiver, arguments)
+        }
+        abi::NativeOperation::VmarSyncFileRange => {
+            handlers::sys_vmar_sync_file_range(services, receiver, arguments)
+        }
         abi::NativeOperation::VmarMapPrivate => {
             handlers::sys_vmar_map_private(services, receiver, arguments)
         }

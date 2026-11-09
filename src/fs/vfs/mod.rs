@@ -36,6 +36,8 @@ mod root_transition;
 mod root_transition_object;
 pub(crate) use root_transition_object::RootTransitionObject;
 mod scratch;
+mod shared;
+pub(crate) use shared::{SharedFilePage, SharedFileSource, SharedPin};
 pub(crate) mod service;
 
 pub(crate) use directory::DirectoryStream;

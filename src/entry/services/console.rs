@@ -41,9 +41,13 @@ impl ConsoleServices for ProcessServices<'_> {
         let destination = UserSlice::new(destination.base(), actual_bytes)
             .map_err(|error| ProcessError::UserMemory(error.into()))?;
         let write = self.process.reserve_user_write(destination)?;
+        let admission = write
+            .admit_shared_write()
+            .map_err(ProcessError::UserMemory)?;
         write
             .copy_from(claim.bytes())
             .map_err(ProcessError::UserMemory)?;
+        drop(admission);
         write.complete();
         claim.commit();
         Ok(actual)

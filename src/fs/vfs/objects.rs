@@ -762,6 +762,15 @@ pub(crate) struct FileObject {
 }
 
 impl FileObject {
+    pub(crate) fn shared_mapping_source(
+        &self,
+        offset: u64,
+        length: u64,
+        writable: bool,
+        sponsor: &ResourceDomain,
+    ) -> Result<super::SharedFileSource, Error> {
+        super::SharedFileSource::acquire(self.location.clone(), offset, length, writable, sponsor)
+    }
     /// Acquire content stability independently of this open handle's lifetime.
     /// The caller must check PROTECT authority before publishing the guard.
     pub(crate) fn protect(&self, sponsor: &ResourceDomain) -> Result<super::FileProtection, Error> {

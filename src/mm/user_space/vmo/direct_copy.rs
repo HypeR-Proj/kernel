@@ -3,6 +3,7 @@
 
 //! Resident page owners for fault-free copies across an I/O trust boundary.
 
+use super::super::SharedPage;
 use super::super::contract::MemoryCharge;
 use super::*;
 
@@ -27,6 +28,7 @@ impl<B: PageBackend, A: MemoryAccount> MappingObject<B, A> {
         let (first, count) = covered_pages(offset, length)?;
         let backend = match self {
             Self::Private(view) => &view.backend,
+            Self::SharedFile(view) => &view.backend,
             Self::Writable(vmo) => &vmo.inner.backend,
             Self::Snapshot(vmo) => &vmo.inner.backend,
             Self::Executable(vmo) => &vmo.inner.backend,
@@ -52,6 +54,13 @@ impl<B: PageBackend, A: MemoryAccount> MappingObject<B, A> {
                     .and_then(Option::as_ref)
                     .map(|page| page.owner.clone())
                     .ok_or(VmoError::BackingNotResident)?,
+                Self::SharedFile(view) => own_shared_page::<B, A>(
+                    backend.retain_shared_page(
+                        view.page(index)?.clone(),
+                        view.page(index)?.try_pin().map_err(shared_error::<B, A>)?,
+                    ),
+                    account,
+                )?,
                 Self::Writable(vmo) => page_ref(&vmo.inner, index)?,
                 Self::Snapshot(vmo) => page_ref(&vmo.inner, index)?,
                 Self::Executable(vmo) => page_ref(&vmo.inner, index)?,

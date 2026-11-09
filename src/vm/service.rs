@@ -248,6 +248,7 @@ const fn classify_address_space_error(
         AddressSpaceError::Account(error) => classify_resource_error(error),
         AddressSpaceError::Allocation => Error::NoMemory,
         AddressSpaceError::Stopped => Error::BadState,
+        AddressSpaceError::UnsupportedBacking => Error::NotSupported,
         AddressSpaceError::Busy | AddressSpaceError::CowRequired => Error::Busy,
         AddressSpaceError::Backend(error) => classify_page_error(error),
         AddressSpaceError::BackingIo => Error::Io,

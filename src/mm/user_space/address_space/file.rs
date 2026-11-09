@@ -48,6 +48,9 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
             if let Some(locks) = &mapping.locks {
                 locks.retire();
             }
+            if let Some(view) = mapping.object.shared_file() {
+                view.retire();
+            }
             if let Some(view) = mapping.object.private() {
                 view.retire_file_source();
             }

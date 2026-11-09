@@ -68,3 +68,26 @@ impl<B: PageBackend, A: MemoryAccount> MappingIndex<B, A> {
         Ok(())
     }
 }
+
+impl<B: PageBackend, A: MemoryAccount> MappingIndex<B, A> {
+    pub(super) fn replace_shared_view(
+        &mut self,
+        old: &FallibleArc<super::super::vmo::SharedFileView<B, A>>,
+        next: &FallibleArc<super::super::vmo::SharedFileView<B, A>>,
+        account: &A,
+    ) -> SpaceResult<B, A, ()> {
+        let previous = self.clone();
+        for mapping in previous.iter() {
+            if mapping
+                .object
+                .shared_file()
+                .is_some_and(|view| core::ptr::eq(&**view, &**old))
+            {
+                let mut changed = mapping.clone();
+                changed.object = MappingObject::SharedFile(next.clone());
+                *self = self.insert(changed, account)?;
+            }
+        }
+        Ok(())
+    }
+}

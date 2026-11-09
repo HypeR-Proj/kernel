@@ -16,6 +16,9 @@ mod atomic_word;
 mod direct_copy;
 mod executable;
 mod file_source;
+mod shared_file;
+pub(crate) use shared_file::SharedFileView;
+pub(super) use shared_file::{SharedChangeGuard, shared_error};
 mod private_view;
 pub(crate) use atomic_word::SharedAtomicWord;
 pub(super) use direct_copy::PinnedReadRange;
@@ -825,6 +828,7 @@ impl<B: PageBackend, A: MemoryAccount> CrashPage<B, A> {
 pub(super) enum MappingObject<Backend: PageBackend, Account: MemoryAccount> {
     Snapshot(SnapshotVmo<Backend, Account>),
     Private(FallibleArc<PrivateView<Backend, Account>>),
+    SharedFile(FallibleArc<SharedFileView<Backend, Account>>),
     Writable(WritableVmo<Backend, Account>),
     Executable(ExecutableVmo<Backend, Account>),
 }
@@ -834,6 +838,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> Clone for MappingObject<Backe
         match self {
             Self::Snapshot(vmo) => Self::Snapshot(vmo.clone()),
             Self::Private(view) => Self::Private(view.clone()),
+            Self::SharedFile(view) => Self::SharedFile(view.clone()),
             Self::Writable(vmo) => Self::Writable(vmo.clone()),
             Self::Executable(vmo) => Self::Executable(vmo.clone()),
         }
@@ -909,6 +914,13 @@ impl<Backend: PageBackend, Account: MemoryAccount> MappingObject<Backend, Accoun
             _ => None,
         }
     }
+    pub(super) fn shared_file(&self) -> Option<&FallibleArc<SharedFileView<Backend, Account>>> {
+        match self {
+            Self::SharedFile(view) => Some(view),
+            _ => None,
+        }
+    }
+
     pub(super) fn writable_backing(
         &self,
         offset: u64,
@@ -917,6 +929,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> MappingObject<Backend, Accoun
         match self {
             Self::Writable(_) => Ok(true),
             Self::Private(view) => view.range_writable(offset, length),
+            Self::SharedFile(view) => view.writable(offset, length),
             _ => Ok(false),
         }
     }
@@ -940,6 +953,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> MappingObject<Backend, Accoun
                     .with(|owned| view.backend.physical_address(&owned.page)))
             }
             Self::Writable(vmo) => vmo.resident_physical_page(offset),
+            Self::SharedFile(view) => view.physical_page(offset),
             Self::Snapshot(vmo) => {
                 let page = page_ref(&vmo.inner, index)?;
                 Ok(page.with(|owned| vmo.inner.backend.physical_address(&owned.page)))
@@ -954,6 +968,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> MappingObject<Backend, Accoun
         match self {
             Self::Snapshot(vmo) => vmo.size(),
             Self::Private(view) => view.size(),
+            Self::SharedFile(view) => view.size(),
             Self::Writable(vmo) => vmo.size(),
             Self::Executable(vmo) => vmo.size(),
         }
@@ -969,7 +984,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> MappingObject<Backend, Accoun
     ) -> VmoResult<Backend, Account, WritableMappingLease<Backend, Account>> {
         match self {
             Self::Writable(vmo) => vmo.try_mapping_write_lease(),
-            Self::Executable(_) | Self::Snapshot(_) | Self::Private(_) => {
+            Self::Executable(_) | Self::Snapshot(_) | Self::Private(_) | Self::SharedFile(_) => {
                 Err(VmoError::InvalidRange)
             }
         }
@@ -984,6 +999,11 @@ impl<Backend: PageBackend, Account: MemoryAccount> MappingObject<Backend, Accoun
         let (first, count) = covered_pages(offset, length)?;
         let inner = match self {
             Self::Private(view) => {
+                return Ok(offset
+                    .checked_add(length as u64)
+                    .is_some_and(|end| end <= view.size()));
+            }
+            Self::SharedFile(view) => {
                 return Ok(offset
                     .checked_add(length as u64)
                     .is_some_and(|end| end <= view.size()));
@@ -1003,6 +1023,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> MappingObject<Backend, Accoun
         match self {
             Self::Snapshot(vmo) => read_exposed_inner(&vmo.inner, offset, destination),
             Self::Private(view) => view.read(offset, destination),
+            Self::SharedFile(view) => view.read(offset, destination),
             Self::Writable(vmo) => read_exposed_inner(&vmo.inner, offset, destination),
             Self::Executable(vmo) => read_exposed_inner(&vmo.inner, offset, destination),
         }
@@ -1015,6 +1036,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> MappingObject<Backend, Accoun
     ) -> Result<(), VmoError<Backend::Error, Account::Error>> {
         match self {
             Self::Private(view) => view.write(offset, source),
+            Self::SharedFile(_) => Err(VmoError::Busy),
             Self::Snapshot(_) => Err(VmoError::InvalidRange),
             Self::Writable(vmo) => write_exposed_inner(&vmo.inner, offset, source),
             Self::Executable(_) => Err(VmoError::InvalidRange),

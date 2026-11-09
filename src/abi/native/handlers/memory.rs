@@ -242,6 +242,47 @@ pub(in crate::abi::native) fn sys_vmar_map_file(
 }
 
 #[inline(never)]
+pub(in crate::abi::native) fn sys_vmar_map_file_shared(
+    services: &(impl MemoryServices + crate::abi::native::services::UserMemoryServices),
+    receiver: &InvocationReceiver,
+    arguments: &Arguments,
+) -> NativeAction {
+    let result = (|| {
+        require_zero(&arguments[3..])?;
+        let file = parse_handle(arguments[0])?;
+        let request = crate::abi::native::wire::decode_shared_file_mapping(
+            services,
+            arguments[1],
+            arguments[2],
+        )?;
+        services
+            .map_file_shared(receiver, file, request)
+            .map_err(status_from_memory_service_error)
+    })();
+    NativeAction::Return(status_only(result))
+}
+
+#[inline(never)]
+pub(in crate::abi::native) fn sys_vmar_sync_file_range(
+    services: &(impl MemoryServices + crate::abi::native::services::UserMemoryServices),
+    receiver: &InvocationReceiver,
+    arguments: &Arguments,
+) -> NativeAction {
+    let result = (|| {
+        require_zero(&arguments[2..])?;
+        let request = crate::abi::native::wire::decode_shared_file_sync(
+            services,
+            arguments[0],
+            arguments[1],
+        )?;
+        services
+            .sync_file_range(receiver, request)
+            .map_err(status_from_memory_service_error)
+    })();
+    NativeAction::Return(status_only(result))
+}
+
+#[inline(never)]
 pub(in crate::abi::native) fn sys_vmar_lock_memory(
     services: &impl MemoryServices,
     receiver: &InvocationReceiver,

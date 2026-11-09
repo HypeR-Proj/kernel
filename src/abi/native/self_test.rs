@@ -765,6 +765,23 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
             self.calls.set(self.calls.get().saturating_add(1));
             Err(MemoryServiceError::Process(ProcessError::Allocation))
         }
+        fn map_file_shared(
+            &self,
+            _: &InvocationReceiver,
+            _: HandleValue,
+            _: crate::mm::user_space::SharedFileMappingRequest,
+        ) -> Result<(), MemoryServiceError> {
+            self.calls.set(self.calls.get().saturating_add(1));
+            Err(MemoryServiceError::Process(ProcessError::Allocation))
+        }
+        fn sync_file_range(
+            &self,
+            _: &InvocationReceiver,
+            _: crate::mm::user_space::SharedFileSyncRequest,
+        ) -> Result<(), MemoryServiceError> {
+            self.calls.set(self.calls.get().saturating_add(1));
+            Err(MemoryServiceError::Process(ProcessError::Allocation))
+        }
         fn read_vmo(
             &self,
             _: &InvocationReceiver,
@@ -2445,6 +2462,11 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
                 0,
             ],
         ),
+        (
+            NativeOperation::VmarMapFileShared,
+            [0x0f37_79b9_7f4a_7c12, 0x2000, 48, 0, 0, 0],
+        ),
+        (NativeOperation::VmarSyncFileRange, [0x2000, 40, 0, 0, 0, 0]),
     ] {
         let mapping_services = RejectingServices {
             calls: Cell::new(0),
@@ -2455,6 +2477,57 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
         {
             return Err(SelfTestError::InvalidRecordSize);
         }
+    }
+    // Shared mapping records accept their minimum prefix and future zero tails;
+    // known reserved bytes must be rejected just as strictly as unknown bytes.
+    for size in [32, 48, 56] {
+        if super::wire::decode_shared_file_mapping(&RecordInput { nonzero_at: None }, 0x5000, size)
+            .is_err()
+        {
+            return Err(SelfTestError::InvalidRecordSize);
+        }
+    }
+    for offset in [28, 32, 40, 48] {
+        if super::wire::decode_shared_file_mapping(
+            &RecordInput {
+                nonzero_at: Some(0x5000 + offset),
+            },
+            0x5000,
+            56,
+        )
+        .err()
+            != Some(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)
+        {
+            return Err(SelfTestError::InvalidRecordSize);
+        }
+    }
+    for size in [24, 40, 48] {
+        if super::wire::decode_shared_file_sync(&RecordInput { nonzero_at: None }, 0x5000, size)
+            .is_err()
+        {
+            return Err(SelfTestError::InvalidRecordSize);
+        }
+    }
+    for offset in [17, 20, 24, 32, 40] {
+        if super::wire::decode_shared_file_sync(
+            &RecordInput {
+                nonzero_at: Some(0x5000 + offset),
+            },
+            0x5000,
+            48,
+        )
+        .err()
+            != Some(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)
+        {
+            return Err(SelfTestError::InvalidRecordSize);
+        }
+    }
+    if super::wire::decode_shared_file_mapping(&RecordInput { nonzero_at: None }, 0x5000, 31).err()
+        != Some(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)
+        || super::wire::decode_shared_file_sync(&RecordInput { nonzero_at: None }, 0x5000, 23).err()
+            != Some(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)
+    {
+        return Err(SelfTestError::InvalidRecordSize);
     }
     // A future private-mapping record may grow only through a zero-filled tail.
     if copy_extensible_input_record::<48>(&RecordInput { nonzero_at: None }, 0x5000, 56, 48)

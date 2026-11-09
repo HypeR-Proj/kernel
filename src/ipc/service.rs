@@ -19,7 +19,10 @@ use {
     crate::capability::HandleTransferRequest, crate::capability::HandleTransferRoute,
     crate::capability::HandleValue, crate::capability::ResolvedObject,
 };
-use {crate::mm::user_space::UserSlice, crate::mm::user_space::UserWriteReservation};
+use {
+    crate::mm::user_space::AddressSpaceError, crate::mm::user_space::MachineError,
+    crate::mm::user_space::UserSlice, crate::mm::user_space::UserWriteReservation,
+};
 use {crate::object::KernelObject, crate::object::ObjectKind, crate::object::ObjectWaitError};
 use {
     crate::process::PreparedDirectProcessHandleTransfer, crate::process::Process,
@@ -217,11 +220,40 @@ fn send_prepared_capabilities(
         &[][..],
         PreparedDirectProcessHandleTransfer::destination_values,
     );
+    // Admit both destinations before copying either. In particular, a freeze
+    // conflict is a retryable rejection before any bytes or handles move, not
+    // a user-memory fault after partially visible output.
+    let admissions = (|| -> Result<_, ProcessError> {
+        let bytes = target
+            .byte_output
+            .as_ref()
+            .map(UserWriteReservation::admit_shared_write)
+            .transpose()?;
+        let slots = target
+            .slot_output
+            .as_ref()
+            .map(UserWriteReservation::admit_shared_write)
+            .transpose()?;
+        Ok((bytes, slots))
+    })();
+    let admissions = match admissions {
+        Ok(admissions) => admissions,
+        Err(error) => {
+            if let Some(transfer) = direct.take() {
+                transfer.rollback();
+            }
+            target.finish_output_access();
+            let error = channel_error_from_process(error);
+            claim.reject(error);
+            return Err(error.into());
+        }
+    };
     if let Err(error) = target.write_outputs(
         &prepared.bytes,
         destination_values,
         &contract.slots()[..prepared.dispositions.len()],
     ) {
+        drop(admissions);
         if let Some(transfer) = direct.take() {
             transfer.rollback();
         }
@@ -231,6 +263,7 @@ fn send_prepared_capabilities(
         let _ = error;
         return Err(channel_error.into());
     }
+    drop(admissions);
 
     if let Some(transfer) = direct.take()
         && let Err(failure) = transfer.commit()
@@ -352,9 +385,18 @@ pub(crate) fn byte_channel_read(
             return Err(error.into());
         }
     };
-    let copy_error = write
-        .as_ref()
-        .and_then(|output| output.copy_from(claim.bytes()).err());
+    // A retained output reservation is not permission to dirty shared file
+    // pages. Admit the actual copy only after selecting the message; admission
+    // is nonblocking so a freeze cannot wait on a reader holding this claim.
+    let copy_error = write.as_ref().and_then(|output| {
+        let admission = match output.admit_shared_write() {
+            Ok(admission) => admission,
+            Err(error) => return Some(error),
+        };
+        let result = output.copy_from(claim.bytes());
+        drop(admission);
+        result.err()
+    });
     if let Some(error) = copy_error {
         drop(write.take());
         claim.abort();
@@ -738,6 +780,16 @@ fn channel_error_from_process(error: ProcessError) -> CapabilityChannelError {
             CapabilityChannelError::BadState
         }
         ProcessError::Resource(error) => CapabilityChannelError::Resource(error),
+        ProcessError::UserMemory(
+            MachineError::Allocation | MachineError::Logical(AddressSpaceError::Allocation),
+        ) => CapabilityChannelError::Allocation,
+        ProcessError::UserMemory(
+            MachineError::Resource(error)
+            | MachineError::Logical(AddressSpaceError::Account(error)),
+        ) => CapabilityChannelError::Resource(error),
+        ProcessError::UserMemory(error) if error.is_mapping_conflict() => {
+            CapabilityChannelError::Busy
+        }
         ProcessError::UserMemory(_) => CapabilityChannelError::UserMemoryFault,
         ProcessError::Object(_)
         | ProcessError::Scheduler(_)

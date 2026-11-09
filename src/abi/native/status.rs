@@ -702,10 +702,14 @@ pub(super) const fn status_from_logical_error(
         AddressSpaceError::Busy | AddressSpaceError::CowRequired => HYPER_NATIVE_STATUS_BUSY,
         AddressSpaceError::Backend(error) => status_from_page_error(error),
         AddressSpaceError::BackingIo => HYPER_NATIVE_STATUS_IO_ERROR,
+        AddressSpaceError::UnsupportedBacking => HYPER_NATIVE_STATUS_NOT_SUPPORTED,
+        // Wire permission masks are validated before MM dispatch. A valid
+        // request exceeding backing authority or its retained ceiling is an
+        // authorization denial, not an inaccessible user output buffer.
+        AddressSpaceError::InvalidPermissions => HYPER_NATIVE_STATUS_ACCESS_DENIED,
         AddressSpaceError::BackingNotResident
         | AddressSpaceError::EmptyRange
         | AddressSpaceError::InvalidAddressSpace
-        | AddressSpaceError::InvalidPermissions
         | AddressSpaceError::InvalidRange
         | AddressSpaceError::NotMapped
         | AddressSpaceError::Overlap

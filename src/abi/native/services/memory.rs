@@ -45,6 +45,17 @@ pub(crate) trait MemoryServices {
         protection: HandleValue,
         request: crate::mm::user_space::PrivateMappingRequest,
     ) -> Result<(), MemoryServiceError>;
+    fn map_file_shared(
+        &self,
+        vmar: &InvocationReceiver,
+        file: HandleValue,
+        request: crate::mm::user_space::SharedFileMappingRequest,
+    ) -> Result<(), MemoryServiceError>;
+    fn sync_file_range(
+        &self,
+        vmar: &InvocationReceiver,
+        request: crate::mm::user_space::SharedFileSyncRequest,
+    ) -> Result<(), MemoryServiceError>;
     fn map_private(
         &self,
         vmar: &InvocationReceiver,

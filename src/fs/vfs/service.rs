@@ -204,9 +204,13 @@ pub(crate) fn read_file_at(
                 let destination = UserSlice::new(base, pages.length as u64)
                     .map_err(|error| ProcessError::UserMemory(error.into()))?;
                 let write = process.reserve_user_write(destination)?;
+                let admission = write
+                    .admit_shared_write()
+                    .map_err(ProcessError::UserMemory)?;
                 write
                     .copy_parts_from(pages.pages())
                     .map_err(ProcessError::UserMemory)?;
+                drop(admission);
                 write.complete();
                 return Ok(pages.length);
             }
@@ -229,7 +233,11 @@ pub(crate) fn read_file_at(
             // The backend has released its file lock before COW/page preparation.
             // Pin only this batch; mapping changes elsewhere remain possible.
             let write: UserWriteReservation = process.reserve_user_write(destination)?;
+            let admission = write
+                .admit_shared_write()
+                .map_err(ProcessError::UserMemory)?;
             write.copy_from(source).map_err(ProcessError::UserMemory)?;
+            drop(admission);
             write.complete();
             Ok(actual)
         },

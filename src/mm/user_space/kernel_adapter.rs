@@ -109,6 +109,10 @@ pub(crate) struct KernelUserPage {
 }
 enum PageStorage {
     Single(PageBlock),
+    Shared {
+        page: crate::fs::vfs::SharedFilePage,
+        _pin: crate::fs::vfs::SharedPin,
+    },
     Cached(crate::fs::cache::MappedPage<crate::fs::vfs::file_record::CachePage>),
     Contiguous {
         physical: PhysicalAddress,
@@ -123,6 +127,7 @@ impl KernelUserPage {
     fn physical(&self) -> PhysicalAddress {
         match &self.storage {
             PageStorage::Single(page) => page.physical(),
+            PageStorage::Shared { page, .. } => page.physical_address(),
             PageStorage::Cached(page) => page.value().physical_address(),
             PageStorage::Contiguous { physical, .. } => *physical,
         }
@@ -201,6 +206,17 @@ pub(super) fn contiguous_pages(
 
 impl PageBackend for KernelPageBackend {
     type Page = KernelUserPage;
+    type SharedPage = crate::fs::vfs::SharedFilePage;
+    type SharedSource = crate::fs::vfs::SharedFileSource;
+    fn retain_shared_page(
+        &self,
+        page: Self::SharedPage,
+        pin: <Self::SharedPage as super::SharedPage>::Pin,
+    ) -> Self::Page {
+        KernelUserPage {
+            storage: PageStorage::Shared { page, _pin: pin },
+        }
+    }
     type Error = KernelPageError;
     type InstructionPublicationContext = dyn hyper::cpu::PinnedExecution;
 
@@ -263,7 +279,10 @@ impl PageBackend for KernelPageBackend {
         length: usize,
     ) -> Result<(), Self::Error> {
         let source_address = page_address(source, source_offset, length)?;
-        if matches!(destination.storage, PageStorage::Cached(_)) {
+        if matches!(
+            destination.storage,
+            PageStorage::Cached(_) | PageStorage::Shared { .. }
+        ) {
             return Err(KernelPageError::Range);
         }
         let destination_address = page_address(destination, destination_offset, length)?;
@@ -288,8 +307,10 @@ impl PageBackend for KernelPageBackend {
         length: usize,
     ) -> Result<(), Self::Error> {
         let source_address = page_address(source, source_offset, length)?;
-        if matches!(destination.storage, PageStorage::Cached(_))
-            || source.physical() == destination.physical()
+        if matches!(
+            destination.storage,
+            PageStorage::Cached(_) | PageStorage::Shared { .. }
+        ) || source.physical() == destination.physical()
         {
             return Err(KernelPageError::Range);
         }
@@ -343,7 +364,10 @@ impl PageBackend for KernelPageBackend {
         offset: usize,
         source: &[u8],
     ) -> Result<(), Self::Error> {
-        if matches!(page.storage, PageStorage::Cached(_)) {
+        if matches!(
+            page.storage,
+            PageStorage::Cached(_) | PageStorage::Shared { .. }
+        ) {
             return Err(KernelPageError::Range);
         }
         let destination = page_address(page, offset, source.len())?;
@@ -416,7 +440,10 @@ impl PageBackend for KernelPageBackend {
         let result = unsafe {
             crate::hal::cache::publish_instruction_ranges(context, |visit_range| {
                 pages(&mut |page| {
-                    if !matches!(page.storage, PageStorage::Cached(_)) {
+                    if !matches!(
+                        page.storage,
+                        PageStorage::Cached(_) | PageStorage::Shared { .. }
+                    ) {
                         match page_address(page, 0, PAGE_SIZE as usize) {
                             Ok(start) => visit_range(start as usize, PAGE_SIZE as usize),
                             Err(error) => range_error = Some(error),

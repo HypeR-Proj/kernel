@@ -1386,7 +1386,7 @@ impl Process {
         let mapping_owner = self.inner.state.with(|state| state.address_space.clone());
         if let Some(address_space) = mapping_owner {
             address_space.begin_process_stop();
-            address_space.retire_file_sources();
+            address_space.retire_file_sources()?;
             if let Some(retention) = self.inner.retention.get() {
                 retention.capture(&address_space);
             }
