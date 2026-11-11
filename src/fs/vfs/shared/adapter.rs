@@ -45,6 +45,9 @@ impl SharedPage for SharedFilePage {
     fn identity(&self) -> u64 {
         self.identity()
     }
+    fn epoch(&self) -> u64 {
+        self.epoch()
+    }
     fn physical_address(&self) -> hyper::mm::PhysicalAddress {
         self.physical_address()
     }

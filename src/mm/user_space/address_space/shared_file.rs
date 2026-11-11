@@ -9,13 +9,13 @@ use super::*;
 use alloc::boxed::Box;
 use hyper::hal::user::MappingUpdate;
 
-type SharedReserves<B, A> = Option<(ReservedSharedChange<B, A>, ReservedSharedChange<B, A>)>;
-
+/// A fully empty shared-file mapping set is the emergency target. Once its
+/// machine image is built, discard the temporary diff baseline so the reserve
+/// cannot pin pages across repeated write faults or pressure reclamation.
 pub(crate) struct ReservedSharedChange<B: PageBackend, A: MemoryAccount> {
-    baseline: FallibleArc<MappingSet<B, A>>,
+    baseline: Option<FallibleArc<MappingSet<B, A>>>,
     replacement: FallibleArc<MappingSet<B, A>>,
     authority_epoch: u64,
-    original_epoch: u64,
     base_epoch: u64,
     next_epoch: u64,
 }
@@ -28,14 +28,47 @@ impl<B: PageBackend, A: MemoryAccount> ReservedSharedChange<B, A> {
         self.next_epoch
     }
     pub(crate) fn visit_updates(&self, visit: impl FnMut(MappingUpdate)) -> SpaceResult<B, A, ()> {
-        super::updates::visit_backing_updates(&self.baseline, &self.replacement, visit)
+        let baseline = self
+            .baseline
+            .as_ref()
+            .ok_or(AddressSpaceError::StaleTransaction)?;
+        super::updates::visit_backing_updates(baseline, &self.replacement, visit)
+    }
+    pub(crate) fn release_baseline(&mut self) {
+        self.baseline = None;
+    }
+    /// Shared-only changes leave the all-absent target unchanged. Rebind its
+    /// epoch without allocating or retaining any historical resident snapshot.
+    pub(crate) fn rebase_for(
+        &self,
+        change: &PreparedMappingChange<'_, B, A>,
+    ) -> SpaceResult<B, A, Option<Self>> {
+        if self.base_epoch != change.base_mapping_epoch {
+            return Err(AddressSpaceError::StaleTransaction);
+        }
+        if !matches!(
+            change.kind,
+            MappingChangeKind::SharedBacking | MappingChangeKind::SharedWithdrawal
+        ) {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            baseline: None,
+            replacement: self.replacement.clone(),
+            authority_epoch: change.next_authority_epoch,
+            base_epoch: change.next_mapping_epoch,
+            next_epoch: change
+                .next_mapping_epoch
+                .checked_add(1)
+                .ok_or(AddressSpaceError::SizeOverflow)?,
+        }))
     }
     pub(crate) fn into_prepared(
         self,
         space: &UserAddressSpace<B, A>,
         base_epoch: u64,
     ) -> SpaceResult<B, A, PreparedMappingChange<'_, B, A>> {
-        if base_epoch != self.base_epoch && base_epoch != self.original_epoch {
+        if base_epoch != self.base_epoch {
             return Err(AddressSpaceError::StaleTransaction);
         }
         let mut prepared = PreparedMappingChange::new_private_backing(
@@ -51,7 +84,9 @@ impl<B: PageBackend, A: MemoryAccount> ReservedSharedChange<B, A> {
 }
 
 impl<B: PageBackend, A: MemoryAccount> PreparedMappingChange<'_, B, A> {
-    pub(crate) fn prepare_shared_reserves(&self) -> SpaceResult<B, A, SharedReserves<B, A>> {
+    pub(crate) fn prepare_shared_reserve(
+        &self,
+    ) -> SpaceResult<B, A, Option<ReservedSharedChange<B, A>>> {
         if !self.replacement.records.iter().any(|mapping| {
             mapping
                 .object
@@ -60,40 +95,23 @@ impl<B: PageBackend, A: MemoryAccount> PreparedMappingChange<'_, B, A> {
         }) {
             return Ok(None);
         }
-        let read_only = withdrawn_set(self.address_space, &self.replacement, false)?;
-        let absent = withdrawn_set(self.address_space, &read_only, true)?;
-        let ro_epoch = self
-            .next_mapping_epoch
-            .checked_add(1)
-            .ok_or(AddressSpaceError::SizeOverflow)?;
-        let all_epoch = ro_epoch
-            .checked_add(1)
-            .ok_or(AddressSpaceError::SizeOverflow)?;
-        Ok(Some((
-            ReservedSharedChange {
-                baseline: self.replacement.clone(),
-                replacement: read_only.clone(),
-                authority_epoch: self.next_authority_epoch,
-                original_epoch: self.next_mapping_epoch,
-                base_epoch: self.next_mapping_epoch,
-                next_epoch: ro_epoch,
-            },
-            ReservedSharedChange {
-                baseline: read_only,
-                replacement: absent,
-                authority_epoch: self.next_authority_epoch,
-                original_epoch: self.next_mapping_epoch,
-                base_epoch: ro_epoch,
-                next_epoch: all_epoch,
-            },
-        )))
+        let absent = withdrawn_set(self.address_space, &self.replacement)?;
+        Ok(Some(ReservedSharedChange {
+            baseline: Some(self.replacement.clone()),
+            replacement: absent,
+            authority_epoch: self.next_authority_epoch,
+            base_epoch: self.next_mapping_epoch,
+            next_epoch: self
+                .next_mapping_epoch
+                .checked_add(1)
+                .ok_or(AddressSpaceError::SizeOverflow)?,
+        }))
     }
 }
 
 fn withdrawn_set<B: PageBackend, A: MemoryAccount>(
     space: &UserAddressSpace<B, A>,
     baseline: &FallibleArc<MappingSet<B, A>>,
-    all: bool,
 ) -> SpaceResult<B, A, FallibleArc<MappingSet<B, A>>> {
     let charge = space.try_mapping_set_charge()?;
     let mut records = baseline.records.clone();
@@ -108,7 +126,7 @@ fn withdrawn_set<B: PageBackend, A: MemoryAccount>(
         if !core::ptr::eq(&**old, &**current) {
             continue;
         }
-        let next = old.withdrawn(all)?;
+        let next = old.without_residents()?;
         records.replace_shared_view(old, &next, &space.account)?;
     }
     FallibleArc::try_new(MappingSet {
@@ -289,10 +307,61 @@ impl<B: PageBackend, A: MemoryAccount> UserAddressSpace<B, A> {
             next,
             replacement,
         )?;
+        prepared.kind = MappingChangeKind::SharedBacking;
         prepared.shared_guards = guards;
         prepared.shared_guard_charge = charge;
         Ok(Some(prepared))
     }
+    /// Prepare a precise withdrawal while the canonical page is closed. Every
+    /// mapping lineage and fragment is visited, but unrelated views stay shared.
+    pub(crate) fn prepare_shared_withdrawal(
+        &self,
+        page_id: u64,
+        epoch: u64,
+        all: bool,
+    ) -> SpaceResult<B, A, Option<PreparedMappingChange<'_, B, A>>> {
+        let snapshot = self.snapshot();
+        let mut records = snapshot.mappings.records.clone();
+        let mut changed = false;
+        for original in snapshot.mappings.records.iter() {
+            let Some(old) = original.object.shared_file() else {
+                continue;
+            };
+            // Split mappings sharing a view are replaced together exactly once.
+            if !records
+                .get(original.key())
+                .and_then(|m| m.object.shared_file())
+                .is_some_and(|current| core::ptr::eq(&**old, &**current))
+            {
+                continue;
+            }
+            if let Some(next) = old.withdraw_page(page_id, epoch, all)? {
+                records.replace_shared_view(old, &next, &self.account)?;
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(None);
+        }
+        let replacement = FallibleArc::try_new(MappingSet {
+            records,
+            _storage_charge: self.try_mapping_set_charge()?,
+        })
+        .map_err(|_| AddressSpaceError::Allocation)?;
+        let mut prepared = PreparedMappingChange::new_private_backing(
+            self,
+            snapshot.authority_epoch,
+            snapshot.mapping_epoch,
+            snapshot
+                .mapping_epoch
+                .checked_add(1)
+                .ok_or(AddressSpaceError::SizeOverflow)?,
+            replacement,
+        )?;
+        prepared.kind = MappingChangeKind::SharedWithdrawal;
+        Ok(Some(prepared))
+    }
+
     pub(crate) fn sync_shared_range(
         &self,
         vmar: Vmar,

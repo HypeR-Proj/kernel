@@ -1328,6 +1328,8 @@ enum MappingChangeKind {
     PrivateBacking,
     /// Drops only clean file pages, including in a sealed stopped space.
     FileReclaim,
+    /// Changes shared-file residency or write grants without changing authority.
+    SharedBacking,
     SharedWithdrawal,
 }
 

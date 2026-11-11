@@ -1089,13 +1089,23 @@ does not promise persistence of later writes or an atomic image of concurrent
 writers. VOLUME scope is rejected; F2FS retains its existing file-sync recovery
 and periodic checkpoint policy. Neither operation is a POSIX mmap/msync ABI.
 
-Before publishing shared-file translations, the mapper reserves logical and
-machine roots sufficient to withdraw writes and then all access without new
-allocation. Snapshot capture waits for short kernel mutations and acknowledged
-withdrawal of every writable alias, then reopens a new dirty generation before
-backend I/O. Provider failure closes new admissions and revokes resident aliases;
-unresolved hardware faults retain the existing fatal-fault policy. Mapping a
-file does not guarantee future residency or suppress resource-limit errors.
+Normal shared-file writeback withdraws write permission only from aliases of
+the selected canonical page; eviction removes only those aliases. Page identity
+and the closed admission epoch exclude stale callbacks. Unrelated shared-file
+pages retain their permissions and residency. Snapshot capture waits for short
+kernel mutations and acknowledged withdrawal of every writable alias, then
+reopens a new dirty generation before backend I/O.
+
+Before publishing shared-file translations, the mapper also reserves an
+all-absent logical and machine root for allocation-free emergency withdrawal
+and final process retirement. Shared-only residency and permission changes
+reuse this root's tables instead of rebuilding global withdrawal variants.
+Resource exhaustion during precise preparation may remove additional shared
+translations through this reserve; it never discards their canonical file data.
+The reserve retains no old resident-page baseline. Provider failure closes new
+admissions and revokes resident aliases; unresolved hardware faults retain the
+existing fatal-fault policy. Mapping a file does not guarantee future residency
+or suppress resource-limit errors.
 
 Explicit `GuestMemory` READ and WRITE rights allow a userspace device backend
 to copy up to 4096 guest bytes per call. They do not reopen direct VMO writes

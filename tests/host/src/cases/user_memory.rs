@@ -5220,6 +5220,9 @@ impl user::SharedPage for TestSharedPage {
     fn identity(&self) -> u64 {
         self.physical.get()
     }
+    fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Acquire)
+    }
     fn physical_address(&self) -> PhysicalAddress {
         self.physical
     }
@@ -5294,6 +5297,7 @@ impl Drop for TestOperationLease {
 }
 #[derive(Clone)]
 struct TestSharedSource {
+    file_identity: u64,
     operations: Arc<AtomicU64>,
     require_idle_fill: bool,
     operation: Option<Arc<TestOperationLease>>,
@@ -5304,7 +5308,7 @@ struct TestSharedSource {
 impl user::SharedSource for TestSharedSource {
     type Page = TestSharedPage;
     fn identity(&self) -> (u64, u64) {
-        (1, 1)
+        (1, self.file_identity)
     }
     fn size(&self) -> u64 {
         self.size
@@ -5353,6 +5357,7 @@ impl user::SharedAlias for TestSharedAlias {
 }
 fn test_shared_source(count: usize) -> TestSharedSource {
     TestSharedSource {
+        file_identity: 1,
         operations: Arc::new(AtomicU64::new(0)),
         require_idle_fill: false,
         operation: None,
@@ -5373,11 +5378,12 @@ fn test_shared_source(count: usize) -> TestSharedSource {
         retired: Arc::new(AtomicBool::new(false)),
     }
 }
-fn map_shared_test(
+fn prepare_shared_test_at(
     space: &UserAddressSpace<Backend, Account>,
     source: TestSharedSource,
+    address: u64,
     count: usize,
-) {
+) -> user::PreparedMappingChange<'_, Backend, Account> {
     let alias: Box<dyn user::SharedAlias> = Box::new(TestSharedAlias);
     let view = crate::require_ok(space.prepare_shared_view(
         source,
@@ -5385,15 +5391,21 @@ fn map_shared_test(
         0,
         count as u64 * PAGE_SIZE,
     ));
+    crate::require_ok(space.prepare_map_shared_view(
+        space.root_vmar(),
+        slice(address, count as u64 * PAGE_SIZE),
+        view,
+        Permissions::read_write(),
+        Permissions::read_write(),
+    ))
+}
+fn map_shared_test(
+    space: &UserAddressSpace<Backend, Account>,
+    source: TestSharedSource,
+    count: usize,
+) {
     complete(crate::require_ok(
-        crate::require_ok(space.prepare_map_shared_view(
-            space.root_vmar(),
-            slice(0x1000, count as u64 * PAGE_SIZE),
-            view,
-            Permissions::read_write(),
-            Permissions::read_write(),
-        ))
-        .commit_for_test(),
+        prepare_shared_test_at(space, source, 0x1000, count).commit_for_test(),
     ));
 }
 
@@ -5415,25 +5427,34 @@ fn mm01_reserved_withdrawal_preserves_immutable_grants_and_needs_no_allocation()
     let token = crate::require_some(populated.snapshots().next()).token;
     let old = crate::require_ok(populated.resident_pages(token));
     assert!(old.page_is_writable(0));
-    let (read_only, absent) =
-        crate::require_some(crate::require_ok(populated.prepare_shared_reserves()));
+    let mut absent = crate::require_some(crate::require_ok(populated.prepare_shared_reserve()));
+    absent.release_baseline();
     let published = crate::require_ok(populated.commit_for_test());
     assert!(page.active.load(Ordering::Acquire) > 0);
     complete(published);
     assert_eq!(page.active.load(Ordering::Acquire), 0);
-    // VMAR-only authority updates cannot make pre-reserved revocation stale.
-    crate::require_ok(space.try_create_vmar(space.root_vmar(), slice(0x3000, PAGE_SIZE)));
-    let prepared = crate::require_ok(read_only.into_prepared(&space, space.mapping_epoch()));
+    page.frozen.store(true, Ordering::Release);
+    let prepared = crate::require_some(crate::require_ok(space.prepare_shared_withdrawal(
+        page.physical.get(),
+        1,
+        false,
+    )));
     let current = crate::require_ok(prepared.resident_pages(token));
     assert!(!current.page_is_writable(0));
     drop(current);
-    // Both prebuilt revocation commits remain possible under quota failure.
-    account.0.fail_next.store(true, Ordering::Release);
+    absent = crate::require_some(crate::require_ok(absent.rebase_for(&prepared)));
     complete(crate::require_ok(prepared.commit_for_test()));
-    assert!(old.page_is_writable(0));
+    // VMAR-only authority updates cannot make pre-reserved revocation stale.
+    crate::require_ok(space.try_create_vmar(space.root_vmar(), slice(0x3000, PAGE_SIZE)));
+    let charges = account.0.charge_calls.load(Ordering::Acquire);
+    account.0.fail_next.store(true, Ordering::Release);
     complete(crate::require_ok(
         crate::require_ok(absent.into_prepared(&space, space.mapping_epoch())).commit_for_test(),
     ));
+    assert_eq!(account.0.charge_calls.load(Ordering::Acquire), charges);
+    assert!(account.0.fail_next.load(Ordering::Acquire));
+    assert!(old.page_is_writable(0));
+    account.0.fail_next.store(false, Ordering::Release);
     assert!(matches!(
         space.copy_from_user(slice(0x1000, 1), &mut [0]),
         Err(AddressSpaceError::BackingNotResident)
@@ -5455,7 +5476,7 @@ fn mm01_output_reservation_has_no_dirty_admission_until_copy_and_freeze_is_retri
     let populate = crate::require_some(crate::require_ok(
         space.prepare_shared_population(slice(0x1000, 2 * PAGE_SIZE), false),
     ));
-    let (_, absent) = crate::require_some(crate::require_ok(populate.prepare_shared_reserves()));
+    let absent = crate::require_some(crate::require_ok(populate.prepare_shared_reserve()));
     complete(crate::require_ok(populate.commit_for_test()));
     let output = crate::require_ok(space.prepare_user_write_for_test(slice(0x1000, 2 * PAGE_SIZE)));
     assert_eq!(pages[0].active.load(Ordering::Acquire), 0);
@@ -5584,10 +5605,7 @@ fn mm01_sparse_mapping_charges_resident_metadata_not_the_virtual_file_size() {
     let populated = crate::require_some(crate::require_ok(
         space.prepare_shared_population(slice(0x1000, PAGE_SIZE), true),
     ));
-    let (ro, absent) = crate::require_some(crate::require_ok(populated.prepare_shared_reserves()));
-    let mut changes = 0;
-    crate::require_ok(ro.visit_updates(|_| changes += 1));
-    assert_eq!(changes, 1);
+    let absent = crate::require_some(crate::require_ok(populated.prepare_shared_reserve()));
     let mut removals = 0;
     crate::require_ok(absent.visit_updates(|_| removals += 1));
     assert_eq!(removals, 1);
@@ -5733,4 +5751,486 @@ fn mm01_population_loads_all_source_pages_before_install_or_mutation_admission()
     complete(crate::require_ok(prepared.commit_for_test()));
     assert_eq!(pages[0].active.load(Ordering::Acquire), 0);
     assert_eq!(pages[1].active.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn mm01_precise_withdrawal_preserves_other_pages_and_other_files() {
+    let (backend, account) = fixtures();
+    let first = test_shared_source(2);
+    let page = first.pages[0].clone();
+    let mut second = test_shared_source(1);
+    second.file_identity = 2;
+    Arc::make_mut(&mut second.pages)[0].physical = PhysicalAddress::new(0x200000);
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, 8 * PAGE_SIZE),
+        backend,
+        account,
+    ));
+    let mut translations = std::collections::BTreeMap::new();
+    apply_translation_delta(
+        prepare_shared_test_at(&space, first, 0x1000, 2),
+        &mut translations,
+    );
+    apply_translation_delta(
+        prepare_shared_test_at(&space, second, 0x5000, 1),
+        &mut translations,
+    );
+    for range in [slice(0x1000, 2 * PAGE_SIZE), slice(0x5000, PAGE_SIZE)] {
+        apply_translation_delta(
+            crate::require_some(crate::require_ok(
+                space.prepare_shared_population(range, true),
+            )),
+            &mut translations,
+        );
+    }
+    let neighbor = translations[&0x2000];
+    let other_file = translations[&0x5000];
+    page.frozen.store(true, Ordering::Release);
+    let write_cut = crate::require_some(crate::require_ok(space.prepare_shared_withdrawal(
+        page.physical.get(),
+        1,
+        false,
+    )));
+    assert_eq!(apply_translation_delta(write_cut, &mut translations), 1);
+    assert!(!translations[&0x1000].writable);
+    assert_eq!(translations[&0x2000], neighbor);
+    assert_eq!(translations[&0x5000], other_file);
+    let eviction = crate::require_some(crate::require_ok(space.prepare_shared_withdrawal(
+        page.physical.get(),
+        1,
+        true,
+    )));
+    assert_eq!(apply_translation_delta(eviction, &mut translations), 1);
+    assert!(!translations.contains_key(&0x1000));
+    assert_eq!(translations[&0x2000], neighbor);
+    assert_eq!(translations[&0x5000], other_file);
+}
+
+#[test]
+fn mm01_precise_withdrawal_reaches_all_aliases_after_mapping_split() {
+    let (backend, account) = fixtures();
+    let source = test_shared_source(3);
+    let page = source.pages[0].clone();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, 10 * PAGE_SIZE),
+        backend,
+        account,
+    ));
+    let mut translations = std::collections::BTreeMap::new();
+    apply_translation_delta(
+        prepare_shared_test_at(&space, source.clone(), 0x1000, 3),
+        &mut translations,
+    );
+    apply_translation_delta(
+        prepare_shared_test_at(&space, source, 0x6000, 3),
+        &mut translations,
+    );
+    for address in [0x1000, 0x6000] {
+        apply_translation_delta(
+            crate::require_some(crate::require_ok(
+                space.prepare_shared_population(slice(address, 3 * PAGE_SIZE), true),
+            )),
+            &mut translations,
+        );
+    }
+    apply_translation_delta(
+        crate::require_ok(space.prepare_protect(
+            space.root_vmar(),
+            slice(0x2000, PAGE_SIZE),
+            Permissions::read_only(),
+        )),
+        &mut translations,
+    );
+    let unrelated: Vec<_> = translations
+        .iter()
+        .filter(|(address, _)| **address != 0x1000 && **address != 0x6000)
+        .map(|(address, page)| (*address, *page))
+        .collect();
+    page.frozen.store(true, Ordering::Release);
+    let write_cut = crate::require_some(crate::require_ok(space.prepare_shared_withdrawal(
+        page.physical.get(),
+        1,
+        false,
+    )));
+    assert_eq!(apply_translation_delta(write_cut, &mut translations), 2);
+    assert!(!translations[&0x1000].writable && !translations[&0x6000].writable);
+    let eviction = crate::require_some(crate::require_ok(space.prepare_shared_withdrawal(
+        page.physical.get(),
+        1,
+        true,
+    )));
+    assert_eq!(apply_translation_delta(eviction, &mut translations), 2);
+    assert!(!translations.contains_key(&0x1000) && !translations.contains_key(&0x6000));
+    for (address, page) in unrelated {
+        assert_eq!(translations[&address], page);
+    }
+}
+
+#[test]
+fn mm01_old_and_duplicate_page_cuts_do_not_revoke_successor_grants() {
+    let (backend, account) = fixtures();
+    let source = test_shared_source(1);
+    let page = source.pages[0].clone();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, 4 * PAGE_SIZE),
+        backend,
+        account.clone(),
+    ));
+    let mut translations = std::collections::BTreeMap::new();
+    apply_translation_delta(
+        prepare_shared_test_at(&space, source, 0x1000, 1),
+        &mut translations,
+    );
+    apply_translation_delta(
+        crate::require_some(crate::require_ok(
+            space.prepare_shared_population(slice(0x1000, PAGE_SIZE), true),
+        )),
+        &mut translations,
+    );
+    page.frozen.store(true, Ordering::Release);
+    apply_translation_delta(
+        crate::require_some(crate::require_ok(space.prepare_shared_withdrawal(
+            page.physical.get(),
+            1,
+            false,
+        ))),
+        &mut translations,
+    );
+    let calls = account.0.charge_calls.load(Ordering::Acquire);
+    assert!(
+        crate::require_ok(space.prepare_shared_withdrawal(page.physical.get(), 1, false)).is_none()
+    );
+    assert_eq!(account.0.charge_calls.load(Ordering::Acquire), calls);
+    page.epoch.store(2, Ordering::Release);
+    page.frozen.store(false, Ordering::Release);
+    apply_translation_delta(
+        crate::require_some(crate::require_ok(
+            space.prepare_shared_population(slice(0x1000, PAGE_SIZE), true),
+        )),
+        &mut translations,
+    );
+    for all in [false, true] {
+        assert!(
+            crate::require_ok(space.prepare_shared_withdrawal(page.physical.get(), 1, all))
+                .is_none()
+        );
+    }
+    assert!(translations[&0x1000].writable);
+    // Virtual-address reuse must not turn an old canonical identity into
+    // authority over a different file mapped at that address.
+    apply_translation_delta(
+        crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x1000, PAGE_SIZE))),
+        &mut translations,
+    );
+    let mut replacement = test_shared_source(1);
+    replacement.file_identity = 2;
+    Arc::make_mut(&mut replacement.pages)[0].physical = PhysicalAddress::new(0x200000);
+    apply_translation_delta(
+        prepare_shared_test_at(&space, replacement, 0x1000, 1),
+        &mut translations,
+    );
+    apply_translation_delta(
+        crate::require_some(crate::require_ok(
+            space.prepare_shared_population(slice(0x1000, PAGE_SIZE), true),
+        )),
+        &mut translations,
+    );
+    for all in [false, true] {
+        assert!(
+            crate::require_ok(space.prepare_shared_withdrawal(page.physical.get(), 2, all))
+                .is_none()
+        );
+    }
+    assert!(translations[&0x1000].writable);
+    assert_eq!(
+        translations[&0x1000].physical,
+        PhysicalAddress::new(0x200000)
+    );
+}
+
+#[test]
+fn mm01_shared_permission_cycles_rebase_emergency_target_without_new_charges() {
+    let (backend, account) = fixtures();
+    let source = test_shared_source(2);
+    let page = source.pages[0].clone();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, 4 * PAGE_SIZE),
+        backend,
+        account.clone(),
+    ));
+    let mut translations = std::collections::BTreeMap::new();
+    apply_translation_delta(
+        prepare_shared_test_at(&space, source, 0x1000, 2),
+        &mut translations,
+    );
+    let population = crate::require_some(crate::require_ok(
+        space.prepare_shared_population(slice(0x1000, 2 * PAGE_SIZE), true),
+    ));
+    let mut reserve = crate::require_some(crate::require_ok(population.prepare_shared_reserve()));
+    reserve.release_baseline();
+    apply_translation_delta(population, &mut translations);
+    let unrelated = translations[&0x2000];
+    for epoch in 1..=64 {
+        page.frozen.store(true, Ordering::Release);
+        let cut = crate::require_some(crate::require_ok(space.prepare_shared_withdrawal(
+            page.physical.get(),
+            epoch,
+            false,
+        )));
+        let calls = account.0.charge_calls.load(Ordering::Acquire);
+        reserve = crate::require_some(crate::require_ok(reserve.rebase_for(&cut)));
+        assert_eq!(account.0.charge_calls.load(Ordering::Acquire), calls);
+        assert_eq!(apply_translation_delta(cut, &mut translations), 1);
+        page.epoch.store(epoch + 1, Ordering::Release);
+        page.frozen.store(false, Ordering::Release);
+        let grant = crate::require_some(crate::require_ok(
+            space.prepare_shared_population(slice(0x1000, PAGE_SIZE), true),
+        ));
+        let calls = account.0.charge_calls.load(Ordering::Acquire);
+        reserve = crate::require_some(crate::require_ok(reserve.rebase_for(&grant)));
+        assert_eq!(account.0.charge_calls.load(Ordering::Acquire), calls);
+        assert_eq!(apply_translation_delta(grant, &mut translations), 1);
+        assert_eq!(translations[&0x2000], unrelated);
+    }
+    let calls = account.0.charge_calls.load(Ordering::Acquire);
+    account.0.fail_next.store(true, Ordering::Release);
+    complete(crate::require_ok(
+        crate::require_ok(reserve.into_prepared(&space, space.mapping_epoch())).commit_for_test(),
+    ));
+    assert_eq!(account.0.charge_calls.load(Ordering::Acquire), calls);
+    assert!(account.0.fail_next.load(Ordering::Acquire));
+    account.0.fail_next.store(false, Ordering::Release);
+    assert!(matches!(
+        space.copy_from_user(slice(0x2000, 1), &mut [0]),
+        Err(AddressSpaceError::BackingNotResident)
+    ));
+}
+
+#[test]
+fn mm01_completed_emergency_reserve_does_not_retain_evicted_frames() {
+    let (backend, account) = fixtures();
+    let source = test_shared_source(1);
+    let page = source.pages[0].clone();
+    let references = Arc::strong_count(&page.bytes);
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, 4 * PAGE_SIZE),
+        backend,
+        account,
+    ));
+    map_shared_test(&space, source, 1);
+    let population = crate::require_some(crate::require_ok(
+        space.prepare_shared_population(slice(0x1000, PAGE_SIZE), true),
+    ));
+    let mut reserve = crate::require_some(crate::require_ok(population.prepare_shared_reserve()));
+    reserve.release_baseline();
+    complete(crate::require_ok(population.commit_for_test()));
+    assert!(Arc::strong_count(&page.bytes) > references);
+    page.frozen.store(true, Ordering::Release);
+    let eviction = crate::require_some(crate::require_ok(space.prepare_shared_withdrawal(
+        page.physical.get(),
+        1,
+        true,
+    )));
+    let next = crate::require_some(crate::require_ok(reserve.rebase_for(&eviction)));
+    complete(crate::require_ok(eviction.commit_for_test()));
+    assert_eq!(Arc::strong_count(&page.bytes), references);
+    // Both the old and rebound emergency roots remain owned at this point.
+    // Neither is allowed to retain a historical resident snapshot.
+    drop(reserve);
+    drop(next);
+    assert_eq!(Arc::strong_count(&page.bytes), references);
+}
+
+#[test]
+fn mm01_failed_precise_preparation_preserves_emergency_progress() {
+    let (backend, account) = fixtures();
+    let source = test_shared_source(1);
+    let page = source.pages[0].clone();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, 4 * PAGE_SIZE),
+        backend,
+        account.clone(),
+    ));
+    map_shared_test(&space, source, 1);
+    let population = crate::require_some(crate::require_ok(
+        space.prepare_shared_population(slice(0x1000, PAGE_SIZE), true),
+    ));
+    let mut reserve = crate::require_some(crate::require_ok(population.prepare_shared_reserve()));
+    reserve.release_baseline();
+    complete(crate::require_ok(population.commit_for_test()));
+    let epoch = space.mapping_epoch();
+    page.frozen.store(true, Ordering::Release);
+    account.0.fail_next.store(true, Ordering::Release);
+    assert!(matches!(
+        space.prepare_shared_withdrawal(page.physical.get(), 1, false),
+        Err(AddressSpaceError::Account(_))
+    ));
+    assert_eq!(space.mapping_epoch(), epoch);
+    let calls = account.0.charge_calls.load(Ordering::Acquire);
+    account.0.fail_next.store(true, Ordering::Release);
+    complete(crate::require_ok(
+        crate::require_ok(reserve.into_prepared(&space, epoch)).commit_for_test(),
+    ));
+    assert_eq!(account.0.charge_calls.load(Ordering::Acquire), calls);
+    assert!(account.0.fail_next.load(Ordering::Acquire));
+    account.0.fail_next.store(false, Ordering::Release);
+    assert!(matches!(
+        space.copy_from_user(slice(0x1000, 1), &mut [0]),
+        Err(AddressSpaceError::BackingNotResident)
+    ));
+}
+
+#[test]
+fn mm01_emergency_reuse_rejects_authority_private_and_stale_changes() {
+    let (backend, account) = fixtures();
+    let source = test_shared_source(1);
+    let page = source.pages[0].clone();
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, 8 * PAGE_SIZE),
+        backend,
+        account,
+    ));
+    let (private, _, _, _) = protected_source(vec![0x71; PAGE_SIZE as usize]);
+    let view = crate::require_ok(space.prepare_file_view(
+        private,
+        PAGE_SIZE,
+        0,
+        PAGE_SIZE,
+        0,
+        false,
+        user::PrivateMappingMode::CopyOnWrite,
+    ));
+    complete(crate::require_ok(
+        crate::require_ok(space.prepare_map_private_view(
+            space.root_vmar(),
+            slice(0x5000, PAGE_SIZE),
+            view,
+            Permissions::read_write(),
+            Permissions::read_write(),
+        ))
+        .commit_for_test(),
+    ));
+    map_shared_test(&space, source, 1);
+    let population = crate::require_some(crate::require_ok(
+        space.prepare_shared_population(slice(0x1000, PAGE_SIZE), true),
+    ));
+    let mut reserve = crate::require_some(crate::require_ok(population.prepare_shared_reserve()));
+    reserve.release_baseline();
+    complete(crate::require_ok(population.commit_for_test()));
+    let authority = crate::require_ok(space.prepare_protect(
+        space.root_vmar(),
+        slice(0x1000, PAGE_SIZE),
+        Permissions::read_only(),
+    ));
+    assert!(crate::require_ok(reserve.rebase_for(&authority)).is_none());
+    drop(authority);
+    let unmap = crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x1000, PAGE_SIZE)));
+    assert!(crate::require_ok(reserve.rebase_for(&unmap)).is_none());
+    drop(unmap);
+    let mapping = prepare_shared_test_at(&space, test_shared_source(1), 0x7000, 1);
+    assert!(crate::require_ok(reserve.rebase_for(&mapping)).is_none());
+    drop(mapping);
+    page.frozen.store(true, Ordering::Release);
+    let stale_cut = crate::require_some(crate::require_ok(space.prepare_shared_withdrawal(
+        page.physical.get(),
+        1,
+        false,
+    )));
+    let private_write = crate::require_some(crate::require_ok(
+        space.prepare_private_write(slice(0x5000, 4)),
+    ));
+    assert!(crate::require_ok(reserve.rebase_for(&private_write)).is_none());
+    complete(crate::require_ok(private_write.commit_for_test()));
+    crate::require_ok(space.copy_to_user(slice(0x5000, 4), b"kept"));
+    let epoch = space.mapping_epoch();
+    assert!(matches!(
+        stale_cut.commit_for_test(),
+        Err(AddressSpaceError::StaleTransaction)
+    ));
+    assert_eq!(space.mapping_epoch(), epoch);
+    assert!(
+        crate::require_ok(space.prepare_shared_population(slice(0x1000, PAGE_SIZE), true))
+            .is_none()
+    );
+    let fresh_cut = crate::require_some(crate::require_ok(space.prepare_shared_withdrawal(
+        page.physical.get(),
+        1,
+        false,
+    )));
+    assert!(matches!(
+        reserve.rebase_for(&fresh_cut),
+        Err(AddressSpaceError::StaleTransaction)
+    ));
+    drop(fresh_cut);
+    assert!(matches!(
+        reserve.into_prepared(&space, epoch),
+        Err(AddressSpaceError::StaleTransaction)
+    ));
+    let mut bytes = [0; 4];
+    crate::require_ok(space.copy_from_user(slice(0x5000, 4), &mut bytes));
+    assert_eq!(&bytes, b"kept");
+}
+
+#[test]
+fn mm01_logical_withdrawal_noop_is_not_translation_retirement_acknowledgement() {
+    let (backend, account) = fixtures();
+    let source = test_shared_source(1);
+    let pages = source.pages.clone();
+    let page = pages[0].clone();
+    let retired = source.retired.clone();
+    let references = Arc::strong_count(&page.bytes);
+    let space = crate::require_ok(UserAddressSpace::try_new(
+        window(),
+        slice(0x1000, 4 * PAGE_SIZE),
+        backend,
+        account.clone(),
+    ));
+    map_shared_test(&space, source, 1);
+    let population = crate::require_some(crate::require_ok(
+        space.prepare_shared_population(slice(0x1000, PAGE_SIZE), true),
+    ));
+    complete(crate::require_ok(population.commit_for_test()));
+    page.frozen.store(true, Ordering::Release);
+    let unmap = crate::require_ok(space.prepare_unmap(space.root_vmar(), slice(0x1000, PAGE_SIZE)));
+    // Logical publication precedes the hardware completion barrier. A second
+    // cut already sees no target, while a CPU could still use the old root.
+    let pending_ack = crate::require_ok(unmap.commit_for_test());
+    let epoch = space.mapping_epoch();
+    let calls = account.0.charge_calls.load(Ordering::Acquire);
+    assert!(
+        crate::require_ok(space.prepare_shared_withdrawal(page.physical.get(), 1, false)).is_none()
+    );
+    assert!(
+        crate::require_ok(space.prepare_shared_withdrawal(page.physical.get(), 1, true)).is_none()
+    );
+    assert_eq!(space.mapping_epoch(), epoch);
+    assert_eq!(account.0.charge_calls.load(Ordering::Acquire), calls);
+    assert!(!retired.load(Ordering::Acquire));
+    assert!(Arc::strong_count(&page.bytes) > references);
+    assert_eq!(
+        crate::require_ok(page.aliases.lock())
+            .iter()
+            .filter(|alias| alias.is_alive())
+            .count(),
+        1
+    );
+    // Snapshot callers therefore cannot treat logical None as proof of ACK;
+    // the Native transport must serialize with the outstanding transaction.
+    complete(pending_ack);
+    assert!(retired.load(Ordering::Acquire));
+    assert_eq!(Arc::strong_count(&page.bytes), references);
+    assert_eq!(
+        crate::require_ok(page.aliases.lock())
+            .iter()
+            .filter(|alias| alias.is_alive())
+            .count(),
+        0
+    );
 }

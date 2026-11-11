@@ -1372,7 +1372,10 @@ pub(super) fn resident_pages<Backend: PageBackend, Account: MemoryAccount>(
     for index in first..first + count {
         result.push(match object.physical_page(index as u64 * PAGE_SIZE) {
             Ok(page) => Some(page),
-            Err(VmoError::BackingNotResident) if object.private().is_some_and(|v| v.is_file()) => {
+            Err(VmoError::BackingNotResident)
+                if object.private().is_some_and(|v| v.is_file())
+                    || object.shared_file().is_some() =>
+            {
                 None
             }
             Err(error) => return Err(error),

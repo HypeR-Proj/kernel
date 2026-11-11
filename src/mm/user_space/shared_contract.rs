@@ -17,7 +17,9 @@ pub(crate) enum SharedFileError {
 
 /// Reverse edges are weak. The mapping owns this callback, never the file.
 pub(crate) trait SharedAlias: Send + Sync {
-    /// Runs outside file/cache locks. Success includes translation retirement.
+    /// Runs outside file/cache locks with page admission closed until return.
+    /// The unique page identity and cut epoch cannot be reused while this
+    /// synchronous callback is in flight. Success includes translation retirement.
     fn withdraw(&self, page_id: u64, epoch: u64, all: bool) -> Result<(), ()>;
 }
 
@@ -32,6 +34,7 @@ pub(crate) trait SharedPage: Clone + Send + Sync {
     type Pin;
 
     fn identity(&self) -> u64;
+    fn epoch(&self) -> u64;
     fn physical_address(&self) -> PhysicalAddress;
     fn try_pin(&self) -> Result<Self::Pin, SharedFileError>;
     fn try_begin_write(&self) -> Result<Self::Mutation, SharedFileError>;

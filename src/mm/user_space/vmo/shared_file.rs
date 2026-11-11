@@ -308,23 +308,44 @@ impl<B: PageBackend, A: MemoryAccount> SharedFileView<B, A> {
         FallibleArc::try_new(next).map_err(map_allocation)
     }
 
-    /// A prepared immutable derivative; never consult live global dirty state
-    /// to describe a historical PTE's permission.
-    pub(crate) fn withdrawn(&self, all: bool) -> VmoResult<B, A, FallibleArc<Self>> {
+    /// Prepare the allocation-free emergency target. It owns mapping authority
+    /// but no resident frames; normal writeback uses targeted withdrawal below.
+    pub(crate) fn without_residents(&self) -> VmoResult<B, A, FallibleArc<Self>> {
         let mut next = self.clone_version()?;
-        if all {
-            next.pages = Index::new();
-        } else {
-            for old in self.pages.iter().filter(|page| page.write_epoch.is_some()) {
+        next.pages = Index::new();
+        FallibleArc::try_new(next).map_err(map_allocation)
+    }
+
+    /// Withdraw every occurrence of this canonical page in this view. The
+    /// caller keeps page admission closed through the hardware acknowledgement.
+    /// Check the live cut epoch only for selection, never to reinterpret an old
+    /// immutable mapping's permissions while enumerating its translation diff.
+    pub(crate) fn withdraw_page(
+        &self,
+        page_id: u64,
+        epoch: u64,
+        all: bool,
+    ) -> VmoResult<B, A, Option<FallibleArc<Self>>> {
+        let matches = |resident: &SharedResident<B>| {
+            resident.page.identity() == page_id
+                && resident.page.epoch() == epoch
+                && (all || resident.write_epoch.is_some_and(|grant| grant <= epoch))
+        };
+        if !self.pages.iter().any(matches) {
+            return Ok(None);
+        }
+        let mut next = self.clone_version()?;
+        for old in self.pages.iter().filter(|page| matches(page)) {
+            next.pages = if all {
+                next.pages.remove(old.index, &self.account)
+            } else {
                 let mut page = old.clone();
                 page.write_epoch = None;
-                next.pages = next
-                    .pages
-                    .insert(page, &self.account)
-                    .map_err(index_error::<B, A>)?;
+                next.pages.insert(page, &self.account)
             }
+            .map_err(index_error::<B, A>)?;
         }
-        FallibleArc::try_new(next).map_err(map_allocation)
+        FallibleArc::try_new(next).map(Some).map_err(map_allocation)
     }
 
     pub(crate) fn physical_page(&self, offset: u64) -> VmoResult<B, A, PhysicalAddress> {
