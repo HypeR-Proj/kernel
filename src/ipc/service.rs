@@ -266,9 +266,8 @@ fn send_prepared_capabilities(
     drop(admissions);
 
     if let Some(transfer) = direct.take()
-        && let Err(failure) = transfer.commit()
+        && transfer.commit().is_err()
     {
-        failure.transfer.rollback();
         target.finish_output_access();
         // Output may already contain a complete prefix, so the ABI requires
         // FAULT even when the late admission loss originated elsewhere.

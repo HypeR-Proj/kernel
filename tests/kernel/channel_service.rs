@@ -15,7 +15,9 @@ use {
     crate::accounting::ResourceLimits,
 };
 use {
-    crate::capability::HandleError, crate::capability::HandleFlags, crate::capability::HandleValue,
+    crate::capability::HandleError, crate::capability::HandleFlags,
+    crate::capability::HandleTransferOperation, crate::capability::HandleTransferRequest,
+    crate::capability::HandleTransferRoute, crate::capability::HandleValue,
     crate::capability::PreparedHandle, crate::capability::Rights,
 };
 use {
@@ -33,9 +35,10 @@ use {
 };
 use {crate::object::Event, crate::object::KernelObject, crate::object::ObjectPublication};
 use {
-    crate::process::MachineAbi, crate::process::PreparedProcess, crate::process::Process,
-    crate::process::ProcessError, crate::process::ProcessImage, crate::process::ProcessObject,
-    crate::process::ProcessPhase, crate::process::TaskGroup, crate::process::TerminalReason,
+    crate::process::MachineAbi, crate::process::PreparedDirectProcessHandleTransfer,
+    crate::process::PreparedProcess, crate::process::Process, crate::process::ProcessError,
+    crate::process::ProcessImage, crate::process::ProcessObject, crate::process::ProcessPhase,
+    crate::process::TaskGroup, crate::process::TerminalReason,
 };
 
 #[path = "mapping_authority.rs"]
@@ -127,6 +130,7 @@ pub(super) fn run() -> Result<(), Error> {
     verify_partial_charge_records(&process)?;
     verify_handle_quota_rollback(&process, ResourceLimits::UNLIMITED)?;
     verify_handle_admission_after_stop(&domain, &group)?;
+    verify_direct_commit_rejection_rolls_back(&domain, &group)?;
     verify_atomic_handle_replacement(&process)?;
     verify_fifo_and_buffer_contract(&process)?;
     verify_copy_failure_restores_message(&process)?;
@@ -746,6 +750,97 @@ fn verify_handle_quota_rollback(
     process.abort_handles(reservation);
     if domain.usage().total(ResourceKind::Handles) != baseline {
         return Err(Error::State(44));
+    }
+    Ok(())
+}
+
+fn verify_direct_commit_rejection_rolls_back(
+    domain: &ResourceDomain,
+    group: &TaskGroup,
+) -> Result<(), Error> {
+    // Exercise both Process lock orders. The destination stops after both
+    // reservations exist, so failure happens in commit rather than admission.
+    for reverse in [false, true] {
+        let baseline = domain.usage().total(ResourceKind::Handles);
+        let first = create_process(domain, group)?;
+        let second = create_process(domain, group)?;
+        let (source, destination) = if reverse {
+            (second, first)
+        } else {
+            (first, second)
+        };
+        let rights = Rights::WAIT
+            .union(Rights::TRANSFER)
+            .union(Rights::DUPLICATE);
+        let moved = source.create_object(
+            Event::try_new(domain).map_err(|_| Error::Construction)?,
+            rights,
+        )?;
+        let copied = source.create_object(
+            Event::try_new(domain).map_err(|_| Error::Construction)?,
+            rights,
+        )?;
+        let requests = [
+            HandleTransferRequest {
+                value: moved,
+                offered_rights: None,
+                rights: Rights::WAIT,
+                offered_kind: None,
+                expected_kind: None,
+                operation: HandleTransferOperation::Move,
+            },
+            HandleTransferRequest {
+                value: copied,
+                offered_rights: None,
+                rights: Rights::WAIT,
+                offered_kind: None,
+                expected_kind: None,
+                operation: HandleTransferOperation::Copy,
+            },
+        ];
+        let source_claim = source.prepare_handle_transfer(
+            &requests,
+            None,
+            None,
+            HandleTransferRoute::Rendezvous,
+        )?;
+        let destination_slots = match destination.reserve_handle_batch(2) {
+            Ok(slots) => slots,
+            Err(error) => {
+                source_claim.rollback();
+                return Err(error.into());
+            }
+        };
+        let transfer = PreparedDirectProcessHandleTransfer::new(
+            source_claim,
+            destination.clone(),
+            destination_slots,
+        );
+        destination.request_stop(TerminalReason::Requested);
+        if !matches!(transfer.commit(), Err(ProcessError::Lifecycle(_))) {
+            return Err(Error::State(109));
+        }
+        // No returned rollback owner exists: commit itself must restore the
+        // exact MOVE value and release both unpublished destination slots.
+        source.handle_info(moved, rights)?;
+        source.handle_info(copied, rights)?;
+        if domain.usage().total(ResourceKind::Handles) != baseline + 2 {
+            return Err(Error::State(110));
+        }
+        retire_process(&destination)?;
+        if !matches!(
+            destination.scan_handles(crate::capability::HandleScanCursor::from_token(0)),
+            Err(ProcessError::Handle(HandleError::TableRetired))
+        ) {
+            return Err(Error::State(111));
+        }
+        source.close_handle(moved)?;
+        source.close_handle(copied)?;
+        source.request_stop(TerminalReason::Requested);
+        retire_process(&source)?;
+        if domain.usage().total(ResourceKind::Handles) != baseline {
+            return Err(Error::State(112));
+        }
     }
     Ok(())
 }

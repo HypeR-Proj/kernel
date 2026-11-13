@@ -368,8 +368,9 @@ fn map_loaded_file_view(
         .logical()
         .prepare_map_private_view(vmar.token(), range, view, permission, maximum)
         .map_err(MachineError::Logical)?;
-    space.prepare_change(prepared)?.commit()?;
-    Ok(())
+    // Keep the machine transaction's preparation/commit owners in its shared
+    // apply entry rather than duplicating both values in every service caller.
+    space.apply_change(prepared).map_err(ServiceError::Machine)
 }
 
 pub(crate) fn read_vmo(

@@ -66,8 +66,16 @@ SYMBOLS = (
     'ready_index4Tree6remove24LocalReadyQueueAuthority',
     '18NativeAddressSpace21resolve_private_write',
     '18NativeAddressSpace19populate_file_range',
+    '18NativeAddressSpace12apply_change',
+    '18NativeAddressSpace20prepare_image_change',
+    '7machine19commit_change_parts',
+    '20PreparedNativeChange6commit',
     '17KernelPageBackend13DomainAccountE26prepare_copy_from_snapshot',
     '17KernelPageBackend13DomainAccountE18prepare_user_write',
+    '17KernelPageBackend13DomainAccountE21prepare_copy_segments',
+    '17KernelPageBackend13DomainAccountE19prepare_shared_copy',
+    '17KernelPageBackend13DomainAccountE17prepare_user_read',
+    '17KernelPageBackend13DomainAccountE12copy_to_user',
     '18NativeAddressSpace28prepare_private_write_change',
     'vfs6remote9transport15decode_response',
     'vfs7resolve4walk',
@@ -115,6 +123,62 @@ class ProcessStackTests(unittest.TestCase):
 
     def test_production_frames_are_checked(self):
         self.assertEqual(len(self.check().splitlines()), len(SYMBOLS))
+
+    def test_post_index_stack_probe_reservation_is_counted(self):
+        body = function('probe', 'stp x29, x30, [sp, #-0x60]!\n'
+                        'sub sp, sp, #0x1, lsl #12\n'
+                        'str xzr, [sp], #-0x30\nbl 0x20000\nret')
+        self.assertEqual(process_stack.entry_frame(body), 4240)
+        for offset in ('0x10', '16'):
+            with self.subTest(offset=offset):
+                symbol = '26send_prepared_capabilities'
+                self.functions[symbol] = function(
+                    symbol, 'sub sp, sp, #4096\n'
+                    f'str xzr, [sp], #-{offset}\nbl 0x20000\nret')
+                with self.assertRaisesRegex(ValueError, 'entry frame 4112 exceeds'):
+                    self.check()
+
+    def test_mapping_helpers_cannot_hide_live_preparation_or_commit_frames(self):
+        for phase, helper, frame, total in (
+                ('preparation', '18NativeAddressSpace20prepare_image_change', 1152, 2944),
+                ('commit', '7machine19commit_change_parts', 1024, 2816)):
+            with self.subTest(phase=phase):
+                self.setUp()
+                for symbol, size in (('NCNv7service8map_file0', 768),
+                                     ('7service20map_loaded_file_view', 768),
+                                     ('18NativeAddressSpace12apply_change', 256),
+                                     (helper, frame)):
+                    self.functions[symbol] = function(symbol, f'sub sp, sp, #{size}\nret')
+                with self.assertRaisesRegex(ValueError, f'file mapping {phase}: live frames {total}'):
+                    self.check()
+
+    def test_private_file_wrappers_cannot_hide_nested_mapping_frames(self):
+        for phase, helper, frame, total in (
+                ('preparation', '18NativeAddressSpace20prepare_image_change', 1152, 2944),
+                ('commit', '7machine19commit_change_parts', 896, 2688)):
+            with self.subTest(phase=phase):
+                self.setUp()
+                for symbol, size in (('18NativeAddressSpace21resolve_private_write', 768),
+                                     ('18NativeAddressSpace19populate_file_range', 768),
+                                     ('18NativeAddressSpace12apply_change', 256),
+                                     (helper, frame)):
+                    self.functions[symbol] = function(symbol, f'sub sp, sp, #{size}\nret')
+                with self.assertRaisesRegex(ValueError, f'private file {phase}: live frames {total}'):
+                    self.check()
+
+    def test_segment_preparation_is_bounded_with_each_copy_owner(self):
+        prefix = '17KernelPageBackend13DomainAccountE'
+        for caller, frame, total in (('17prepare_user_read', 1024, 2240),
+                                    ('12copy_to_user', 896, 2112)):
+            with self.subTest(caller=caller):
+                self.setUp()
+                for suffix, size in (('21prepare_copy_segments', 192),
+                                     ('26prepare_copy_from_snapshot', 1024),
+                                     (caller, frame)):
+                    symbol = prefix + suffix
+                    self.functions[symbol] = function(symbol, f'sub sp, sp, #{size}\nret')
+                with self.assertRaisesRegex(ValueError, f'user copy {caller}: live frames {total}'):
+                    self.check()
 
     def test_loader_snapshot_cannot_retain_builder_construction_scratch(self):
         symbol = '14ProcessBuilder15try_publication'

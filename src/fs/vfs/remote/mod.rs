@@ -128,6 +128,10 @@ impl RemoteFs {
                 + MAX_PATH_BYTES
                 + hyper_filesystem::protocol::DIRECTORY_BATCH_BYTES,
         )?;
+        // Reserve the final allocation before preparing the mount. Passing a
+        // completed mount through the fallible Arc constructor keeps another
+        // full value alive across allocation and its failure cleanup.
+        let slot = hyper::mm::UniqueFallibleArc::try_new_uninit()?;
         let metadata = metadata_scratch()?;
         let root = node(FileRecord::try_new(0, &domain)?, &domain)?;
         let health = volume.health.clone();
@@ -158,17 +162,18 @@ impl RemoteFs {
             content: root.record.downgrade(),
             _charge: record_charge(&domain)?,
         })?);
-        FallibleArc::try_new(Self {
-            state: Mutex::new(state),
-            backend: Mutex::new(backend),
-            root,
-            domain,
-            shared,
-            epoch: AtomicU64::new(0),
-            health,
-            _charge: persistent,
-        })
-        .map_err(Error::from)
+        Ok(slot
+            .write(Self {
+                state: Mutex::new(state),
+                backend: Mutex::new(backend),
+                root,
+                domain,
+                shared,
+                epoch: AtomicU64::new(0),
+                health,
+                _charge: persistent,
+            })
+            .into_shared())
     }
     #[inline(never)]
     /// Serialize the final topology publication with directory renames. The

@@ -442,10 +442,10 @@ impl NativeAddressSpace {
     #[inline(never)]
     pub(crate) fn resolve_private_write(&self, destination: UserSlice) -> Result<(), Error> {
         self.populate_file_range(destination)?;
-        if let Some(prepared) = self.prepare_private_write_change(destination)? {
-            self.prepare_change(prepared)?.commit()?;
+        match self.prepare_private_write_change(destination)? {
+            Some(prepared) => self.apply_change(prepared),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     // Mapping traversal needs temporary stack space. Release that frame before
@@ -483,12 +483,12 @@ impl NativeAddressSpace {
     #[inline(never)]
     pub(crate) fn populate_file_range(&self, range: UserSlice) -> Result<(), Error> {
         if let Some(prepared) = self.logical.prepare_shared_population(range, false)? {
-            self.prepare_change(prepared)?.commit()?;
+            self.apply_change(prepared)?;
         }
-        if let Some(prepared) = self.prepare_file_population_change(range)? {
-            self.prepare_change(prepared)?.commit()?;
+        match self.prepare_file_population_change(range)? {
+            Some(prepared) => self.apply_change(prepared),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     // Keep file-population scratch out of the nested COW and commit callers.
@@ -670,6 +670,33 @@ impl NativeAddressSpace {
         &'a self,
         logical: LogicalPrepared<'a>,
     ) -> Result<PreparedNativeChange<'a>, Error> {
+        let (image, shared_reserve) = self.prepare_image_change(&logical)?;
+        Ok(PreparedNativeChange {
+            owner: self,
+            logical,
+            image,
+            shared_reserve,
+        })
+    }
+
+    /// Complete an immediately committed change without returning and then
+    /// moving a second full logical/machine transaction through the caller.
+    #[inline(never)]
+    pub(crate) fn apply_change(&self, logical: LogicalPrepared<'_>) -> Result<(), Error> {
+        let (image, shared_reserve) = self.prepare_image_change(&logical)?;
+        let mut transport = crate::irq::cross_call::UserAddressSpaceTransaction::acquire_waiting()
+            .map_err(|()| Error::Transport)?;
+        commit_change_parts(self, logical, image, shared_reserve, &mut transport).map(|_| ())
+    }
+
+    // Logical ownership remains with the caller throughout preparation. Only
+    // the machine derivatives cross this boundary; publication still belongs
+    // to the shared commit path after every fallible preparation step.
+    #[inline(never)]
+    fn prepare_image_change(
+        &self,
+        logical: &LogicalPrepared<'_>,
+    ) -> Result<(FallibleArc<MachineImage>, Option<SharedRevocationImage>), Error> {
         let pin = crate::task::scheduler::preempt_disable().map_err(|_| Error::Transport)?;
         let published = logical.publish_file_instructions(&pin);
         crate::task::scheduler::preempt_enable_without_reschedule(pin)
@@ -682,7 +709,7 @@ impl NativeAddressSpace {
             let reusable = match &state.shared_reserve {
                 Some(reserve) => reserve
                     .logical
-                    .rebase_for(&logical)?
+                    .rebase_for(logical)?
                     .map(|logical| (logical, reserve.image.clone())),
                 None => None,
             };
@@ -725,12 +752,7 @@ impl NativeAddressSpace {
                 None => None,
             },
         };
-        Ok(PreparedNativeChange {
-            owner: self,
-            logical,
-            image,
-            shared_reserve,
-        })
+        Ok((image, shared_reserve))
     }
 
     fn prepare_shared_image(
@@ -1293,78 +1315,91 @@ impl PreparedNativeChange<'_> {
             image,
             shared_reserve,
         } = self;
-        let cut = owner
-            .state
-            .with(|state| state.residency.begin_update(logical.base_epoch()))?;
-        #[cfg(all(
-            CONFIG_ARCH_AARCH64,
-            all(feature = "kernel-test", feature = "kernel-self-test")
-        ))]
-        self_test::after_cut(owner.logical.id().get(), cut.active());
-        let committed = match logical.commit_machine() {
-            Ok(committed) => committed,
-            Err(error) => {
-                if owner
-                    .state
-                    .with(|state| state.residency.abort_update(cut))
-                    .is_err()
-                {
-                    hyper::debug::invariant_failure("mm::user_space::machine::commit invariant");
-                }
-                return Err(Error::Logical(error));
-            }
-        };
-        let change = committed.change();
-        let (old, old_reserves) = owner.state.with(|state| {
-            (
-                core::mem::replace(&mut state.current, image),
-                core::mem::replace(&mut state.shared_reserve, shared_reserve),
-            )
-        });
-
-        let current = owner.state.with(|state| state.current.clone());
-        execute_cut(
-            transport,
-            owner.logical.id().get(),
-            change,
-            true,
-            &old.root,
-            crate::irq::cross_call::UserAddressSpaceOperation::Replace(&current.root),
-            cut.active(),
-        );
-
-        let mut inactive = *cut.targets();
-        for (index, active) in cut.active().iter().copied().enumerate() {
-            if active {
-                inactive[index] = false;
-            }
-        }
-        execute_cut(
-            transport,
-            owner.logical.id().get(),
-            change,
-            false,
-            &old.root,
-            crate::irq::cross_call::UserAddressSpaceOperation::Invalidate(&old.root),
-            &inactive,
-        );
-
-        if owner
-            .state
-            .with(|state| state.residency.finish_update(cut, change.epoch))
-            .is_err()
-        {
-            crate::diagnostics::crash::fatal(format_args!(
-                "HypeR: native address-space residency completion is inconsistent"
-            ));
-        }
-        // SAFETY: Both active root switches and every inactive-resident tagged
-        // invalidation acknowledged before either old owner is released.
-        unsafe { committed.complete_machine_retirement() };
-        drop(old);
-        drop(old_reserves);
-        Ok(change)
+        commit_change_parts(owner, logical, image, shared_reserve, transport)
     }
+}
+
+// Consume the existing logical owner directly. Immediate callers need not
+// construct and then move a second combined logical/machine transaction.
+#[inline(never)]
+fn commit_change_parts(
+    owner: &NativeAddressSpace,
+    logical: LogicalPrepared<'_>,
+    image: FallibleArc<MachineImage>,
+    shared_reserve: Option<SharedRevocationImage>,
+    transport: &mut crate::irq::cross_call::UserAddressSpaceTransaction,
+) -> Result<MappingChange, Error> {
+    let cut = owner
+        .state
+        .with(|state| state.residency.begin_update(logical.base_epoch()))?;
+    #[cfg(all(
+        CONFIG_ARCH_AARCH64,
+        all(feature = "kernel-test", feature = "kernel-self-test")
+    ))]
+    self_test::after_cut(owner.logical.id().get(), cut.active());
+    let committed = match logical.commit_machine() {
+        Ok(committed) => committed,
+        Err(error) => {
+            if owner
+                .state
+                .with(|state| state.residency.abort_update(cut))
+                .is_err()
+            {
+                hyper::debug::invariant_failure("mm::user_space::machine::commit invariant");
+            }
+            return Err(Error::Logical(error));
+        }
+    };
+    let change = committed.change();
+    let (old, old_reserves) = owner.state.with(|state| {
+        (
+            core::mem::replace(&mut state.current, image),
+            core::mem::replace(&mut state.shared_reserve, shared_reserve),
+        )
+    });
+
+    let current = owner.state.with(|state| state.current.clone());
+    execute_cut(
+        transport,
+        owner.logical.id().get(),
+        change,
+        true,
+        &old.root,
+        crate::irq::cross_call::UserAddressSpaceOperation::Replace(&current.root),
+        cut.active(),
+    );
+
+    let mut inactive = *cut.targets();
+    for (index, active) in cut.active().iter().copied().enumerate() {
+        if active {
+            inactive[index] = false;
+        }
+    }
+    execute_cut(
+        transport,
+        owner.logical.id().get(),
+        change,
+        false,
+        &old.root,
+        crate::irq::cross_call::UserAddressSpaceOperation::Invalidate(&old.root),
+        &inactive,
+    );
+
+    if owner
+        .state
+        .with(|state| state.residency.finish_update(cut, change.epoch))
+        .is_err()
+    {
+        crate::diagnostics::crash::fatal(format_args!(
+            "HypeR: native address-space residency completion is inconsistent"
+        ));
+    }
+    // SAFETY: Both active root switches and every inactive-resident tagged
+    // invalidation acknowledged before either old owner is released.
+    unsafe { committed.complete_machine_retirement() };
+    drop(old);
+    drop(old_reserves);
+    Ok(change)
 }
 
 fn execute_cut(

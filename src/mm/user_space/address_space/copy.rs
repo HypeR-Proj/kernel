@@ -32,7 +32,8 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
         if source.length() == 0 {
             return Ok(());
         }
-        let mut plan = self.prepare_copy(source, Access::Read)?;
+        let mut plan = self.prepare_copy_segments(source, Access::Read)?;
+        self.prepare_shared_copy(&mut plan, Access::Read)?;
         for segment in plan.segments.iter_mut() {
             if let CopyBacking::Mapping(object) = &segment.object
                 && object.shared_file().is_some()
@@ -57,7 +58,8 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
         &self,
         source: UserSlice,
     ) -> SpaceResult<Backend, Account, PreparedUserRead<Backend, Account>> {
-        let mut plan = self.prepare_copy(source, Access::Read)?;
+        let mut plan = self.prepare_copy_segments(source, Access::Read)?;
+        self.prepare_shared_copy(&mut plan, Access::Read)?;
         for segment in plan.segments.iter_mut() {
             let CopyBacking::Mapping(object) = &segment.object else {
                 return Err(AddressSpaceError::InvalidRange);
@@ -89,7 +91,8 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
         if destination.length() == 0 {
             return Ok(());
         }
-        let plan = self.prepare_copy(destination, Access::Write)?;
+        let mut plan = self.prepare_copy_segments(destination, Access::Write)?;
+        self.prepare_shared_copy(&mut plan, Access::Write)?;
         let _admission = plan.admit_shared_write()?;
         plan.copy_from(source)
     }
@@ -110,6 +113,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
     > {
         let snapshot = self.snapshot();
         let mut plan = self.prepare_copy_from_snapshot(destination, Access::Write, &snapshot)?;
+        self.prepare_shared_copy(&mut plan, Access::Write)?;
         plan.pin_private_ranges()?;
         let (reservation_id, count) = self
             .state
@@ -270,7 +274,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
         self.release_user_write(reservation);
     }
 
-    fn prepare_copy(
+    fn prepare_copy_segments(
         &self,
         range: UserSlice,
         access: Access,
@@ -279,6 +283,10 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
         self.prepare_copy_from_snapshot(range, access, &snapshot)
     }
 
+    // Prepare only mapping-backed segments. The operation entry points finish
+    // shared sources/pins on their retained plan after all traversal frames
+    // return, before exposing the plan to any copy operation.
+    #[inline(never)]
     fn prepare_copy_from_snapshot(
         &self,
         range: UserSlice,
@@ -355,26 +363,47 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
         if cursor != range.end() {
             return Err(AddressSpaceError::NotMapped);
         }
+        Ok(CopyPlan {
+            segments,
+            shared: None,
+            _shared_sources: Vec::new(),
+            _shared_source_charge: None,
+            _temporary_charge: temporary_charge,
+        })
+    }
+
+    // Runs after the mapping-traversal frame has returned. Borrow the caller's
+    // retained plan so pin/source admission never nests beneath traversal
+    // scratch or carries a second owned copy of the backing records.
+    // Segments retain their mapping origins after snapshot release; retain_sync
+    // separately revalidates explicit source retirement before admitting I/O.
+    #[inline(never)]
+    fn prepare_shared_copy(
+        &self,
+        plan: &mut CopyPlan<Backend, Account>,
+        access: Access,
+    ) -> SpaceResult<Backend, Account, ()> {
+        let segments = &plan.segments;
         // A physical pin keeps bytes alive but does not retain namespace or
         // mount authority. Keep a separate operation lease even after read
         // segments are converted to bare physical owners. Last unmap can then
         // retire its mapping lease without making an admitted copy invisible
         // to unlink, rename or unmount.
         let shared_count=segments.iter().filter(|segment|matches!(&segment.object,CopyBacking::Mapping(object) if object.shared_file().is_some())).count();
-        let source_charge = self.try_storage_charge::<Backend::SharedSource>(shared_count)?;
-        let mut sources = Vec::new();
-        sources
+        plan._shared_source_charge =
+            self.try_storage_charge::<Backend::SharedSource>(shared_count)?;
+        plan._shared_sources
             .try_reserve_exact(shared_count)
             .map_err(|_| AddressSpaceError::Allocation)?;
         for segment in segments.iter() {
             if let CopyBacking::Mapping(object) = &segment.object
                 && let Some(view) = object.shared_file()
             {
-                sources.push(view.retain_sync()?);
+                plan._shared_sources.push(view.retain_sync()?);
             }
         }
         let has_shared = access == Access::Write && segments.iter().any(|segment| matches!(&segment.object, CopyBacking::Mapping(object) if object.shared_file().is_some()));
-        let shared = if has_shared {
+        plan.shared = if has_shared {
             let charge = Some(
                 self.account
                     .try_charge(super::super::MemoryCharge {
@@ -385,6 +414,11 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
                     })
                     .map_err(AddressSpaceError::Account)?,
             );
+            // Reserve the final shared owner before assembling its pins and
+            // accounting state. Allocation failure must not retain a second
+            // complete value on the user-copy admission stack.
+            let slot = hyper::mm::UniqueFallibleArc::try_new_uninit()
+                .map_err(|_| AddressSpaceError::Allocation)?;
             let count = segments.iter().filter(|segment|matches!(&segment.object,CopyBacking::Mapping(object) if object.shared_file().is_some())).try_fold(0usize,|total,segment| total.checked_add(((segment.object_offset%PAGE_SIZE+segment.length).div_ceil(PAGE_SIZE)) as usize).ok_or(AddressSpaceError::SizeOverflow))?;
             let pin_charge = self
                 .account
@@ -419,25 +453,19 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
                 }
             }
             Some(
-                FallibleArc::try_new(SharedOutputState {
+                slot.write(SharedOutputState {
                     current: AddressSpaceLock::new(None),
                     account: self.account.clone(),
                     _charge: charge,
                     _pins: pins,
                     _pin_charge: pin_charge,
                 })
-                .map_err(|_| AddressSpaceError::Allocation)?,
+                .into_shared(),
             )
         } else {
             None
         };
-        Ok(CopyPlan {
-            segments,
-            shared,
-            _shared_sources: sources,
-            _shared_source_charge: source_charge,
-            _temporary_charge: temporary_charge,
-        })
+        Ok(())
     }
 }
 
