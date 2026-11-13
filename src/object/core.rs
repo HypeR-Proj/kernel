@@ -135,6 +135,7 @@ impl ObjectKind {
     pub(crate) const GUEST_NOTIFICATION: Self = Self(GUEST_NOTIFICATION_OBJECT_KIND);
     pub(crate) const GUEST_MEMORY: Self = Self(GUEST_MEMORY_OBJECT_KIND);
     pub(crate) const WAIT_SET: Self = Self(WAIT_SET_OBJECT_KIND);
+    pub(crate) const SYNC_DOMAIN: Self = Self(hyper::abi::native::HYPER_NATIVE_OBJECT_SYNC_DOMAIN);
     /// Native Event object kind declared by the generated ABI schema.
     pub(crate) const EVENT: Self = Self(EVENT_OBJECT_KIND);
     /// Buffered byte-stream endpoint kind declared by the generated ABI schema.
@@ -197,7 +198,8 @@ impl ObjectKind {
     /// typed and never use a wildcard object kind.
     pub(crate) const fn try_from_raw(raw: u32) -> Option<Self> {
         match raw {
-            EVENT_OBJECT_KIND
+            hyper::abi::native::HYPER_NATIVE_OBJECT_SYNC_DOMAIN
+            | EVENT_OBJECT_KIND
             | BYTE_CHANNEL_OBJECT_KIND
             | CAPABILITY_CHANNEL_OBJECT_KIND
             | THREAD_OBJECT_KIND
@@ -364,8 +366,8 @@ pub(crate) mod private {
 /// Closed kernel-object payload contract.
 ///
 /// Implementations live in kernel subsystems and must also implement the
-/// crate-private sealing trait. `on_zero_active_handles` is the sole transition
-/// callback: it must be infallible, nonblocking, and allocation-free. It must
+/// crate-private sealing trait. `on_zero_active_handles` is the active-authority
+/// transition callback: it must be infallible, nonblocking, and allocation-free. It must
 /// detach teardown state before releasing payload locks; detached capabilities
 /// may then be released because their own zero-active callbacks are appended
 /// to the allocation-free retirement queue rather than invoked recursively.
@@ -417,6 +419,11 @@ pub(crate) trait KernelObject: private::Sealed + Any + Send + Sync {
     /// wake existing waiters; transfer final destruction to `ObjectRetirement`
     /// or the subsystem reaper. Resolved operation owners can still exist.
     fn on_zero_active_handles(&self, _retirement: &mut ObjectRetirement) {}
+
+    /// Runs once on the normal-context reaper after all strong references retire.
+    /// Weak upgrades already fail. Unlink cross-object observations here, outside
+    /// all object/queue locks, before ordinary payload destruction.
+    fn on_final_reap(&self) {}
 }
 
 /// Closed marker for object payloads which may be published to userspace.
@@ -436,6 +443,7 @@ trait ErasedKernelObject: Any + Send + Sync {
     fn as_any(&self) -> &dyn Any;
     fn signal_source(&self) -> Option<SignalSource<'_>>;
     fn on_zero_active_handles(&self, retirement: &mut ObjectRetirement);
+    fn on_final_reap(&self);
 }
 
 impl<T: KernelObject> ErasedKernelObject for T {
@@ -455,6 +463,10 @@ impl<T: KernelObject> ErasedKernelObject for T {
 
     fn on_zero_active_handles(&self, retirement: &mut ObjectRetirement) {
         KernelObject::on_zero_active_handles(self, retirement);
+    }
+
+    fn on_final_reap(&self) {
+        KernelObject::on_final_reap(self);
     }
 }
 
@@ -534,6 +546,33 @@ pub(crate) struct ActiveHandleOwner {
 /// This type deliberately exposes only upgrade and liveness observation. A
 /// diagnostic registry must never become an authority or extend payload life.
 pub(crate) struct WeakObjectRef(WeakFallibleArc<SharedObject>);
+
+/// Typed lifetime observer for an existing subsystem relationship. Upgrade does
+/// not restore active userspace authority; it retains normal service ownership.
+pub(crate) struct WeakKernelRef<T: KernelObject> {
+    allocation: WeakFallibleArc<SharedObject>,
+    marker: PhantomData<T>,
+}
+
+impl<T: KernelObject> WeakKernelRef<T> {
+    pub(crate) fn upgrade(&self) -> Option<KernelRef<T, KernelService>> {
+        let allocation = self.allocation.upgrade()?;
+        retain_reference_class(&allocation.header.references[ReferenceKind::KernelService.index()]);
+        Some(KernelRef::from_owner(ObjectRef {
+            allocation: ManuallyDrop::new(allocation),
+            class: ReferenceKind::KernelService,
+        }))
+    }
+}
+
+impl<T: KernelObject> Clone for WeakKernelRef<T> {
+    fn clone(&self) -> Self {
+        Self {
+            allocation: self.allocation.clone(),
+            marker: PhantomData,
+        }
+    }
+}
 
 /// Active-handle state captured at one diagnostic observation point.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -942,6 +981,17 @@ impl<T: KernelObject> KernelRef<T, OperationPin> {
 }
 
 impl<T: KernelObject, C: ReferenceClass> KernelRef<T, C> {
+    pub(crate) fn downgrade(&self) -> WeakKernelRef<T> {
+        WeakKernelRef {
+            allocation: self.owner.allocation.downgrade(),
+            marker: PhantomData,
+        }
+    }
+
+    pub(crate) fn retain_service(&self) -> KernelRef<T, KernelService> {
+        KernelRef::from_validated_owner(self.owner.clone_as(ReferenceKind::KernelService))
+    }
+
     #[cfg(test)]
     pub(crate) fn downgrade_for_test(&self) -> WeakObjectRef {
         self.owner.downgrade()
@@ -990,6 +1040,10 @@ impl<T: KernelObject, C: ReferenceClass> Clone for KernelRef<T, C> {
 }
 
 impl<T: UserExportableObject, C: ReferenceClass> PublishableRef<T, C> {
+    pub(crate) fn downgrade(&self) -> WeakKernelRef<T> {
+        self.reference.downgrade()
+    }
+
     pub(crate) fn object(&self) -> &T {
         self.reference.object()
     }
@@ -1444,6 +1498,7 @@ pub(crate) fn reap_one_final_object(_access: &mut crate::reaper::ReaperAccess) -
     let Some(object) = object else {
         return false;
     };
+    object.payload.on_final_reap();
     drop(object);
     true
 }
@@ -1454,6 +1509,7 @@ pub(crate) fn reap_one_final_object() -> bool {
     let Some(object) = object else {
         return false;
     };
+    object.payload.on_final_reap();
     drop(object);
     true
 }

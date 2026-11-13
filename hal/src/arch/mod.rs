@@ -27,6 +27,7 @@ use x86_64 as imp;
 pub(crate) mod context;
 pub(crate) mod cpu;
 pub(crate) mod exception;
+pub(crate) mod external_atomic;
 pub(crate) mod irq;
 pub(crate) mod memory;
 pub(crate) mod platform;

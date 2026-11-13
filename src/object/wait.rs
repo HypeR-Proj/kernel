@@ -239,6 +239,21 @@ impl PreparedTimedWait {
         Ok(outcome)
     }
 
+    /// Completes a condition observed before queue publication. Consume an
+    /// already-selected timeout/cancellation, or atomically commit the local
+    /// observation if no source won. Unlike abort, this never creates a
+    /// cancellation result merely to retire an unresolved registration.
+    pub(crate) fn complete_unpublished(mut self) -> Result<WaitOutcome, ObjectWaitError> {
+        let registration = self.take_registration();
+        let outcome = match scheduler::finish_wait(registration) {
+            Ok(Some(outcome)) => outcome,
+            Ok(None) => WaitOutcome::Notified,
+            Err(error) => object_wait_scheduler_invariant("unpublished observation", error),
+        };
+        self.retire_timer(outcome)?;
+        Ok(outcome)
+    }
+
     fn take_registration(&mut self) -> WaitRegistration {
         match self.registration.take() {
             Some(registration) => registration,
@@ -324,6 +339,56 @@ pub(crate) fn prepare_timed_wait(
         registration: Some(registration),
         timer: Some(timer),
     }))
+}
+
+/// An optional one-shot Event cancellation source for a condition wait. It
+/// participates in the same scheduler arbitration as the condition and timer.
+pub(crate) struct PreparedCancellation {
+    event: super::KernelRef<super::Event, super::OperationPin>,
+    waiter: PreparedSignalWait,
+}
+
+impl PreparedCancellation {
+    pub(crate) fn new(
+        event: super::KernelRef<super::Event, super::OperationPin>,
+        domain: &ResourceDomain,
+    ) -> Result<Self, ObjectWaitError> {
+        Ok(Self {
+            event,
+            waiter: prepare_signal_wait(domain, super::Event::SIGNALED)?,
+        })
+    }
+
+    pub(crate) fn register(self, ticket: crate::task::WaitTicket) -> RegisteredCancellation {
+        use super::KernelObject;
+        let source = match self.event.object().signal_source() {
+            Some(source) => source,
+            None => hyper::debug::invariant_failure("Event has no signal source"),
+        };
+        source.state().register_shared_wait(self.waiter, ticket);
+        RegisteredCancellation {
+            event: self.event,
+            ticket,
+        }
+    }
+}
+
+pub(crate) struct RegisteredCancellation {
+    event: super::KernelRef<super::Event, super::OperationPin>,
+    ticket: crate::task::WaitTicket,
+}
+
+impl RegisteredCancellation {
+    /// Unlinks the signal source. Only the winning cancellation reports true;
+    /// late signalling cannot change a selected word/death/timeout outcome.
+    pub(crate) fn finish(self) -> bool {
+        use super::KernelObject;
+        let source = match self.event.object().signal_source() {
+            Some(source) => source,
+            None => hyper::debug::invariant_failure("Event has no signal source"),
+        };
+        source.state().unregister_shared_wait(self.ticket).is_some()
+    }
 }
 
 impl ArmedWaitTimer {

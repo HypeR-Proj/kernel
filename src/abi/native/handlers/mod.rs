@@ -26,8 +26,13 @@ pub(super) use retention::{
 };
 mod scheduling;
 pub(super) use scheduling::{sys_get_scheduling, sys_set_scheduling};
+mod synchronization;
 mod system;
 mod task;
+pub(super) use synchronization::{
+    sys_sync_domain_bind, sys_sync_domain_create, sys_sync_domain_join,
+    sys_sync_domain_owner_query, sys_sync_domain_wait_u64, sys_sync_domain_wake_u64,
+};
 mod vfs;
 mod vm;
 

@@ -711,6 +711,7 @@ const fn writable_vmo_rights() -> Rights {
         .union(Rights::INSPECT)
         .union(Rights::READ)
         .union(Rights::WRITE)
+        .union(Rights::SYNC_CONFIGURE)
         .union(Rights::MAP)
 }
 

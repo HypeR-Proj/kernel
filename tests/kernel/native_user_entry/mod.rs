@@ -11,6 +11,8 @@ mod fp;
 pub(super) use fp::guest_program as fp_guest_program;
 #[cfg(CONFIG_ARCH_AARCH64)]
 mod atomic_wait;
+#[cfg(CONFIG_ARCH_AARCH64)]
+mod sync_domain;
 #[cfg(CONFIG_ARCH_RISCV64)]
 mod riscv64;
 #[cfg(CONFIG_ARCH_AARCH64)]

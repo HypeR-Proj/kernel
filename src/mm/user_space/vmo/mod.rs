@@ -17,8 +17,10 @@ mod direct_copy;
 mod executable;
 mod file_source;
 mod shared_file;
+mod sync_binding;
 pub(crate) use shared_file::SharedFileView;
 pub(super) use shared_file::{SharedChangeGuard, shared_error};
+pub(crate) use sync_binding::{SyncBinding, SyncBindings};
 mod private_view;
 pub(crate) use atomic_word::SharedAtomicWord;
 pub(super) use direct_copy::PinnedReadRange;
@@ -97,6 +99,7 @@ struct VmoInner<Backend: PageBackend, Account: MemoryAccount> {
     account: Account,
     state: VmoLock<Backend, Account>,
     access_state: AtomicUsize,
+    sync_bindings: UserMemoryLock<SyncBindings>,
     _metadata_charge: Account::Charge,
 }
 
@@ -372,6 +375,7 @@ impl<Backend: PageBackend, Account: MemoryAccount> WritableVmo<Backend, Account>
                 guest_loaned: false,
             }),
             access_state: AtomicUsize::new(0),
+            sync_bindings: UserMemoryLock::new(SyncBindings::new()),
             _metadata_charge: metadata_charge,
         };
         Ok(Self {
@@ -506,6 +510,27 @@ impl<Backend: PageBackend, Account: MemoryAccount> WritableVmo<Backend, Account>
                 cause: failure.cause,
                 committed_pages: failure.committed_pages,
             })
+    }
+
+    /// Allocation identity remains stable while the admitted atomic word or
+    /// mapping retains this backing. It is never a physical-page identity.
+    pub(crate) fn sync_storage_identity(&self) -> u64 {
+        core::ptr::from_ref(&*self.inner) as usize as u64
+    }
+
+    pub(crate) fn bind_sync(
+        &self,
+        binding: alloc::boxed::Box<SyncBinding>,
+    ) -> Result<Option<alloc::boxed::Box<SyncBinding>>, alloc::boxed::Box<SyncBinding>> {
+        self.inner
+            .sync_bindings
+            .with(|bindings| bindings.insert(binding))
+    }
+
+    pub(crate) fn sync_contains(&self, domain: u64, offset: u64, end: u64) -> bool {
+        self.inner
+            .sync_bindings
+            .with(|bindings| bindings.contains(domain, offset, end))
     }
 
     pub(crate) fn same_storage(&self, other: &Self) -> bool {

@@ -190,6 +190,7 @@ extern "C" fn worker_entry(_argument: usize) {
             CONFIG_ARCH_AARCH64
         ))]
         retry_test::pause_after_retry_check(retry_pending);
+        crate::process::sync_domain::dispatch_one_batch();
         crate::process::reap_one_process(&mut access);
         let first_vm_pass = crate::vm::lifecycle::reap_batch(&mut access);
         let mut subsystem_work = false;
@@ -238,8 +239,10 @@ extern "C" fn worker_entry(_argument: usize) {
             }
             retry_pending = true;
         }
-        let more_work =
-            subsystem_work || process_work.ready || vm_retirement.continue_immediately();
+        let more_work = subsystem_work
+            || process_work.ready
+            || vm_retirement.continue_immediately()
+            || crate::process::sync_domain::work_pending();
         // Arm before relinquishing work ownership. An expiry or producer racing
         // this handoff sets durable work and cannot be lost before WAKE.wait.
         match WORK.finish_batch(more_work) {

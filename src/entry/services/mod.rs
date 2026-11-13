@@ -16,6 +16,7 @@ mod memory;
 mod object;
 mod process_builder;
 mod retention;
+mod synchronization;
 mod task;
 mod vfs;
 mod vfs_namespace;

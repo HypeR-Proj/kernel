@@ -38,6 +38,7 @@ mod transaction;
 mod vmo;
 #[cfg(test)]
 pub(crate) use transaction::retry_stale;
+pub(crate) use vmo::SyncBinding;
 #[cfg(not(test))]
 pub(crate) use vmo::{ExclusiveHardwareWriteLease, WritableMappingLease};
 

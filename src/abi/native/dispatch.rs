@@ -532,6 +532,24 @@ pub(super) fn dispatch_operation(
         abi::NativeOperation::TaskGroupCreate => {
             handlers::sys_task_group_create(services, receiver, arguments)
         }
+        abi::NativeOperation::SyncDomainCreate => {
+            handlers::sys_sync_domain_create(services, arguments)
+        }
+        abi::NativeOperation::SyncDomainBind => {
+            handlers::sys_sync_domain_bind(services, receiver, arguments)
+        }
+        abi::NativeOperation::SyncDomainJoin => {
+            handlers::sys_sync_domain_join(services, receiver, arguments)
+        }
+        abi::NativeOperation::SyncDomainOwnerQuery => {
+            handlers::sys_sync_domain_owner_query(services, receiver, arguments)
+        }
+        abi::NativeOperation::SyncDomainWaitU64 => {
+            handlers::sys_sync_domain_wait_u64(services, receiver, arguments)
+        }
+        abi::NativeOperation::SyncDomainWakeU64 => {
+            handlers::sys_sync_domain_wake_u64(services, receiver, arguments)
+        }
         abi::NativeOperation::VmoCreate => handlers::sys_vmo_create(services, arguments),
         abi::NativeOperation::VmoWaitU32 => {
             handlers::sys_vmo_wait_u32(services, receiver, arguments)

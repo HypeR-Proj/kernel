@@ -532,3 +532,7 @@ pub(crate) mod arch {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../../src/process/sync_domain/tokens.rs"]
+mod sync_domain_tokens;

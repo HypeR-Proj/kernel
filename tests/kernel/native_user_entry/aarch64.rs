@@ -294,6 +294,7 @@ pub(crate) fn run() -> Result<(), Error> {
     );
 
     super::atomic_wait::run(&domain, &group, program())?;
+    super::sync_domain::run(&domain, &group, program())?;
     verify_pending_creation_exit()?;
 
     group.request_stop().map_err(|_| Error::Group)?;

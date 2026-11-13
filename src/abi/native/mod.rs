@@ -12,8 +12,8 @@ pub(crate) use services::{
     ConsoleServiceError, ConsoleServices, DeviceServices, GuestIoServices, HandleServices,
     HierarchyServices, InspectServices, IpcServices, MemoryServices, NativeAction,
     ObjectServiceError, ObjectServices, ProcessBuilderServiceError, ProcessBuilderServices,
-    RetentionServices, SystemInspectServices, TaskServices, UserMemoryServices, VfsServices,
-    VmServices,
+    RetentionServices, SyncWaitRequest, SynchronizationServices, SystemInspectServices,
+    TaskServices, UserMemoryServices, VfsServices, VmServices,
 };
 
 mod dispatch;

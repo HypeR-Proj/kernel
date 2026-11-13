@@ -31,6 +31,7 @@ pub(in crate::abi::native) fn parse_object_kind(
     use crate::object::ObjectKind;
 
     match raw {
+        hyper::abi::native::HYPER_NATIVE_OBJECT_SYNC_DOMAIN => Ok(ObjectKind::SYNC_DOMAIN),
         hyper::abi::native::HYPER_NATIVE_OBJECT_BLOCK_QUEUE => Ok(ObjectKind::BLOCK_QUEUE),
         HYPER_NATIVE_OBJECT_EVENT => Ok(ObjectKind::EVENT),
         HYPER_NATIVE_OBJECT_BYTE_CHANNEL => Ok(ObjectKind::BYTE_CHANNEL),

@@ -2036,6 +2036,39 @@ fn shared_atomic_word_checks_geometry_without_materializing_or_admitting_wake() 
 }
 
 #[test]
+fn shared_u64_word_requires_alignment_and_retains_storage() {
+    let (backend, account) = fixtures();
+    let writable = crate::require_ok(WritableVmo::try_new(
+        PAGE_SIZE * 2,
+        backend.clone(),
+        account.clone(),
+    ));
+    for offset in [4, PAGE_SIZE - 4, PAGE_SIZE * 2, u64::MAX - 7] {
+        assert!(matches!(
+            writable.pin_shared_atomic_u64(offset),
+            Err(VmoError::InvalidRange)
+        ));
+    }
+    assert_eq!(backend.0.allocation_calls.load(Ordering::Relaxed), 0);
+    let word = crate::require_ok(writable.pin_shared_atomic_u64(PAGE_SIZE - 8));
+    assert_eq!(
+        word.physical(),
+        crate::require_ok(writable.resident_physical_page(0)).get() + PAGE_SIZE - 8
+    );
+    assert!(matches!(
+        writable.try_exclusive_hardware_write_lease(),
+        Err(VmoError::Busy)
+    ));
+    let tail = crate::require_ok(writable.pin_shared_atomic_u64(PAGE_SIZE * 2 - 8));
+    drop(writable);
+    drop(word);
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), 2);
+    drop(tail);
+    assert_eq!(account.0.pages.load(Ordering::Relaxed), 0);
+    assert_eq!(account.0.bytes.load(Ordering::Relaxed), 0);
+}
+
+#[test]
 fn shared_atomic_word_retains_backing_without_per_wait_owner_charge() {
     let (backend, account) = fixtures();
     let writable = crate::require_ok(WritableVmo::try_new(
@@ -2135,6 +2168,12 @@ fn shared_atomic_word_failed_first_touch_releases_admission_and_charges() {
             backend.0.fail_allocation_at.store(1, Ordering::Relaxed);
         }
         assert!(writable.pin_shared_atomic_u32(0).is_err());
+        if account_failure {
+            account.0.fail_next.store(true, Ordering::Relaxed);
+        } else {
+            backend.0.fail_allocation_at.store(2, Ordering::Relaxed);
+        }
+        assert!(writable.pin_shared_atomic_u64(0).is_err());
         assert_eq!(account.0.bytes.load(Ordering::Relaxed), baseline);
         assert_eq!(account.0.pages.load(Ordering::Relaxed), 0);
         backend.0.fail_allocation_at.store(0, Ordering::Relaxed);
@@ -6233,4 +6272,47 @@ fn mm01_logical_withdrawal_noop_is_not_translation_retirement_acknowledgement() 
             .count(),
         0
     );
+}
+
+#[test]
+fn sync_binding_is_canonical_and_retains_domain_until_last_backing_alias() {
+    struct Owner(Arc<AtomicU64>);
+    impl Drop for Owner {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Release);
+        }
+    }
+    let (backend, account) = fixtures();
+    let source = crate::require_ok(WritableVmo::try_new(
+        PAGE_SIZE,
+        backend.clone(),
+        account.clone(),
+    ));
+    let alias = source.clone();
+    let independent = crate::require_ok(WritableVmo::try_new(PAGE_SIZE, backend, account));
+    let drops = Arc::new(AtomicU64::new(0));
+    assert_eq!(
+        source.sync_storage_identity(),
+        alias.sync_storage_identity()
+    );
+    assert_ne!(
+        source.sync_storage_identity(),
+        independent.sync_storage_identity()
+    );
+    let binding = Box::new(user::SyncBinding::new(
+        11,
+        0,
+        PAGE_SIZE,
+        Box::new(Owner(drops.clone())),
+    ));
+    assert!(source.bind_sync(binding).is_ok());
+    assert!(alias.sync_contains(11, 8, 16));
+    assert!(!independent.sync_contains(11, 8, 16));
+    let conflicting = Box::new(user::SyncBinding::new(12, 0, 64, Box::new(())));
+    assert!(alias.bind_sync(conflicting).is_err());
+    drop(source);
+    assert_eq!(drops.load(Ordering::Acquire), 0);
+    assert!(alias.sync_contains(11, 8, 16));
+    drop(alias);
+    assert_eq!(drops.load(Ordering::Acquire), 1);
 }

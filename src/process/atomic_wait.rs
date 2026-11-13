@@ -3,7 +3,6 @@
 
 //! Atomic waits keyed by private mapping lineage or explicitly retained VMO identity.
 
-use core::sync::atomic::{AtomicU32, Ordering};
 use hyper::sync::InterruptSpinLock;
 #[derive(Debug)]
 pub(crate) enum Error {
@@ -320,8 +319,10 @@ fn wait_word(
     // SAFETY: aligned u32 is wholly within a resident writable page. `word`
     // retains mapping/storage admission through unlink, independently of unmap
     // and handle closure. All accesses here are atomic, never byte copies.
-    let atomic = unsafe { &*core::ptr::with_exposed_provenance::<AtomicU32>(linear) };
-    if atomic.load(Ordering::Relaxed) != expected {
+    let load = || unsafe {
+        crate::hal::atomic::load_external_u32(core::ptr::with_exposed_provenance(linear))
+    };
+    if load() != expected {
         return Ok(WaitOutcome::Notified);
     }
     let domain = process.resource_domain();
@@ -354,7 +355,7 @@ fn wait_word(
     // The retained IRQ mask goes directly to finish or is dropped on mismatch.
     let (published, mask) = unsafe {
         bucket.with_mask_retained(|state| {
-            if atomic.load(Ordering::Relaxed) != expected {
+            if load() != expected {
                 return Publication::Mismatch(prepared);
             }
             if cancelled() {

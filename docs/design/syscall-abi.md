@@ -909,6 +909,72 @@ recheck their condition after every return using their own atomic ordering.
 Spurious wakes are permitted. This adds no requeue, priority inheritance, robust
 owner recovery or implicit writable-file-mapping support.
 
+## Shared mutex owner-death observation
+
+`SyncDomain` scopes thread-lifetime observations for cooperative shared-memory
+protocols. The kernel never traverses a held-lock list, decodes application lock
+flags or repairs payloads. The Native C and Rust libraries implement a
+non-recursive mutex with syscall-free uncontended acquisition and release after
+initial binding, mapping and participant registration.
+
+The object factory creates a domain. `bind` requires `SYNC_CONFIGURE` on both
+the domain and an ordinary writable RAM VMO, plus VMO `WRITE`. Nonempty aligned
+ranges retain their domain until backing retirement; closing handles does not
+unbind or reset them. Aliases of the same writable storage share attribution.
+Overlapping ranges cannot belong to different domains. Shared u64 wait keys use
+domain identity, retained storage identity and backing-relative byte offset;
+they are distinct from existing private and shared u32 waits.
+
+`join` registers the invoking Thread, returns its existing token on repeated
+calls, and requires `SYNC_JOIN`. Successfully issued nonzero tokens never repeat
+within a domain. Active membership storage is reclaimed after real Thread
+detach; queries distinguish live, previously issued dead, and invalid tokens.
+A stop request or closing a participant handle does not publish death. Membership
+is a weak lifetime relationship: retiring an otherwise unused domain removes
+its registrations from surviving Threads.
+
+`owner_query` requires `INSPECT`. A dead result acquires the publication after
+execution has actually stopped; it makes completed owner writes visible but
+cannot make an interrupted application update consistent. `wait_u64` requires
+domain `SYNC_WAIT`, VMO `READ|WRITE`, a bound eight-byte word, an expected full value,
+an observed owner token and an absolute monotonic deadline. An optional Event
+with `WAIT` cancels the operation when signaled. Word notification, domain exit,
+Event cancellation and timer expiry arbitrate the same scheduler ticket. All
+registrations and retained backing retire before that ticket may be reused.
+Unknown record tails, options and reserved fields must be zero.
+SyncDomain has no generic level signal; its word operations use dedicated rights
+rather than granting the generic object `WAIT` or `SIGNAL` rights.
+
+A mismatching word returns `RECHECK`. A matching word whose observed owner is
+already dead can return `OWNER_EXITED`; neither result grants mutex ownership.
+Normal unlock uses a Release update followed by `wake_u64` (requiring
+`SYNC_WAKE`) with count one when
+notification is owed. A joined Thread's exit notifies eligible waiters throughout
+its domain, since wake-one handoff may have changed a sleeping waiter's remembered
+owner. The reaper drains finite FIFO batches without holding the domain lock
+across scheduler notifications. Each batch retains a local interrupt mask until
+its dispatch obligations are complete; resource destruction occurs after restoring
+the mask. This prevents a woken higher-priority Thread from waiting on a dispatcher
+it has preempted. Domain exit may wake O(number of admitted waiters); it is not an
+unconditional constant-time operation.
+
+Userspace rereads the current word and CASes the exact observed state before
+reporting recovery acquisition. Normal acquisition, held recovery authority, and
+unowned unrecoverable failure are different outcomes. Recovery must explicitly
+mark data consistent; abandoning recovery poisons the mutex and wakes all waiters.
+A dying recovery owner permits another recovery attempt. A selected waiter that
+cancels, times out or fails relays wake-one progress before returning. The Rust
+recovery guard exposes no arbitrary `T` reference, and ownership guards remain
+tied to the joining Thread. Reinitializing a shared slot requires external
+quiescence of all owners, waiters and potential users.
+
+The external-memory load seam uses fixed-width machine instructions rather than
+Rust references to untrusted writable bytes, including the existing u32 wait
+path. Malformed values and overlapping peer writes cannot turn control bits into
+kernel pointers. MM01 shared-file mappings do not grant a raw VMO capability or
+this atomic-wait authority. This facility adds no priority inheritance, recursive
+mutexes or implicit condition-variable peer-death policy.
+
 ## Process, memory, and user-copy safety
 
 Process owns its handle table, immutable current image, threads, address-space

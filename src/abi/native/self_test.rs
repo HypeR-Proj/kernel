@@ -112,6 +112,28 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
     {
         return Err(SelfTestError::ProcessBuilderValidation);
     }
+    let sync_domain_startup = parse_builder_handle(&[
+        0x0f37_79b9_7f4a_7c12,
+        0x80ff_0070,
+        u64::from(hyper::abi::native::HYPER_NATIVE_OBJECT_SYNC_DOMAIN),
+        Rights::SYNC_WAIT
+            .union(Rights::SYNC_WAKE)
+            .union(Rights::INSPECT)
+            .union(Rights::SYNC_JOIN)
+            .bits(),
+        hyper::abi::native::HYPER_NATIVE_CAPABILITY_DISPOSITION_DUPLICATE,
+        0,
+    ]);
+    if !matches!(
+        sync_domain_startup,
+        Ok(super::wire::ProcessBuilderHandleRequest {
+            expected_kind: crate::object::ObjectKind::SYNC_DOMAIN,
+            operation: crate::capability::HandleTransferOperation::Copy,
+            ..
+        })
+    ) {
+        return Err(SelfTestError::ProcessBuilderValidation);
+    }
     use core::cell::Cell;
 
     struct RejectingServices {
@@ -689,6 +711,50 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
         fn directory_info(&self, _: &InvocationReceiver) -> Result<DirectoryInfo, VfsServiceError> {
             self.calls.set(self.calls.get().saturating_add(1));
             Err(VfsServiceError::Process(ProcessError::Allocation))
+        }
+    }
+
+    impl crate::abi::native::SynchronizationServices for RejectingServices {
+        fn sync_domain_create(&self) -> Result<HandleValue, crate::process::sync_wait::Error> {
+            Err(crate::process::sync_wait::Error::InvalidInput)
+        }
+        fn sync_domain_bind(
+            &self,
+            _: &InvocationReceiver,
+            _: HandleValue,
+            _: u64,
+            _: u64,
+        ) -> Result<(), crate::process::sync_wait::Error> {
+            Err(crate::process::sync_wait::Error::InvalidInput)
+        }
+        fn sync_domain_join(
+            &self,
+            _: &InvocationReceiver,
+        ) -> Result<u64, crate::process::sync_wait::Error> {
+            Err(crate::process::sync_wait::Error::InvalidInput)
+        }
+        fn sync_domain_owner_query(
+            &self,
+            _: &InvocationReceiver,
+            _: u64,
+        ) -> Result<u64, crate::process::sync_wait::Error> {
+            Err(crate::process::sync_wait::Error::InvalidInput)
+        }
+        fn sync_domain_wait(
+            &self,
+            _: &InvocationReceiver,
+            _: crate::abi::native::SyncWaitRequest,
+        ) -> Result<crate::process::sync_wait::Outcome, crate::process::sync_wait::Error> {
+            Err(crate::process::sync_wait::Error::InvalidInput)
+        }
+        fn sync_domain_wake(
+            &self,
+            _: &InvocationReceiver,
+            _: HandleValue,
+            _: u64,
+            _: u32,
+        ) -> Result<u64, crate::process::sync_wait::Error> {
+            Err(crate::process::sync_wait::Error::InvalidInput)
         }
     }
 

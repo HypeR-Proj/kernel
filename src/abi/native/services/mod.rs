@@ -18,6 +18,7 @@ mod ipc;
 mod memory;
 mod object;
 mod process;
+mod synchronization;
 mod vm;
 
 pub(crate) use console::{ConsoleServiceError, ConsoleServices};
@@ -31,6 +32,7 @@ pub(crate) use process::{
     HierarchyServices, ProcessBuilderServiceError, ProcessBuilderServices, RetentionServices,
     TaskServices,
 };
+pub(crate) use synchronization::{SyncWaitRequest, SynchronizationServices};
 pub(crate) use vm::{GuestIoServices, VmServices};
 
 pub(crate) trait NativeServices:
@@ -47,6 +49,7 @@ pub(crate) trait NativeServices:
     + ConsoleServices
     + VfsServices
     + MemoryServices
+    + SynchronizationServices
     + ProcessBuilderServices
     + RetentionServices
     + TaskServices
@@ -67,6 +70,7 @@ impl<T> NativeServices for T where
         + ConsoleServices
         + VfsServices
         + MemoryServices
+        + SynchronizationServices
         + ProcessBuilderServices
         + RetentionServices
         + TaskServices

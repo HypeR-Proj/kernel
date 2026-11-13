@@ -73,6 +73,10 @@ impl Rights {
     pub(crate) const DERIVE: Self = Self(native::HYPER_NATIVE_RIGHT_DERIVE);
     pub(crate) const CREATE_VIRTUAL_MACHINE: Self =
         Self(native::HYPER_NATIVE_RIGHT_CREATE_VIRTUAL_MACHINE);
+    pub(crate) const SYNC_CONFIGURE: Self = Self(native::HYPER_NATIVE_RIGHT_SYNC_CONFIGURE);
+    pub(crate) const SYNC_JOIN: Self = Self(native::HYPER_NATIVE_RIGHT_SYNC_JOIN);
+    pub(crate) const SYNC_WAIT: Self = Self(native::HYPER_NATIVE_RIGHT_SYNC_WAIT);
+    pub(crate) const SYNC_WAKE: Self = Self(native::HYPER_NATIVE_RIGHT_SYNC_WAKE);
     pub(crate) const BIND_WAIT: Self = Self(native::HYPER_NATIVE_RIGHT_BIND_WAIT);
     pub(crate) const SET_ATTRIBUTES: Self = Self(native::HYPER_NATIVE_RIGHT_SET_ATTRIBUTES);
     pub(crate) const LOCK_FILE: Self = Self(native::HYPER_NATIVE_RIGHT_LOCK_FILE);
