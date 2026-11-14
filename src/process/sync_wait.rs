@@ -21,6 +21,8 @@ type Lock<T> = InterruptSpinLock<T, crate::hal::irq::LocalMask>;
 #[derive(Debug)]
 pub(crate) enum Error {
     InvalidInput,
+    BackingUnavailable,
+    File(crate::fs::vfs::Error),
     Process(ProcessError),
     Memory(MemoryObjectError),
     Wait(crate::object::ObjectWaitError),
@@ -58,28 +60,52 @@ pub(crate) enum Outcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Key {
     domain: u64,
-    backing: u64,
+    backing: Backing,
     offset: u64,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Backing {
+    Ram(u64),
+    File { filesystem: u64, node: u64 },
 }
 impl Key {
     pub(crate) fn new(domain: u64, backing: u64, offset: u64) -> Self {
         Self {
             domain,
-            backing,
+            backing: Backing::Ram(backing),
+            offset,
+        }
+    }
+    pub(crate) fn file(domain: u64, filesystem: u64, node: u64, offset: u64) -> Self {
+        Self {
+            domain,
+            backing: Backing::File { filesystem, node },
             offset,
         }
     }
     fn bucket(self) -> &'static Lock<Bucket> {
-        let hash = self.domain.rotate_left(17) ^ self.backing.rotate_left(31) ^ (self.offset / 8);
+        let backing = match self.backing {
+            Backing::Ram(id) => id.rotate_left(31),
+            Backing::File { filesystem, node } => {
+                filesystem.rotate_left(31) ^ node.rotate_left(7) ^ 1
+            }
+        };
+        let hash = self.domain.rotate_left(17) ^ backing ^ (self.offset / 8);
         &BUCKETS[hash as usize % BUCKETS.len()]
     }
 }
 
 pub(crate) struct Word {
-    word: NativeSharedAtomicWord,
-    _vmo: KernelRef<VmoObject, OperationPin>,
+    storage: Storage,
     key: Key,
     _charge: CommittedCharge,
+}
+enum Storage {
+    Ram {
+        word: NativeSharedAtomicWord,
+        _vmo: KernelRef<VmoObject, OperationPin>,
+    },
+    File(crate::fs::vfs::FileAtomicWord),
 }
 impl Word {
     pub(crate) fn prepare(
@@ -104,14 +130,54 @@ impl Word {
             .commit();
         let word = vmo.object().pin_shared_atomic_u64(offset)?;
         Ok(Self {
-            word,
-            _vmo: vmo,
+            storage: Storage::Ram { word, _vmo: vmo },
             key: Key::new(domain, backing, absolute),
             _charge: charge,
         })
     }
+    pub(crate) fn prepare_file(
+        process: &Process,
+        file: &crate::fs::vfs::FileObject,
+        domain: u64,
+        offset: u64,
+    ) -> Result<Self, Error> {
+        let charge = process
+            .resource_domain()
+            .reserve(
+                ResourceAmount::ZERO
+                    .with(ResourceKind::PinnedPages, 1)
+                    .with(
+                        ResourceKind::KernelMemoryBytes,
+                        core::mem::size_of::<Node>() as u64,
+                    ),
+            )
+            .map_err(ProcessError::from)?
+            .commit();
+        let word = file
+            .pin_shared_atomic(Some(domain), offset, 8, &process.resource_domain())
+            .map_err(Error::File)?;
+        let (filesystem, node, absolute) = word.key();
+        Ok(Self {
+            storage: Storage::File(word),
+            key: Key::file(domain, filesystem, node, absolute),
+            _charge: charge,
+        })
+    }
+    fn prepare_failure_wait(
+        &self,
+        sponsor: &crate::accounting::ResourceDomain,
+    ) -> Result<Option<crate::fs::vfs::PreparedFileFailure>, Error> {
+        match &self.storage {
+            Storage::Ram { .. } => Ok(None),
+            Storage::File(word) => Ok(Some(word.prepare_failure_wait(sponsor)?)),
+        }
+    }
     fn load(&self) -> u64 {
-        let address = match crate::mm::memory::linear_address(self.word.physical()) {
+        let physical = match &self.storage {
+            Storage::Ram { word, .. } => word.physical(),
+            Storage::File(word) => word.physical(),
+        };
+        let address = match crate::mm::memory::linear_address(physical) {
             Some(address) => address,
             None => invariant(),
         };
@@ -300,6 +366,7 @@ fn wait_inner(
     if owner == sync_domain::OwnerState::Dead {
         return Ok(Outcome::OwnerExited(request.owner));
     }
+    let failure = word.prepare_failure_wait(&process.resource_domain())?;
     let prepared_domain = domain.object().prepare_wait(&process.resource_domain())?;
     let prepared = match prepare_timed_wait(&process.resource_domain(), request.deadline)? {
         TimedWaitPreparation::Completed(WaitOutcome::TimedOut) => return Ok(Outcome::TimedOut),
@@ -307,6 +374,7 @@ fn wait_inner(
         TimedWaitPreparation::Armed(prepared) => prepared,
     };
     let ticket = prepared.ticket();
+    let failure = failure.map(|source| source.register(ticket));
     let cancellation = cancellation.map(|source| source.register(ticket));
     #[cfg(all(
         feature = "kernel-test",
@@ -376,10 +444,12 @@ fn wait_inner(
             }
             let retired = prepared.complete_unpublished();
             let event_cancelled = cancellation.is_some_and(|source| source.finish());
+            let backing_failed = failure.is_some_and(|source| source.finish());
             match retired? {
                 WaitOutcome::TimedOut => Ok(Outcome::TimedOut),
                 WaitOutcome::Cancelled => Ok(Outcome::Cancelled),
                 WaitOutcome::Notified if event_cancelled => Ok(Outcome::Cancelled),
+                WaitOutcome::Notified if backing_failed => Err(Error::BackingUnavailable),
                 WaitOutcome::Notified => outcome,
             }
         }
@@ -387,9 +457,13 @@ fn wait_inner(
             let (outcome, retirement) = published.finish(mask);
             domain_wait.finish();
             let cancelled = cancellation.is_some_and(|source| source.finish());
+            let backing_failed = failure.is_some_and(|source| source.finish());
             let node = bucket.with(|state| state.remove(ticket));
             drop(node);
             retirement?;
+            if backing_failed {
+                return Err(Error::BackingUnavailable);
+            }
             Ok(match outcome {
                 WaitOutcome::Notified if cancelled => Outcome::Cancelled,
                 WaitOutcome::Notified => Outcome::Recheck,

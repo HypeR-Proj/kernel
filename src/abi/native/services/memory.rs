@@ -19,14 +19,14 @@ pub(crate) trait MemoryServices {
         authority: &InvocationReceiver,
         source: HandleValue,
     ) -> Result<(HandleValue, u64), MemoryServiceError>;
-    fn vmo_wait_u32(
+    fn shared_wait_u32(
         &self,
         vmo: &InvocationReceiver,
         offset: u64,
         expected: u32,
         deadline: u64,
     ) -> Result<crate::task::WaitOutcome, MemoryServiceError>;
-    fn vmo_wake_u32(
+    fn shared_wake_u32(
         &self,
         vmo: &InvocationReceiver,
         offset: u64,

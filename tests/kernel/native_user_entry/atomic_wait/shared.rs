@@ -131,7 +131,51 @@ fn exercise(process: &Process, source: &Source) -> Result<(), Error> {
     }
     wake_registered(process, source)?;
     verify_released(source, || domain.usage() == baseline)?;
+    admission_races(process, source)?;
+    verify_released(source, || domain.usage() == baseline)?;
     crate::pr_info!("HypeR test: Shared atomic wait pin quotas and all retirement paths verified");
+    Ok(())
+}
+
+fn admission_races(process: &Process, source: &Source) -> Result<(), Error> {
+    let account = process.resource_domain();
+    let pin = source
+        .object()
+        .pin_shared_atomic_u32(0)
+        .map_err(|_| Error::AtomicWait("admission race pin"))?;
+    let address = crate::mm::memory::linear_address(pin.physical())
+        .ok_or(Error::AtomicWait("admission race linear address"))?;
+    // SAFETY: the fixture exclusively owns this aligned RAM word and retains
+    // its pin. Both fixture writes and the production comparisons are atomic.
+    let value =
+        unsafe { &*core::ptr::with_exposed_provenance::<core::sync::atomic::AtomicU32>(address) };
+    for precursor in [
+        None,
+        Some(WaitOutcome::TimedOut),
+        Some(WaitOutcome::Cancelled),
+    ] {
+        value.store(0, Ordering::Release);
+        let mut hook_ok = true;
+        let actual = atomic_wait::wait_shared_with_admission_hook(
+            process, prepare(source, &account)?, 0, u64::MAX, || false,
+            |ticket| {
+                if let Some(outcome) = precursor {
+                    hook_ok = matches!(scheduler::resolve_wait(ticket, outcome), Ok(result) if result.won && !result.made_ready);
+                }
+                value.store(1, Ordering::Release);
+            },
+        ).map_err(|_| Error::AtomicWait("admission race wait"))?;
+        if !hook_ok || actual != precursor.unwrap_or(WaitOutcome::Notified) {
+            return Err(Error::AtomicWait("u32 recheck overwrote selected outcome"));
+        }
+        if atomic_wait::wake_shared(source.koid(), 0, u32::MAX)
+            .map_err(|_| Error::AtomicWait("admission cleanup wake"))?
+            != 0
+        {
+            return Err(Error::AtomicWait("admission retained queue node"));
+        }
+    }
+    value.store(0, Ordering::Release);
     Ok(())
 }
 
@@ -184,6 +228,9 @@ fn wake_registered(process: &Process, source: &Source) -> Result<(), Error> {
                 != 0
             || atomic_wait::wake_shared(source.koid(), 0, 0)
                 .map_err(|_| Error::AtomicWait("shared zero wake"))?
+                != 0
+            || atomic_wait::wake_file(source.koid().get(), 0, 0, u32::MAX)
+                .map_err(|_| Error::AtomicWait("file namespace against RAM wait"))?
                 != 0
             || atomic_wait::wake_shared(source.koid(), 0, 1)
                 .map_err(|_| Error::AtomicWait("shared wake one"))?

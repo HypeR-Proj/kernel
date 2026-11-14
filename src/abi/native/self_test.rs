@@ -768,7 +768,7 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
             Err(MemoryServiceError::Process(ProcessError::Allocation))
         }
 
-        fn vmo_wait_u32(
+        fn shared_wait_u32(
             &self,
             _: &InvocationReceiver,
             _: u64,
@@ -778,7 +778,7 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
             self.calls.set(self.calls.get().saturating_add(1));
             Err(MemoryServiceError::Process(ProcessError::Allocation))
         }
-        fn vmo_wake_u32(
+        fn shared_wake_u32(
             &self,
             _: &InvocationReceiver,
             _: u64,

@@ -21,8 +21,12 @@ use hyper::mm::{FallibleArc, WeakFallibleArc};
 use hyper::sync::InterruptSpinLock;
 
 mod adapter;
+mod atomic;
 mod page;
 mod state;
+#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+pub(crate) use atomic::FileFailureTestControl;
+pub(crate) use atomic::{FileAtomicWord, PreparedFileFailure};
 pub(crate) use page::{SharedFilePage, SharedInstall, SharedMutation, SharedPin};
 const PAGE: usize = hyper::mm::PAGE_SIZE as usize;
 const MAX_PAGES: usize = 256;
@@ -76,6 +80,8 @@ pub(super) struct SharedFile {
     size: AtomicU64,
     mappings: AtomicUsize,
     writable_mappings: AtomicUsize,
+    sync_bindings:
+        InterruptSpinLock<crate::mm::user_space::SyncBindings, crate::hal::irq::LocalMask>,
     _charge: CommittedCharge,
 }
 impl SharedFile {
@@ -469,6 +475,7 @@ impl SharedCache {
             size: AtomicU64::new(size),
             mappings: AtomicUsize::new(0),
             writable_mappings: AtomicUsize::new(0),
+            sync_bindings: InterruptSpinLock::new(crate::mm::user_space::SyncBindings::new()),
             _charge: charge(
                 &filesystem.domain,
                 FallibleArc::<SharedFile>::allocation_size(),

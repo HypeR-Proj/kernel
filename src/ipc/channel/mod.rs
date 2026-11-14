@@ -185,6 +185,13 @@ impl ByteChannel {
             .is_some()
     }
 
+    /// Kernel clients can retain endpoint identity after its final userspace
+    /// authority closes. The peer's existing `PEER_CLOSED` level observes that
+    /// local closure without changing this endpoint's public signal contract.
+    pub(crate) fn local_closed_source(&self) -> SignalSource<'_> {
+        SignalSource::new(self.pair.signal_state(self.side.peer()), Self::PEER_CLOSED)
+    }
+
     pub(crate) fn peek(&self) -> Result<ByteMessageInfo, ByteChannelError> {
         self.pair.peek(self.side)
     }

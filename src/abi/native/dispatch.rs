@@ -551,11 +551,11 @@ pub(super) fn dispatch_operation(
             handlers::sys_sync_domain_wake_u64(services, receiver, arguments)
         }
         abi::NativeOperation::VmoCreate => handlers::sys_vmo_create(services, arguments),
-        abi::NativeOperation::VmoWaitU32 => {
-            handlers::sys_vmo_wait_u32(services, receiver, arguments)
+        abi::NativeOperation::VmoWaitU32 | abi::NativeOperation::FileWaitU32 => {
+            handlers::sys_shared_wait_u32(services, receiver, arguments)
         }
-        abi::NativeOperation::VmoWakeU32 => {
-            handlers::sys_vmo_wake_u32(services, receiver, arguments)
+        abi::NativeOperation::VmoWakeU32 | abi::NativeOperation::FileWakeU32 => {
+            handlers::sys_shared_wake_u32(services, receiver, arguments)
         }
         abi::NativeOperation::VmoRead => handlers::sys_vmo_read(services, receiver, arguments),
         abi::NativeOperation::VmoWrite => handlers::sys_vmo_write(services, receiver, arguments),

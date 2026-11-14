@@ -111,7 +111,7 @@ fn failed_partial_freeze_reopens_without_losing_dirty_bytes_or_generation() {
 #[test]
 fn retirement_rejects_new_aliases_and_cannot_be_reopened() {
     let mut page = State::new();
-    assert!(page.close());
+    assert_eq!(page.close_for_eviction(), Some(true));
     assert_eq!(page.captured(true), Some(1));
     assert_eq!(page.phase, Phase::Retired);
     page.reopen();
@@ -233,7 +233,11 @@ fn failed_snapshot_submission_restores_latest_dirty_owner_without_rewinding_epoc
         let mut page = State::new();
         assert_eq!(page.admit(true), Some(1));
         page.release(true);
-        assert!(page.close());
+        if evict {
+            assert_eq!(page.close_for_eviction(), Some(true));
+        } else {
+            assert!(page.close());
+        }
         assert_eq!(page.captured(evict), Some(1));
         assert!(!page.dirty);
         let successor = page.epoch;
@@ -251,4 +255,71 @@ fn failed_snapshot_submission_restores_latest_dirty_owner_without_rewinding_epoc
         assert_eq!(page.phase, Phase::Failed);
         assert!(page.dirty);
     }
+}
+
+#[test]
+fn atomic_observer_can_join_snapshot_freeze_without_delaying_capture() {
+    let mut page = State::new();
+    let epoch = page.epoch;
+    assert_eq!(page.admit(true), Some(epoch));
+    assert!(!page.close());
+    assert_eq!(page.phase, Phase::Freezing);
+    assert!(!page.pin(), "ordinary copy-plan admission remains closed");
+    assert!(page.pin_atomic());
+    assert!(page.valid(epoch, true), "the prior writer can finish");
+    page.release(true);
+    assert!(page.close());
+    assert_eq!(page.captured(false), Some(epoch));
+    assert_eq!(page.phase, Phase::Active);
+    assert_eq!(page.close_for_eviction(), None);
+    page.unpin();
+    assert_eq!(page.close_for_eviction(), Some(true));
+    assert_eq!(page.captured(true), Some(epoch + 1));
+}
+
+#[test]
+fn eviction_closes_atomic_admission_before_waiting_for_existing_copies() {
+    let mut page = State::new();
+    let epoch = page.epoch;
+    assert_eq!(page.admit(true), Some(epoch));
+    assert_eq!(page.admit(false), Some(epoch));
+    assert_eq!(page.close_for_eviction(), Some(false));
+    assert_eq!(page.phase, Phase::Retiring);
+    assert!(!page.pin_atomic());
+    assert!(page.valid(epoch, true));
+    assert!(!page.valid(epoch, false));
+    page.release(true);
+    assert_eq!(page.close_for_eviction(), Some(false));
+    page.release(false);
+    assert_eq!(page.close_for_eviction(), Some(true));
+    assert_eq!(
+        page.captured(false),
+        None,
+        "retirement cannot become a snapshot"
+    );
+    assert_eq!(page.captured(true), Some(epoch));
+    assert!(!page.pin_atomic());
+}
+
+#[test]
+fn snapshot_cannot_upgrade_to_eviction_and_reopen_preserves_atomic_admission() {
+    let mut page = State::new();
+    assert!(page.close());
+    assert_eq!(page.close_for_eviction(), None);
+    assert_eq!(page.captured(true), None);
+    assert!(page.pin_atomic());
+    page.reopen();
+    assert_eq!(page.phase, Phase::Active);
+    page.unpin();
+    assert_eq!(page.admit(true), Some(1));
+    assert!(!page.try_close_for_reclaim());
+    assert_eq!(page.phase, Phase::Active);
+    assert!(page.pin_atomic(), "failed reclaim must reopen admission");
+    page.release(true);
+    assert!(page.close());
+    page.phase = Phase::Failed;
+    assert!(!page.pin_atomic());
+    page.reopen();
+    assert_eq!(page.phase, Phase::Failed);
+    page.unpin();
 }

@@ -907,7 +907,8 @@ All concurrent accesses to a shared condition use aligned atomic u32 operations.
 The kernel does not implement lock ownership: callers publish state, wake, and
 recheck their condition after every return using their own atomic ordering.
 Spurious wakes are permitted. This adds no requeue, priority inheritance, robust
-owner recovery or implicit writable-file-mapping support.
+owner recovery or implicit address-based file waits. Explicit File operations
+provide shared-file waiting as described below.
 
 ## Shared mutex owner-death observation
 
@@ -918,7 +919,9 @@ non-recursive mutex with syscall-free uncontended acquisition and release after
 initial binding, mapping and participant registration.
 
 The object factory creates a domain. `bind` requires `SYNC_CONFIGURE` on both
-the domain and an ordinary writable RAM VMO, plus VMO `WRITE`. Nonempty aligned
+the domain and a source (ordinary writable RAM VMO or coherent shared File),
+plus source `WRITE`. Directory derivation must explicitly retain `SYNC_CONFIGURE`
+to grant it to a File; write authority alone cannot configure a domain. Nonempty aligned
 ranges retain their domain until backing retirement; closing handles does not
 unbind or reset them. Aliases of the same writable storage share attribution.
 Overlapping ranges cannot belong to different domains. Shared u64 wait keys use
@@ -936,7 +939,7 @@ its registrations from surviving Threads.
 `owner_query` requires `INSPECT`. A dead result acquires the publication after
 execution has actually stopped; it makes completed owner writes visible but
 cannot make an interrupted application update consistent. `wait_u64` requires
-domain `SYNC_WAIT`, VMO `READ|WRITE`, a bound eight-byte word, an expected full value,
+domain `SYNC_WAIT`, source `READ|WRITE`, a bound eight-byte word, an expected full value,
 an observed owner token and an absolute monotonic deadline. An optional Event
 with `WAIT` cancels the operation when signaled. Word notification, domain exit,
 Event cancellation and timer expiry arbitrate the same scheduler ticket. All
@@ -971,9 +974,47 @@ quiescence of all owners, waiters and potential users.
 The external-memory load seam uses fixed-width machine instructions rather than
 Rust references to untrusted writable bytes, including the existing u32 wait
 path. Malformed values and overlapping peer writes cannot turn control bits into
-kernel pointers. MM01 shared-file mappings do not grant a raw VMO capability or
-this atomic-wait authority. This facility adds no priority inheritance, recursive
+kernel pointers. Shared-file mappings do not grant a raw VMO capability; File wait operations
+use the original File authority. This facility adds no priority inheritance, recursive
 mutexes or implicit condition-variable peer-death policy.
+
+## File-backed shared synchronization
+
+`File.wait_u32` and `File.wake_u32` use the same argument/deadline rules as their
+VMO counterparts, with READ|WRITE and WRITE rights respectively. A File source
+must support coherent writable shared mappings. The complete containing page
+must fit the fixed file extent. Address-based private atomic waits still reject
+file mappings; callers explicitly select the File capability and absolute offset.
+File u32 and domain-u64 keys use filesystem incarnation and canonical file identity
+plus absolute offset, independently of open handles, virtual addresses, cache page
+replacement, and unrelated RAM or private wait namespaces.
+
+Admission may populate a shared page, charging the caller for its pin and waiter.
+An admitted wait retains an independent file extent lease and a page pin until
+cleanup. Closing the original handle or mapping does not cancel it. The pin
+prevents cache eviction but permits normal writeback snapshots; sleeping holds no
+write admission. Existing resize/replacement/unmount busy rules continue to apply.
+Wake never fetches metadata or populates pages. It requires an already promoted
+shared source, returning INVALID_ARGUMENT if none exists, and validates range,
+health and (for u64) domain attribution even for count zero.
+
+Provider channel closure and terminal filesystem failure are additional sources
+in the same wait-ticket arbitration. Only a winning failure source returns
+BACKING_UNAVAILABLE; it does not overwrite a prior timeout, cancellation, ordinary
+notification or owner-exit result. Subsequent kernel admissions reject the failed
+source. BACKING_UNAVAILABLE does not imply an owner died or make application data
+consistent. Pure userspace CAS remains syscall-free and does not attest backend
+health or storage durability. File sync remains the persistence fence.
+
+Bindings remain with the canonical file record, which may be cached beyond the
+last close. A coordinator distributes the same domain for a live file session.
+Opening or mapping never initializes persisted mutex words. Explicit quiescent
+initialization requires excluding all owners, waiters, recovery guards and future
+entrants, after recovering application payload. Domain-local tokens cannot be
+interpreted across boots or by a new domain. Fresh sessions use a fresh file
+identity and explicitly initialized words; clearing bytes does not rebind the old
+file. Replacing an old pathname also requires retiring its active handles,
+mappings and waits. No automatic reset or rebind operation is provided.
 
 ## Process, memory, and user-copy safety
 

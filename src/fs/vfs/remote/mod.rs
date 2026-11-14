@@ -28,6 +28,7 @@ use {
 };
 mod transport;
 use hyper::mm::{FallibleArc, WeakFallibleArc};
+pub(in crate::fs::vfs) use transport::Health;
 pub(super) use transport::Transport;
 use {
     crate::fs::primitives::MAX_PATH_BYTES, crate::fs::primitives::Name,
@@ -225,6 +226,9 @@ impl RemoteFs {
     }
     pub(super) fn read_status(&self) -> Result<(), Error> {
         self.health.check().map_err(map)
+    }
+    pub(in crate::fs::vfs) fn atomic_health(&self) -> FallibleArc<Health> {
+        self.health.clone()
     }
     pub(super) fn abandon_with(
         &self,

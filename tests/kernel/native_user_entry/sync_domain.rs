@@ -364,7 +364,7 @@ fn request(
     deadline: u64,
 ) -> crate::abi::native::SyncWaitRequest {
     crate::abi::native::SyncWaitRequest {
-        vmo: state.vmo_handle,
+        source: state.vmo_handle,
         offset: 0,
         expected,
         owner,
@@ -395,6 +395,20 @@ fn run_batch(
         })? || state.finished.load(Ordering::Acquire) != 0
         {
             return Err(Error::AtomicWait("domain batch admission"));
+        }
+        let (backing, offset) = state
+            .source
+            .object()
+            .sync_key(state.domain.koid().get(), 0)
+            .map_err(|_| Error::Construction)?;
+        if sync_wait::wake(
+            sync_wait::Key::file(state.domain.koid().get(), backing, 0, offset),
+            u32::MAX,
+        )
+        .map_err(|_| Error::AtomicWait("file namespace against domain RAM wait"))?
+            != 0
+        {
+            return Err(Error::AtomicWait("file and RAM domain keys alias"));
         }
         action()?;
         if !wait_for_test_progress(TEST_PROGRESS_TIMEOUT_NS, || {

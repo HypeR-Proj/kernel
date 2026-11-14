@@ -283,6 +283,31 @@ impl SyncDomain {
         {
             return Err(Error::InvalidInput);
         }
+        let binding = Self::prepare_binding(domain, offset, length, sponsor)?;
+        match storage.bind_sync(binding) {
+            Ok(redundant) => {
+                drop(redundant);
+                Ok(())
+            }
+            Err(rejected) => {
+                drop(rejected);
+                Err(Error::ConflictingBinding)
+            }
+        }
+    }
+
+    /// Allocate the domain owner before entering either RAM or file binding
+    /// protection. The backing validates its extent and publishes this owner.
+    pub(crate) fn prepare_binding(
+        domain: &KernelRef<Self, OperationPin>,
+        offset: u64,
+        length: u64,
+        sponsor: &ResourceDomain,
+    ) -> Result<alloc::boxed::Box<crate::mm::user_space::SyncBinding>, Error> {
+        let end = offset.checked_add(length).ok_or(Error::InvalidInput)?;
+        if length == 0 || !offset.is_multiple_of(8) || !length.is_multiple_of(8) {
+            return Err(Error::InvalidInput);
+        }
         struct BindingLifetime {
             _domain: KernelRef<SyncDomain, KernelService>,
             _charge: CommittedCharge,
@@ -295,23 +320,13 @@ impl SyncDomain {
             _charge: charge,
         })
         .map_err(|_| Error::Allocation)?;
-        let binding = hyper::mm::try_box(crate::mm::user_space::SyncBinding::new(
+        hyper::mm::try_box(crate::mm::user_space::SyncBinding::new(
             domain.koid().get(),
             offset,
             end,
             owner,
         ))
-        .map_err(|_| Error::Allocation)?;
-        match storage.bind_sync(binding) {
-            Ok(redundant) => {
-                drop(redundant);
-                Ok(())
-            }
-            Err(rejected) => {
-                drop(rejected);
-                Err(Error::ConflictingBinding)
-            }
-        }
+        .map_err(|_| Error::Allocation)
     }
 
     pub(crate) fn prepare_wait(

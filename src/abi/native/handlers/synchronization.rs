@@ -104,7 +104,7 @@ pub(in crate::abi::native) fn sys_sync_domain_wait_u64(
             .sync_domain_wait(
                 receiver,
                 SyncWaitRequest {
-                    vmo: parse_handle(read_record_u64(&record, 8))?,
+                    source: parse_handle(read_record_u64(&record, 8))?,
                     offset: read_record_u64(&record, 16),
                     expected: read_record_u64(&record, 24),
                     owner: read_record_u64(&record, 32),
@@ -148,6 +148,11 @@ fn status(error: Error) -> HyperNativeStatus {
     use crate::process::sync_domain::Error as DomainError;
     match error {
         Error::InvalidInput => HYPER_NATIVE_STATUS_INVALID_ARGUMENT,
+        Error::BackingUnavailable => HYPER_NATIVE_STATUS_BACKING_UNAVAILABLE,
+        Error::File(ref error) if error.is_backing_unavailable() => {
+            HYPER_NATIVE_STATUS_BACKING_UNAVAILABLE
+        }
+        Error::File(error) => status_from_vfs_error(error),
         Error::Process(error) => status_from_process_error(error),
         Error::Memory(error) => status_from_memory_object_error(error),
         Error::Wait(error) => status_from_object_wait_error(error),

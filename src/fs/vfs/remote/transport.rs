@@ -23,11 +23,25 @@ use {
     crate::process::Process,
 };
 
-pub(super) struct Health {
+pub(in crate::fs::vfs) struct Health {
     channel: KernelRef<ByteChannel, KernelService>,
     failed: AtomicBool,
+    failure: crate::object::SignalState,
+    _charge: crate::accounting::CommittedCharge,
 }
 impl Health {
+    pub(in crate::fs::vfs) fn try_new(
+        channel: KernelRef<ByteChannel, KernelService>,
+        sponsor: &ResourceDomain,
+    ) -> Result<FallibleArc<Self>, super::Error> {
+        let charge = super::charge(sponsor, FallibleArc::<Self>::allocation_size())?;
+        Ok(FallibleArc::try_new(Self {
+            channel,
+            failed: AtomicBool::new(false),
+            failure: crate::object::SignalState::new(),
+            _charge: charge,
+        })?)
+    }
     pub(super) fn check(&self) -> Result<(), Error> {
         if self.failed.load(Ordering::Acquire) || self.channel.object().is_closed() {
             Err(Error::Closed)
@@ -35,8 +49,35 @@ impl Health {
             Ok(())
         }
     }
-    pub(super) fn fail(&self) {
+    pub(in crate::fs::vfs) fn fail(&self) {
         self.failed.store(true, Ordering::Release);
+        // This private source has no persistent observers or VFS callbacks.
+        // Notification only arbitrates scheduler tickets. Registration and
+        // retirement run outside word/domain locks, so this lock order is
+        // VFS -> signal -> scheduler and never returns into VFS.
+        if let Err(error) = self
+            .failure
+            .update(crate::object::SignalMask::EMPTY, Self::FAILED)
+        {
+            crate::diagnostics::crash::fatal(format_args!(
+                "HypeR: filesystem failure notification invariant: {error:?}"
+            ));
+        }
+    }
+    pub(in crate::fs::vfs) const FAILED: crate::object::SignalMask =
+        crate::object::SignalMask::from_trusted_bits(1);
+    pub(in crate::fs::vfs) fn failure_sources(&self) -> [crate::object::SignalSource<'_>; 3] {
+        let peer = match self.channel.object().signal_source() {
+            Some(source) => source,
+            None => crate::diagnostics::crash::fatal(format_args!(
+                "HypeR: filesystem ByteChannel lost its signal source"
+            )),
+        };
+        [
+            peer,
+            self.channel.object().local_closed_source(),
+            crate::object::SignalSource::new(&self.failure, Self::FAILED),
+        ]
     }
 }
 pub(in crate::fs::vfs) struct Transport {
@@ -132,10 +173,7 @@ impl Transport {
             None
         };
         let channel = channel.into_operation_pin().into_filesystem_transport();
-        let health = FallibleArc::try_new(Health {
-            channel,
-            failed: AtomicBool::new(false),
-        })?;
+        let health = Health::try_new(channel, &process.resource_domain())?;
         Ok(Self {
             health,
             buffer,

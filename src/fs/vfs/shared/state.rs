@@ -7,6 +7,7 @@
 pub(super) enum Phase {
     Active,
     Freezing,
+    Retiring,
     Retired,
     Failed,
 }
@@ -35,6 +36,18 @@ impl State {
         if self.phase != Phase::Active {
             return false;
         }
+        self.retain_pin()
+    }
+    /// Atomic observers only read the retained frame. A normal snapshot also
+    /// reads it and never replaces it; late observers need not wait for that
+    /// snapshot. Eviction closes this admission before withdrawing aliases.
+    pub(super) fn pin_atomic(&mut self) -> bool {
+        if !matches!(self.phase, Phase::Active | Phase::Freezing) {
+            return false;
+        }
+        self.retain_pin()
+    }
+    fn retain_pin(&mut self) -> bool {
         let Some(next) = self.pins.checked_add(1) else {
             return false;
         };
@@ -48,6 +61,13 @@ impl State {
     pub(super) fn close_for_eviction(&mut self) -> Option<bool> {
         if self.pins != 0 {
             return None;
+        }
+        if self.phase == Phase::Freezing {
+            // A non-retiring snapshot cannot be upgraded beneath an observer.
+            return None;
+        }
+        if self.phase == Phase::Active {
+            self.phase = Phase::Retiring;
         }
         Some(self.close())
     }
@@ -89,19 +109,22 @@ impl State {
     }
     pub(super) fn valid(&self, epoch: u64, write: bool) -> bool {
         self.epoch == epoch
-            && (self.phase == Phase::Active || (write && self.phase == Phase::Freezing))
+            && (self.phase == Phase::Active
+                || (write && matches!(self.phase, Phase::Freezing | Phase::Retiring)))
     }
     /// Closing admission precedes checking existing short copies/installers.
     pub(super) fn close(&mut self) -> bool {
         if self.phase == Phase::Active {
             self.phase = Phase::Freezing;
         }
-        matches!(self.phase, Phase::Freezing | Phase::Retired | Phase::Failed)
-            && self.writers == 0
+        matches!(
+            self.phase,
+            Phase::Freezing | Phase::Retiring | Phase::Retired | Phase::Failed
+        ) && self.writers == 0
             && self.installers == 0
     }
     pub(super) fn reopen(&mut self) {
-        if self.phase == Phase::Freezing {
+        if matches!(self.phase, Phase::Freezing | Phase::Retiring) {
             self.phase = Phase::Active;
         }
     }
@@ -118,7 +141,12 @@ impl State {
     /// The private snapshot owns this generation. Later grants redirty the
     /// successor; backend completion must not clear it again.
     pub(super) fn captured(&mut self, retire: bool) -> Option<u64> {
-        if self.phase != Phase::Freezing || self.writers != 0 || self.installers != 0 {
+        let expected = if retire {
+            Phase::Retiring
+        } else {
+            Phase::Freezing
+        };
+        if self.phase != expected || self.writers != 0 || self.installers != 0 {
             return None;
         }
         let next = self.epoch.checked_add(1)?;

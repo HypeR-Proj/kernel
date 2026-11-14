@@ -147,6 +147,16 @@ impl SharedFilePage {
         }
         Ok(SharedPin { page: self.clone() })
     }
+    /// A read-only atomic observation may join an ordinary snapshot freeze;
+    /// the snapshot never replaces its canonical frame. Retirement under
+    /// pressure still returns Busy rather than exposing a stale cache frame.
+    pub(crate) fn try_pin_atomic(&self) -> Result<SharedPin, super::super::Error> {
+        self.healthy()?;
+        if !self.0.state.with(|s| s.admission.pin_atomic()) {
+            return Err(super::super::Error::Busy);
+        }
+        Ok(SharedPin { page: self.clone() })
+    }
     pub(crate) fn try_begin_write(&self) -> Result<SharedMutation, super::super::Error> {
         self.healthy()?;
         let epoch = self

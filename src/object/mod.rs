@@ -38,9 +38,9 @@ pub(crate) use signals::{
     SignalMask, SignalSource, SignalState, SignalWaitError, SignalWaitOutcome,
 };
 pub(crate) use wait::{
-    ObjectWaitError, PreparedCancellation, PreparedTimedWait, PublishedTimedWait,
-    SignalWaitManyOutcome, SignalWaitRequest, TimedWaitPreparation, prepare_timed_wait, wait_many,
-    wait_one,
+    ObjectWaitError, PreparedCancellation, PreparedSignalObservation, PreparedTimedWait,
+    PublishedTimedWait, RegisteredSignalObservation, SignalWaitManyOutcome, SignalWaitRequest,
+    TimedWaitPreparation, prepare_timed_wait, wait_many, wait_one,
 };
 
 #[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
