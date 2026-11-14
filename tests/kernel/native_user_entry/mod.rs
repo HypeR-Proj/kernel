@@ -14,6 +14,8 @@ mod atomic_wait;
 #[cfg(CONFIG_ARCH_RISCV64)]
 mod riscv64;
 #[cfg(CONFIG_ARCH_AARCH64)]
+mod sync_domain;
+#[cfg(CONFIG_ARCH_AARCH64)]
 pub(super) use aarch64::run;
 #[cfg(CONFIG_ARCH_RISCV64)]
 pub(super) use riscv64::run;

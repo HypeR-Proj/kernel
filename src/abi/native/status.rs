@@ -6,11 +6,11 @@
 use crate::capability::handle_wire;
 
 use hyper::abi::native::{
-    HYPER_NATIVE_STATUS_ACCESS_DENIED, HYPER_NATIVE_STATUS_BAD_HANDLE,
-    HYPER_NATIVE_STATUS_BAD_STATE, HYPER_NATIVE_STATUS_BUFFER_TOO_SMALL, HYPER_NATIVE_STATUS_BUSY,
-    HYPER_NATIVE_STATUS_CANCELLED, HYPER_NATIVE_STATUS_FAULT, HYPER_NATIVE_STATUS_INTERNAL,
-    HYPER_NATIVE_STATUS_INVALID_ARGUMENT, HYPER_NATIVE_STATUS_IO_ERROR,
-    HYPER_NATIVE_STATUS_NO_MEMORY, HYPER_NATIVE_STATUS_NOT_FOUND,
+    HYPER_NATIVE_STATUS_ACCESS_DENIED, HYPER_NATIVE_STATUS_BACKING_UNAVAILABLE,
+    HYPER_NATIVE_STATUS_BAD_HANDLE, HYPER_NATIVE_STATUS_BAD_STATE,
+    HYPER_NATIVE_STATUS_BUFFER_TOO_SMALL, HYPER_NATIVE_STATUS_BUSY, HYPER_NATIVE_STATUS_CANCELLED,
+    HYPER_NATIVE_STATUS_FAULT, HYPER_NATIVE_STATUS_INTERNAL, HYPER_NATIVE_STATUS_INVALID_ARGUMENT,
+    HYPER_NATIVE_STATUS_IO_ERROR, HYPER_NATIVE_STATUS_NO_MEMORY, HYPER_NATIVE_STATUS_NOT_FOUND,
     HYPER_NATIVE_STATUS_NOT_SUPPORTED, HYPER_NATIVE_STATUS_OK, HYPER_NATIVE_STATUS_PEER_CLOSED,
     HYPER_NATIVE_STATUS_RESOURCE_LIMIT, HYPER_NATIVE_STATUS_TIMED_OUT,
     HYPER_NATIVE_STATUS_WOULD_BLOCK, HyperNativeStatus, NativeResult,
@@ -454,6 +454,7 @@ pub(super) const fn status_from_vmo_error(
 pub(super) fn status_from_memory_service_error(error: MemoryServiceError) -> HyperNativeStatus {
     match error {
         MemoryServiceError::InvalidInput => HYPER_NATIVE_STATUS_INVALID_ARGUMENT,
+        MemoryServiceError::BackingUnavailable => HYPER_NATIVE_STATUS_BACKING_UNAVAILABLE,
         MemoryServiceError::Wait(error) => status_from_object_wait_error(error),
         MemoryServiceError::Machine(error) => status_from_machine_error(error),
         MemoryServiceError::MemoryObject(error) => status_from_memory_object_error(error),
@@ -702,10 +703,14 @@ pub(super) const fn status_from_logical_error(
         AddressSpaceError::Busy | AddressSpaceError::CowRequired => HYPER_NATIVE_STATUS_BUSY,
         AddressSpaceError::Backend(error) => status_from_page_error(error),
         AddressSpaceError::BackingIo => HYPER_NATIVE_STATUS_IO_ERROR,
+        AddressSpaceError::UnsupportedBacking => HYPER_NATIVE_STATUS_NOT_SUPPORTED,
+        // Wire permission masks are validated before MM dispatch. A valid
+        // request exceeding backing authority or its retained ceiling is an
+        // authorization denial, not an inaccessible user output buffer.
+        AddressSpaceError::InvalidPermissions => HYPER_NATIVE_STATUS_ACCESS_DENIED,
         AddressSpaceError::BackingNotResident
         | AddressSpaceError::EmptyRange
         | AddressSpaceError::InvalidAddressSpace
-        | AddressSpaceError::InvalidPermissions
         | AddressSpaceError::InvalidRange
         | AddressSpaceError::NotMapped
         | AddressSpaceError::Overlap

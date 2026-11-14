@@ -400,6 +400,38 @@ impl FilesystemInstance {
         }
     }
 
+    pub(super) fn promote_shared(
+        &self,
+        node: &NodeLease,
+    ) -> Result<FallibleArc<super::shared::SharedFile>, Error> {
+        let Backend::Remote(fs) = &self.backend else {
+            return Err(Error::Unsupported);
+        };
+        let mut content = node.content().lock()?;
+        self.read_status()?;
+        if let Some(shared) = content.shared() {
+            return Ok(shared);
+        }
+        content.check_writable()?;
+        let attributes = self.attributes(node)?;
+        if attributes.kind() != crate::fs::primitives::NodeKind::File {
+            return Err(Error::NotRegularFile);
+        }
+        let size = attributes.size();
+        let shared = super::remote::RemoteFs::promote_shared(
+            fs,
+            node.remote()?,
+            super::shared::SharedFileIdentity {
+                filesystem: self.id().get(),
+                node: node.get(),
+            },
+            size,
+        )?;
+        content.promote(&shared)?;
+        content.set_length(size);
+        Ok(shared)
+    }
+
     pub(super) fn file_len(&self, node: &NodeLease) -> Result<u64, Error> {
         let mut content = node.content().lock()?;
         self.read_status()?;
@@ -421,6 +453,11 @@ impl FilesystemInstance {
     ) -> Result<(usize, Option<ReadObservation>), Error> {
         let mut content = node.content().lock()?;
         self.read_status()?;
+        if let Some(shared) = content.shared() {
+            content.length(|| self.attributes(node).map(|attributes| attributes.size()))?;
+            return super::shared::SharedFile::read(&shared, offset, destination)
+                .map(|length| (length, None));
+        }
         self.read_file_locked(node, cache, offset, destination, &mut content)
     }
 
@@ -439,6 +476,9 @@ impl FilesystemInstance {
         };
         let mut content = node.content().lock()?;
         self.read_status()?;
+        if content.shared().is_some() {
+            return Ok(None);
+        }
         let length =
             content.length(|| self.attributes(node).map(|attributes| attributes.size()))?;
         let identity = FileIdentity::new(
@@ -483,6 +523,9 @@ impl FilesystemInstance {
         }
         let mut content = node.content().lock()?;
         self.read_status()?;
+        if content.shared().is_some() {
+            return Ok(None);
+        }
         let length =
             content.length(|| self.attributes(node).map(|attributes| attributes.size()))?;
         if !offset.is_multiple_of(hyper::mm::PAGE_SIZE)
@@ -562,6 +605,11 @@ impl FilesystemInstance {
         destination: &mut [u8],
         content: &mut ContentGuard<'_>,
     ) -> Result<(usize, Option<ReadObservation>), Error> {
+        if let Some(shared) = content.shared() {
+            content.length(|| self.attributes(node).map(|attributes| attributes.size()))?;
+            return super::shared::SharedFile::read(&shared, offset, destination)
+                .map(|length| (length, None));
+        }
         match self.read_cache_policy() {
             ReadCachePolicy::Direct => self
                 .read_backend_at(node, offset, destination)
@@ -662,7 +710,7 @@ impl FilesystemInstance {
             NodeIdentity::new(NonZeroU64::new(record.id()).ok_or(Error::NotRegularFile)?),
             content.revision(),
         );
-        if identity != expected || !cache.prefetch_allowed() {
+        if content.shared().is_some() || identity != expected || !cache.prefetch_allowed() {
             return Ok(());
         }
         let Some(length) = content.known_length() else {
@@ -773,6 +821,16 @@ impl FilesystemInstance {
     ) -> Result<Option<ExecutableSnapshot>, Error> {
         let mut content = node.content().lock()?;
         self.read_status()?;
+        // Hardware stores do not acquire the content gate. Potential writers
+        // (including retained kernel-copy operations) must therefore be absent
+        // before this gate can guarantee a stable private loader snapshot.
+        if content
+            .shared()
+            .is_some_and(|shared| shared.writable_mapped())
+        {
+            return Err(Error::Busy);
+        }
+
         match &self.backend {
             Backend::RamFs(fs) => fs.executable(node.ramfs()?, sponsor),
             Backend::Remote(_) => {
@@ -805,6 +863,54 @@ impl FilesystemInstance {
     ) -> Result<(usize, u64), Error> {
         let mut content = node.content().lock()?;
         content.check_writable()?;
+        if content.shared().is_some() {
+            // Reclaim may revoke mappings and wait for acknowledgements. No
+            // file content gate may be retained across that work.
+            drop(content);
+            let Backend::Remote(fs) = &self.backend else {
+                return Err(Error::Unsupported);
+            };
+            fs.prepare_shared_write(input.len())?;
+            content = node.content().lock()?;
+            content.check_writable()?;
+            let shared = content.shared().ok_or(Error::Busy)?;
+            let size =
+                content.length(|| self.attributes(node).map(|attributes| attributes.size()))?;
+            let at = offset.unwrap_or(size);
+            let end = at
+                .checked_add(input.len() as u64)
+                .ok_or(Error::InvalidSize)?;
+            if end > size {
+                if shared.mapped() {
+                    return Err(Error::Busy);
+                }
+                drop(content);
+                fs.flush_shared(Some(node.get()), true)?;
+                content = node.content().lock()?;
+                content.check_writable()?;
+                if shared.mapped() {
+                    return Err(Error::Busy);
+                }
+                if fs.shared_has_resident(node.get())? {
+                    return Err(Error::Busy);
+                }
+                // Append re-evaluates EOF after the unlocked retirement phase.
+                let size =
+                    content.length(|| self.attributes(node).map(|attributes| attributes.size()))?;
+                let at = offset.unwrap_or(size);
+                let end = at
+                    .checked_add(input.len() as u64)
+                    .ok_or(Error::InvalidSize)?;
+                if end > content.known_length().ok_or(Error::InvalidSize)? {
+                    content.begin_mutation()?;
+                    fs.resize(node.remote()?, end)?;
+                    shared.set_length(end);
+                    content.set_length(end);
+                }
+                return super::shared::SharedFile::write(&shared, at, input);
+            }
+            return super::shared::SharedFile::write(&shared, at, input);
+        }
         match &self.backend {
             Backend::RamFs(fs) => {
                 content.begin_mutation()?;
@@ -833,6 +939,25 @@ impl FilesystemInstance {
     pub(super) fn resize(&self, node: &NodeLease, length: u64) -> Result<(), Error> {
         let mut content = node.content().lock()?;
         content.check_writable()?;
+        if let Some(shared) = content.shared() {
+            if content.known_length() == Some(length) {
+                return Ok(());
+            }
+            if shared.mapped() {
+                return Err(Error::Busy);
+            }
+            if let Backend::Remote(fs) = &self.backend {
+                drop(content);
+                fs.flush_shared(Some(node.get()), true)?;
+                content = node.content().lock()?;
+                content.check_writable()?;
+                if content.shared().is_some_and(|shared| shared.mapped())
+                    || fs.shared_has_resident(node.get())?
+                {
+                    return Err(Error::Busy);
+                }
+            }
+        }
         if let Backend::Remote(fs) = &self.backend {
             fs.flush_writeback()?;
         }
@@ -842,6 +967,9 @@ impl FilesystemInstance {
             Backend::Remote(fs) => fs.resize(node.remote()?, length),
         }?;
         content.set_length(length);
+        if let Some(shared) = content.shared() {
+            shared.set_length(length);
+        }
         Ok(())
     }
 
@@ -939,6 +1067,25 @@ impl FilesystemInstance {
         let mut content = node.content().lock()?;
         if truncate {
             content.check_writable()?;
+            if let Some(shared) = content.shared() {
+                if shared.mapped() {
+                    return Err(Error::Busy.into());
+                }
+                drop(content);
+                if let Backend::Remote(fs) = &self.backend {
+                    fs.flush_shared(Some(node.get()), true)?;
+                }
+                content = node.content().lock()?;
+                content.check_writable()?;
+                if content.shared().is_some_and(|shared| shared.mapped()) {
+                    return Err(Error::Busy.into());
+                }
+                if let Backend::Remote(fs) = &self.backend
+                    && fs.shared_has_resident(node.get())?
+                {
+                    return Err(Error::Busy.into());
+                }
+            }
             if let Backend::Remote(fs) = &self.backend {
                 fs.flush_writeback()?;
             }
@@ -953,6 +1100,9 @@ impl FilesystemInstance {
         }?;
         if truncate {
             content.set_length(0);
+            if let Some(shared) = content.shared() {
+                shared.set_length(0);
+            }
         }
         Ok(prepared)
     }

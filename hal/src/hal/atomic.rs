@@ -20,3 +20,25 @@ impl Capabilities {
 pub fn capabilities() -> Capabilities {
     Capabilities(crate::arch::memory::atomic_capabilities())
 }
+
+/// Observes an untrusted shared word without creating a Rust reference.
+///
+/// # Safety
+/// The caller retains a naturally aligned four-byte range in coherent Normal
+/// RAM. The value is untrusted; this load establishes no payload publication.
+#[inline]
+pub unsafe fn load_external_u32(address: *const u32) -> u32 {
+    // SAFETY: forwarded validated storage admission and alignment contract.
+    unsafe { crate::arch::external_atomic::load_u32(address) }
+}
+
+/// Observes an untrusted shared word without creating a Rust reference.
+///
+/// # Safety
+/// The caller retains a naturally aligned eight-byte range in coherent Normal
+/// RAM. The value is untrusted; this load establishes no payload publication.
+#[inline]
+pub unsafe fn load_external_u64(address: *const u64) -> u64 {
+    // SAFETY: forwarded validated storage admission and alignment contract.
+    unsafe { crate::arch::external_atomic::load_u64(address) }
+}

@@ -138,6 +138,12 @@ pub(super) fn dispatch_operation(
         abi::NativeOperation::VmarMapFile => {
             handlers::sys_vmar_map_file(services, receiver, arguments)
         }
+        abi::NativeOperation::VmarMapFileShared => {
+            handlers::sys_vmar_map_file_shared(services, receiver, arguments)
+        }
+        abi::NativeOperation::VmarSyncFileRange => {
+            handlers::sys_vmar_sync_file_range(services, receiver, arguments)
+        }
         abi::NativeOperation::VmarMapPrivate => {
             handlers::sys_vmar_map_private(services, receiver, arguments)
         }
@@ -526,12 +532,30 @@ pub(super) fn dispatch_operation(
         abi::NativeOperation::TaskGroupCreate => {
             handlers::sys_task_group_create(services, receiver, arguments)
         }
-        abi::NativeOperation::VmoCreate => handlers::sys_vmo_create(services, arguments),
-        abi::NativeOperation::VmoWaitU32 => {
-            handlers::sys_vmo_wait_u32(services, receiver, arguments)
+        abi::NativeOperation::SyncDomainCreate => {
+            handlers::sys_sync_domain_create(services, arguments)
         }
-        abi::NativeOperation::VmoWakeU32 => {
-            handlers::sys_vmo_wake_u32(services, receiver, arguments)
+        abi::NativeOperation::SyncDomainBind => {
+            handlers::sys_sync_domain_bind(services, receiver, arguments)
+        }
+        abi::NativeOperation::SyncDomainJoin => {
+            handlers::sys_sync_domain_join(services, receiver, arguments)
+        }
+        abi::NativeOperation::SyncDomainOwnerQuery => {
+            handlers::sys_sync_domain_owner_query(services, receiver, arguments)
+        }
+        abi::NativeOperation::SyncDomainWaitU64 => {
+            handlers::sys_sync_domain_wait_u64(services, receiver, arguments)
+        }
+        abi::NativeOperation::SyncDomainWakeU64 => {
+            handlers::sys_sync_domain_wake_u64(services, receiver, arguments)
+        }
+        abi::NativeOperation::VmoCreate => handlers::sys_vmo_create(services, arguments),
+        abi::NativeOperation::VmoWaitU32 | abi::NativeOperation::FileWaitU32 => {
+            handlers::sys_shared_wait_u32(services, receiver, arguments)
+        }
+        abi::NativeOperation::VmoWakeU32 | abi::NativeOperation::FileWakeU32 => {
+            handlers::sys_shared_wake_u32(services, receiver, arguments)
         }
         abi::NativeOperation::VmoRead => handlers::sys_vmo_read(services, receiver, arguments),
         abi::NativeOperation::VmoWrite => handlers::sys_vmo_write(services, receiver, arguments),

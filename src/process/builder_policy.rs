@@ -23,6 +23,8 @@ use hyper::abi::native;
 /// worker. Both retain backing and in-flight request leases; staging grants no
 /// VM control. A queue keeps its original resource sponsor and bounded credits,
 /// and its final active owner closes admission before DMA retirement.
+/// `SyncDomain` retains only scoped synchronization identity and weak Thread
+/// observations, so it may accompany shared VMO authority at process startup.
 /// `VirtualSerial` is created by
 /// its owning runtime and is not a startup transport object. Nested
 /// `ProcessBuilder` authority is always forbidden.
@@ -31,6 +33,7 @@ pub(crate) struct BuilderStorable;
 impl BuilderStorable {
     pub(crate) const fn permits_kind_id(kind: u32) -> bool {
         kind == native::HYPER_NATIVE_OBJECT_EVENT
+            || kind == native::HYPER_NATIVE_OBJECT_SYNC_DOMAIN
             || kind == native::HYPER_NATIVE_OBJECT_SYSTEM_INFO
             || kind == native::HYPER_NATIVE_OBJECT_CRASH_VIEW
             || kind == native::HYPER_NATIVE_OBJECT_BYTE_CHANNEL

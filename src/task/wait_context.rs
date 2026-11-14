@@ -22,6 +22,7 @@ type Lock<T> = InterruptSpinLock<T, crate::hal::irq::LocalMask>;
 /// lifetime; scheduler admission may inspect this context under its CPU lock.
 pub(crate) struct ThreadWaitContext {
     pub(crate) atomic: ThreadWaiter,
+    pub(crate) sync_word: crate::process::sync_wait::ThreadWordWaiter,
     sources: Lock<Sources>,
 }
 
@@ -29,29 +30,35 @@ struct Sources {
     ticket: Option<WaitTicket>,
     signals: usize,
     timers: usize,
+    domains: usize,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) enum WaitSource {
     Signal,
     Timer,
+    SyncDomain,
 }
 
 impl ThreadWaitContext {
     pub(crate) const fn new() -> Self {
         Self {
             atomic: ThreadWaiter::new(),
+            sync_word: crate::process::sync_wait::ThreadWordWaiter::new(),
             sources: Lock::new(Sources {
                 ticket: None,
                 signals: 0,
                 timers: 0,
+                domains: 0,
             }),
         }
     }
 
     /// All external registrations must retire before rearming or Thread exit.
     pub(crate) fn is_idle(&self) -> bool {
-        self.atomic.is_idle() && self.sources.with(|sources| sources.ticket.is_none())
+        self.atomic.is_idle()
+            && self.sync_word.is_idle()
+            && self.sources.with(|sources| sources.ticket.is_none())
     }
 
     fn retain(&self, ticket: WaitTicket, source: WaitSource) {
@@ -78,7 +85,7 @@ impl ThreadWaitContext {
                 Some(count) => count,
                 None => invariant(),
             };
-            if sources.signals == 0 && sources.timers == 0 {
+            if sources.signals == 0 && sources.timers == 0 && sources.domains == 0 {
                 sources.ticket = None;
             }
         });
@@ -90,6 +97,7 @@ impl Sources {
         match source {
             WaitSource::Signal => &mut self.signals,
             WaitSource::Timer => &mut self.timers,
+            WaitSource::SyncDomain => &mut self.domains,
         }
     }
 }

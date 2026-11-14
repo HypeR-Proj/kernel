@@ -3,6 +3,7 @@
 
 //! Native machine-root ownership, admission, and acknowledged replacement.
 
+use alloc::boxed::Box;
 use core::mem::ManuallyDrop;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -36,6 +37,10 @@ pub(crate) type NativeCrashMemory = super::CrashMemory<KernelPageBackend, Domain
 type LogicalPrepared<'a> = PreparedMappingChange<'a, KernelPageBackend, DomainAccount>;
 type LogicalUserWrite = PreparedUserWrite<KernelPageBackend, DomainAccount>;
 type LogicalUserRead = PreparedUserRead<KernelPageBackend, DomainAccount>;
+type LogicalSharedReserve =
+    super::address_space::ReservedSharedChange<KernelPageBackend, DomainAccount>;
+type SharedOutputAdmission =
+    super::address_space::SharedOutputAdmission<KernelPageBackend, DomainAccount>;
 type StateLock = InterruptSpinLock<MachineState, crate::hal::irq::LocalMask>;
 type LogicalAddressSpaceError = LogicalError<KernelPageError, ResourceError>;
 
@@ -64,6 +69,21 @@ pub(crate) enum Error {
 }
 
 impl Error {
+    fn is_withdrawal_resource_pressure(&self) -> bool {
+        match self {
+            Self::Allocation
+            | Self::Logical(LogicalError::Allocation)
+            | Self::Page(crate::mm::allocator::BuddyError::OutOfMemory) => true,
+            Self::Resource(error) | Self::Logical(LogicalError::Account(error)) => matches!(
+                error,
+                ResourceError::Allocation
+                    | ResourceError::LimitExceeded { .. }
+                    | ResourceError::DomainInactive(_)
+            ),
+            _ => false,
+        }
+    }
+
     pub(crate) const fn is_identifier_busy(&self) -> bool {
         matches!(
             self,
@@ -162,6 +182,30 @@ struct MachineImage {
 struct MachineState {
     current: FallibleArc<MachineImage>,
     residency: AddressSpaceResidency<{ hyper::cpu::MAX_CPUS }>,
+    shared_reserve: Option<SharedRevocationImage>,
+}
+
+struct NativeSharedAlias {
+    owner: hyper::mm::WeakFallibleArc<NativeAddressSpace>,
+    _charge: DomainCharge,
+}
+
+impl super::SharedAlias for NativeSharedAlias {
+    fn withdraw(&self, page_id: u64, epoch: u64, all: bool) -> Result<(), ()> {
+        match self.owner.upgrade() {
+            Some(owner) => owner
+                .revoke_shared_file_page(page_id, epoch, all)
+                .map_err(|_| ()),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Allocation-free last resort and process-retirement target. Normal page cuts
+/// preserve unrelated shared grants through precise COW translation updates.
+struct SharedRevocationImage {
+    logical: LogicalSharedReserve,
+    image: FallibleArc<MachineImage>,
 }
 
 /// Logical and machine state for one native userspace address space.
@@ -335,6 +379,7 @@ impl NativeAddressSpace {
             state: ManuallyDrop::new(InterruptSpinLock::new(MachineState {
                 current: image,
                 residency,
+                shared_reserve: None,
             })),
             root_vmar_object_published: AtomicBool::new(false),
             _owner_charge: owner_charge,
@@ -351,6 +396,26 @@ impl NativeAddressSpace {
 
     pub(super) fn logical(&self) -> &LogicalAddressSpace {
         &self.logical
+    }
+
+    /// Each mapping lineage owns its reverse edge. Sharing it with unrelated
+    /// mappings would keep retired registrations alive on their former pages.
+    pub(crate) fn shared_file_alias(
+        owner: &FallibleArc<Self>,
+    ) -> Result<FallibleArc<Box<dyn super::SharedAlias>>, Error> {
+        let charge = owner.account.try_charge(MemoryCharge {
+            kernel_bytes: (core::mem::size_of::<NativeSharedAlias>()
+                + FallibleArc::<Box<dyn super::SharedAlias>>::allocation_size())
+                as u64,
+            kernel_objects: 1,
+            ..MemoryCharge::default()
+        })?;
+        let alias: Box<dyn super::SharedAlias> = hyper::mm::try_box(NativeSharedAlias {
+            owner: owner.downgrade(),
+            _charge: charge,
+        })
+        .map_err(|_| Error::Allocation)?;
+        FallibleArc::try_new(alias).map_err(|_| Error::Allocation)
     }
 
     pub(super) fn claim_root_vmar_object_publication(&self) -> bool {
@@ -377,10 +442,10 @@ impl NativeAddressSpace {
     #[inline(never)]
     pub(crate) fn resolve_private_write(&self, destination: UserSlice) -> Result<(), Error> {
         self.populate_file_range(destination)?;
-        if let Some(prepared) = self.prepare_private_write_change(destination)? {
-            self.prepare_change(prepared)?.commit()?;
+        match self.prepare_private_write_change(destination)? {
+            Some(prepared) => self.apply_change(prepared),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     // Mapping traversal needs temporary stack space. Release that frame before
@@ -402,21 +467,28 @@ impl NativeAddressSpace {
         address: UserAddress,
         observed_epoch: u64,
     ) -> Result<bool, Error> {
-        if !self.logical.is_private_write(address) {
+        if !self.logical.is_private_write(address)
+            && !self.logical.is_shared_file_access(address, Access::Write)
+        {
             return Ok(false);
         }
         let page = UserAddress::new(address.get() / PAGE_SIZE * PAGE_SIZE);
-        self.resolve_private_write(UserSlice::new(page, PAGE_SIZE)?)?;
+        let range = UserSlice::new(page, PAGE_SIZE)?;
+        self.resolve_private_write(range)?;
+        self.grant_shared_write(range)?;
         Ok(self.logical.mapping_epoch() != observed_epoch)
     }
 
     /// Only stable file identity and range metadata survive clean-page eviction.
     #[inline(never)]
     pub(crate) fn populate_file_range(&self, range: UserSlice) -> Result<(), Error> {
-        if let Some(prepared) = self.prepare_file_population_change(range)? {
-            self.prepare_change(prepared)?.commit()?;
+        if let Some(prepared) = self.logical.prepare_shared_population(range, false)? {
+            self.apply_change(prepared)?;
         }
-        Ok(())
+        match self.prepare_file_population_change(range)? {
+            Some(prepared) => self.apply_change(prepared),
+            None => Ok(()),
+        }
     }
 
     // Keep file-population scratch out of the nested COW and commit callers.
@@ -434,7 +506,9 @@ impl NativeAddressSpace {
         access: Access,
         observed_epoch: u64,
     ) -> Result<bool, Error> {
-        if !self.logical.is_file_access(address, access) {
+        if !self.logical.is_file_access(address, access)
+            && !self.logical.is_shared_file_access(address, access)
+        {
             return Ok(false);
         }
         let page = UserAddress::new(address.get() / PAGE_SIZE * PAGE_SIZE);
@@ -442,8 +516,16 @@ impl NativeAddressSpace {
         self.populate_file_range(range)?;
         if access == Access::Write {
             self.resolve_private_write(range)?;
+            self.grant_shared_write(range)?;
         }
         Ok(self.logical.mapping_epoch() != observed_epoch)
+    }
+
+    fn grant_shared_write(&self, range: UserSlice) -> Result<(), Error> {
+        if let Some(prepared) = self.logical.prepare_shared_population(range, true)? {
+            self.prepare_change(prepared)?.commit()?;
+        }
+        Ok(())
     }
 
     pub(crate) fn next_file_reclaim_range(
@@ -468,8 +550,15 @@ impl NativeAddressSpace {
     /// Only the owning process may call this, after all its threads and active
     /// handles have retired. No allocation/quota headroom is needed to release
     /// content protection, even while foreign VMAR references retain this owner.
-    pub(crate) fn retire_file_sources(&self) {
+    pub(crate) fn retire_file_sources(&self) -> Result<(), Error> {
+        // Foreign VMAR handles may retain this stopped space indefinitely.
+        // Release resident shared pages before retiring their last reverse
+        // edges, using the already reserved absent root and its ACK barrier.
+        if self.state.with(|state| state.shared_reserve.is_some()) {
+            self.revoke_all_shared_file_grants()?;
+        }
         self.logical.retire_file_sources();
+        Ok(())
     }
 
     pub(crate) fn begin_process_stop(&self) {
@@ -581,16 +670,50 @@ impl NativeAddressSpace {
         &'a self,
         logical: LogicalPrepared<'a>,
     ) -> Result<PreparedNativeChange<'a>, Error> {
+        let (image, shared_reserve) = self.prepare_image_change(&logical)?;
+        Ok(PreparedNativeChange {
+            owner: self,
+            logical,
+            image,
+            shared_reserve,
+        })
+    }
+
+    /// Complete an immediately committed change without returning and then
+    /// moving a second full logical/machine transaction through the caller.
+    #[inline(never)]
+    pub(crate) fn apply_change(&self, logical: LogicalPrepared<'_>) -> Result<(), Error> {
+        let (image, shared_reserve) = self.prepare_image_change(&logical)?;
+        let mut transport = crate::irq::cross_call::UserAddressSpaceTransaction::acquire_waiting()
+            .map_err(|()| Error::Transport)?;
+        commit_change_parts(self, logical, image, shared_reserve, &mut transport).map(|_| ())
+    }
+
+    // Logical ownership remains with the caller throughout preparation. Only
+    // the machine derivatives cross this boundary; publication still belongs
+    // to the shared commit path after every fallible preparation step.
+    #[inline(never)]
+    fn prepare_image_change(
+        &self,
+        logical: &LogicalPrepared<'_>,
+    ) -> Result<(FallibleArc<MachineImage>, Option<SharedRevocationImage>), Error> {
         let pin = crate::task::scheduler::preempt_disable().map_err(|_| Error::Transport)?;
         let published = logical.publish_file_instructions(&pin);
         crate::task::scheduler::preempt_enable_without_reschedule(pin)
             .map_err(|_| Error::Transport)?;
         published?;
-        let previous = self.state.with(|state| {
+        let (previous, reusable) = self.state.with(|state| {
             if state.current.epoch != logical.base_epoch() {
                 return Err(Error::Residency(ResidencyError::StaleEpoch));
             }
-            Ok(state.current.clone())
+            let reusable = match &state.shared_reserve {
+                Some(reserve) => reserve
+                    .logical
+                    .rebase_for(logical)?
+                    .map(|logical| (logical, reserve.image.clone())),
+                None => None,
+            };
+            Ok::<_, Error>((state.current.clone(), reusable))
         })?;
         let mut tables = previous._tables.fork(logical.next_epoch());
         let mut logical_result = Ok(());
@@ -609,11 +732,150 @@ impl NativeAddressSpace {
         logical_result?;
         let root = table_result(root, &mut tables)?;
         let image = finish_image(logical.next_epoch(), root, tables, self.account.clone())?;
-        Ok(PreparedNativeChange {
+        // Shared-only changes leave the all-absent root identical. Reuse its
+        // reachable tables instead of reconstructing two global derivatives
+        // on every write fault. Authority/private changes rebuild the reserve.
+        let shared_reserve = match reusable {
+            Some((logical, previous)) => {
+                let mut tables = previous._tables.fork(logical.next_epoch());
+                // SAFETY: No descriptors change; the fork retains precisely
+                // the immutable tables reachable through the emergency root.
+                let root = unsafe {
+                    crate::hal::user::edit_host_address_space(&previous.root, |_| {}, &mut tables)
+                };
+                let root = table_result(root, &mut tables)?;
+                let image = finish_image(logical.next_epoch(), root, tables, self.account.clone())?;
+                Some(SharedRevocationImage { logical, image })
+            }
+            None => match logical.prepare_shared_reserve()? {
+                Some(reserve) => Some(self.prepare_shared_image(&image, reserve)?),
+                None => None,
+            },
+        };
+        Ok((image, shared_reserve))
+    }
+
+    fn prepare_shared_image(
+        &self,
+        previous: &MachineImage,
+        mut logical: LogicalSharedReserve,
+    ) -> Result<SharedRevocationImage, Error> {
+        if previous.epoch != logical.base_epoch() {
+            return Err(Error::Residency(ResidencyError::StaleEpoch));
+        }
+        let mut tables = previous._tables.fork(logical.next_epoch());
+        let mut logical_result = Ok(());
+        // SAFETY: Both logical derivatives and the previous machine image stay
+        // owned through preparation. Table edits copy before mutating; these
+        // roots remain unpublished until an acknowledged replacement cut.
+        let root = unsafe {
+            crate::hal::user::edit_host_address_space(
+                &previous.root,
+                |visit| logical_result = logical.visit_updates(visit),
+                &mut tables,
+            )
+        };
+        logical_result?;
+        let root = table_result(root, &mut tables)?;
+        let image = finish_image(logical.next_epoch(), root, tables, self.account.clone())?;
+        logical.release_baseline();
+        Ok(SharedRevocationImage { logical, image })
+    }
+
+    /// Select only this closed canonical page and retain the normal epoch/ACK
+    /// protocol. Only resource exhaustion may use the prebuilt broad fallback;
+    /// logical or transport errors must not silently become successful cuts.
+    fn revoke_shared_file_page(&self, page_id: u64, epoch: u64, all: bool) -> Result<(), Error> {
+        // Prepare without serializing unrelated address spaces. Concurrent
+        // mapping commits invalidate the candidate; bound optimistic retries
+        // before preparing under the commit transport to guarantee progress.
+        for _ in 0..4 {
+            let result = match self.prepare_shared_page_withdrawal(page_id, epoch, all) {
+                Ok(Some(prepared)) => prepared.commit().map(|_| ()),
+                // Another transaction can publish its logical withdrawal
+                // before its CPU acknowledgements arrive. Even a no-op must
+                // join that commit before the caller captures or frees a page.
+                Ok(None) => break,
+                Err(error) => Err(error),
+            };
+            match result {
+                Err(error) if error.is_stale_mapping_transaction() => continue,
+                Err(error) if error.is_withdrawal_resource_pressure() => {
+                    return self.revoke_all_shared_file_grants();
+                }
+                result => return result,
+            }
+        }
+        let mut transport = crate::irq::cross_call::UserAddressSpaceTransaction::acquire_waiting()
+            .map_err(|()| Error::Transport)?;
+        match self.prepare_shared_page_withdrawal(page_id, epoch, all) {
+            Ok(Some(prepared)) => {
+                prepared.commit_with_transport(&mut transport)?;
+                Ok(())
+            }
+            Ok(None) => Ok(()),
+            Err(error) if error.is_withdrawal_resource_pressure() => {
+                self.revoke_all_shared_with_transport(&mut transport)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn prepare_shared_page_withdrawal(
+        &self,
+        page_id: u64,
+        epoch: u64,
+        all: bool,
+    ) -> Result<Option<PreparedNativeChange<'_>>, Error> {
+        match self
+            .logical
+            .prepare_shared_withdrawal(page_id, epoch, all)?
+        {
+            Some(logical) => self.prepare_change(logical).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    fn revoke_all_shared_file_grants(&self) -> Result<(), Error> {
+        let mut transport = crate::irq::cross_call::UserAddressSpaceTransaction::acquire_waiting()
+            .map_err(|()| Error::Transport)?;
+        self.revoke_all_shared_with_transport(&mut transport)
+    }
+
+    /// No page/cache lock or fresh allocation is needed. Serialize before
+    /// taking the reserve, and acknowledge active and inactive CPU translations
+    /// before releasing the old roots or any resident frame owner.
+    fn revoke_all_shared_with_transport(
+        &self,
+        transport: &mut crate::irq::cross_call::UserAddressSpaceTransaction,
+    ) -> Result<(), Error> {
+        let selected = self.state.with(|state| {
+            state
+                .shared_reserve
+                .take()
+                .map(|reserve| (state.current.epoch, reserve))
+        });
+        let Some((epoch, selected)) = selected else {
+            return Ok(());
+        };
+        let logical = match selected.logical.into_prepared(&self.logical, epoch) {
+            Ok(logical) => logical,
+            Err(_) => crate::diagnostics::crash::fatal(format_args!(
+                "HypeR: reserved shared-file root no longer matches its publication"
+            )),
+        };
+        let prepared = PreparedNativeChange {
             owner: self,
             logical,
-            image,
-        })
+            image: selected.image,
+            shared_reserve: None,
+        };
+        if prepared.commit_with_transport(transport).is_err() {
+            crate::diagnostics::crash::fatal(format_args!(
+                "HypeR: reserved shared-file translation withdrawal failed"
+            ));
+        }
+        Ok(())
     }
 
     /// Acquire before local activation, so temporary tag pressure can retry
@@ -864,6 +1126,17 @@ pub(crate) struct UserWriteReservation {
 }
 
 impl UserWriteReservation {
+    /// Admits only the short actual copy, not a blocked receive's lifetime.
+    /// Failure releases every partial admission and never waits for a freeze.
+    pub(crate) fn admit_shared_write(&self) -> Result<SharedOutputAdmission, Error> {
+        let Some(plan) = self.plan.as_ref() else {
+            crate::diagnostics::crash::fatal(format_args!(
+                "HypeR: completed user-write reservation reused"
+            ));
+        };
+        plan.admit_shared_write().map_err(Error::Logical)
+    }
+
     /// Copies discontiguous initialized source pages without a concatenation
     /// buffer. The exact combined length is checked before modifying userspace.
     pub(crate) fn copy_parts_from<'a>(
@@ -1022,85 +1295,111 @@ pub(crate) struct PreparedNativeChange<'owner> {
     owner: &'owner NativeAddressSpace,
     logical: LogicalPrepared<'owner>,
     image: FallibleArc<MachineImage>,
+    shared_reserve: Option<SharedRevocationImage>,
 }
 
 impl PreparedNativeChange<'_> {
     pub(crate) fn commit(self) -> Result<MappingChange, Error> {
+        let mut transport = crate::irq::cross_call::UserAddressSpaceTransaction::acquire_waiting()
+            .map_err(|()| Error::Transport)?;
+        self.commit_with_transport(&mut transport)
+    }
+
+    fn commit_with_transport(
+        self,
+        transport: &mut crate::irq::cross_call::UserAddressSpaceTransaction,
+    ) -> Result<MappingChange, Error> {
         let Self {
             owner,
             logical,
             image,
+            shared_reserve,
         } = self;
-        let mut transport = crate::irq::cross_call::UserAddressSpaceTransaction::acquire_waiting()
-            .map_err(|()| Error::Transport)?;
-        let cut = owner
-            .state
-            .with(|state| state.residency.begin_update(logical.base_epoch()))?;
-        #[cfg(all(
-            CONFIG_ARCH_AARCH64,
-            all(feature = "kernel-test", feature = "kernel-self-test")
-        ))]
-        self_test::after_cut(owner.logical.id().get(), cut.active());
-        let committed = match logical.commit_machine() {
-            Ok(committed) => committed,
-            Err(error) => {
-                if owner
-                    .state
-                    .with(|state| state.residency.abort_update(cut))
-                    .is_err()
-                {
-                    hyper::debug::invariant_failure("mm::user_space::machine::commit invariant");
-                }
-                return Err(Error::Logical(error));
-            }
-        };
-        let change = committed.change();
-        let old = owner
-            .state
-            .with(|state| core::mem::replace(&mut state.current, image));
-
-        let current = owner.state.with(|state| state.current.clone());
-        execute_cut(
-            &mut transport,
-            owner.logical.id().get(),
-            change,
-            true,
-            &old.root,
-            crate::irq::cross_call::UserAddressSpaceOperation::Replace(&current.root),
-            cut.active(),
-        );
-
-        let mut inactive = *cut.targets();
-        for (index, active) in cut.active().iter().copied().enumerate() {
-            if active {
-                inactive[index] = false;
-            }
-        }
-        execute_cut(
-            &mut transport,
-            owner.logical.id().get(),
-            change,
-            false,
-            &old.root,
-            crate::irq::cross_call::UserAddressSpaceOperation::Invalidate(&old.root),
-            &inactive,
-        );
-
-        if owner
-            .state
-            .with(|state| state.residency.finish_update(cut, change.epoch))
-            .is_err()
-        {
-            crate::diagnostics::crash::fatal(format_args!(
-                "HypeR: native address-space residency completion is inconsistent"
-            ));
-        }
-        // SAFETY: Both active root switches and every inactive-resident tagged
-        // invalidation acknowledged before either old owner is released.
-        unsafe { committed.complete_machine_retirement() };
-        drop(old);
-        Ok(change)
+        commit_change_parts(owner, logical, image, shared_reserve, transport)
     }
+}
+
+// Consume the existing logical owner directly. Immediate callers need not
+// construct and then move a second combined logical/machine transaction.
+#[inline(never)]
+fn commit_change_parts(
+    owner: &NativeAddressSpace,
+    logical: LogicalPrepared<'_>,
+    image: FallibleArc<MachineImage>,
+    shared_reserve: Option<SharedRevocationImage>,
+    transport: &mut crate::irq::cross_call::UserAddressSpaceTransaction,
+) -> Result<MappingChange, Error> {
+    let cut = owner
+        .state
+        .with(|state| state.residency.begin_update(logical.base_epoch()))?;
+    #[cfg(all(
+        CONFIG_ARCH_AARCH64,
+        all(feature = "kernel-test", feature = "kernel-self-test")
+    ))]
+    self_test::after_cut(owner.logical.id().get(), cut.active());
+    let committed = match logical.commit_machine() {
+        Ok(committed) => committed,
+        Err(error) => {
+            if owner
+                .state
+                .with(|state| state.residency.abort_update(cut))
+                .is_err()
+            {
+                hyper::debug::invariant_failure("mm::user_space::machine::commit invariant");
+            }
+            return Err(Error::Logical(error));
+        }
+    };
+    let change = committed.change();
+    let (old, old_reserves) = owner.state.with(|state| {
+        (
+            core::mem::replace(&mut state.current, image),
+            core::mem::replace(&mut state.shared_reserve, shared_reserve),
+        )
+    });
+
+    let current = owner.state.with(|state| state.current.clone());
+    execute_cut(
+        transport,
+        owner.logical.id().get(),
+        change,
+        true,
+        &old.root,
+        crate::irq::cross_call::UserAddressSpaceOperation::Replace(&current.root),
+        cut.active(),
+    );
+
+    let mut inactive = *cut.targets();
+    for (index, active) in cut.active().iter().copied().enumerate() {
+        if active {
+            inactive[index] = false;
+        }
+    }
+    execute_cut(
+        transport,
+        owner.logical.id().get(),
+        change,
+        false,
+        &old.root,
+        crate::irq::cross_call::UserAddressSpaceOperation::Invalidate(&old.root),
+        &inactive,
+    );
+
+    if owner
+        .state
+        .with(|state| state.residency.finish_update(cut, change.epoch))
+        .is_err()
+    {
+        crate::diagnostics::crash::fatal(format_args!(
+            "HypeR: native address-space residency completion is inconsistent"
+        ));
+    }
+    // SAFETY: Both active root switches and every inactive-resident tagged
+    // invalidation acknowledged before either old owner is released.
+    unsafe { committed.complete_machine_retirement() };
+    drop(old);
+    drop(old_reserves);
+    Ok(change)
 }
 
 fn execute_cut(

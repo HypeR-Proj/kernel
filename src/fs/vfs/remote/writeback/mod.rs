@@ -260,6 +260,7 @@ extern "C" fn worker(address: usize) {
     // one dormant kernel thread. No other owner accesses it after publication.
     let worker =
         unsafe { Box::from_raw(core::ptr::with_exposed_provenance_mut::<Worker>(address)) };
+    let mut retirement_reported = false;
     loop {
         // Clear before inspecting durable dirty state. A crossing after the
         // inspection leaves the level asserted for the timed wait below.
@@ -267,21 +268,61 @@ extern "C" fn worker(address: usize) {
         let Some(filesystem) = worker.filesystem.upgrade() else {
             return;
         };
-        if filesystem.read_status().is_err() {
-            return;
-        }
-        let more = match crate::time::monotonic_nanoseconds() {
-            Ok(now) => match filesystem.periodic_writeback(now) {
-                Ok(Some(more)) => more,
-                Ok(None) => return,
+        let mut retry_delay = false;
+        let more = if filesystem.read_status().is_err() {
+            match filesystem.revoke_failed_shared() {
+                Ok(_) => return,
                 Err(error) => {
-                    crate::pr_err!("HypeR: filesystem writeback stopped: {error:?}");
-                    return;
+                    if !retirement_reported {
+                        crate::pr_crit!(
+                            "HypeR: shared file alias retirement incomplete; retrying: {error:?}"
+                        );
+                        retirement_reported = true;
+                    }
+                    // Keep the owner observable and retry after a real delay;
+                    // a crossing wake level must not turn failure into a spin.
+                    retry_delay = true;
+                    false
                 }
-            },
-            Err(_) => false,
+            }
+        } else {
+            match crate::time::monotonic_nanoseconds() {
+                Ok(now) => match filesystem.periodic_writeback(now) {
+                    Ok(Some(more)) => more,
+                    Ok(None) => return,
+                    Err(Error::Busy) => true,
+                    Err(Error::Allocation | Error::Resource(_) | Error::Lock(_))
+                        if filesystem.read_status().is_ok() =>
+                    {
+                        // Only healthy local preparation may retry. RPC-stage
+                        // failures latch health before returning, even when the
+                        // provider reports an allocation-shaped status.
+                        retry_delay = true;
+                        false
+                    }
+                    Err(error) => {
+                        filesystem.health.fail();
+                        crate::pr_crit!(
+                            "HypeR: filesystem writeback failed; mount failed: {error:?}"
+                        );
+                        // The next timed iteration retires all aliases; failed
+                        // retirement itself remains retryable above.
+                        retry_delay = true;
+                        false
+                    }
+                },
+                Err(_) => false,
+            }
         };
         drop(filesystem);
+        if retry_delay {
+            if let Err(error) = crate::task::sleep_s(1) {
+                crate::diagnostics::crash::fatal(format_args!(
+                    "HypeR: writeback retry sleep failed: {error:?}"
+                ));
+            }
+            continue;
+        }
         if more {
             if crate::task::scheduler::cond_resched().is_err() {
                 hyper::debug::invariant_failure("filesystem writeback reschedule failed");
@@ -361,6 +402,24 @@ impl RemoteFs {
         self.session()?.flush_writeback()
     }
     fn periodic_writeback(&self, now: u64) -> Result<Option<bool>, Error> {
+        let shared_due = {
+            let state = self.state.lock().map_err(Error::Lock)?;
+            if state.writeback.retired {
+                return Ok(None);
+            }
+            now >= state.writeback.deadline
+        };
+        let shared_pressure = self
+            .shared
+            .as_ref()
+            .is_some_and(|shared| shared.pressured() || shared.idle())
+            || !crate::mm::cache_memory::admission_allowed();
+        if shared_due {
+            self.flush_shared(None, false)?;
+        }
+        if shared_pressure {
+            self.reclaim_shared()?;
+        }
         let mut state = self.session()?;
         // A worker can pass read_status before unmount, then wait behind its
         // backend gate. Successful publication retires it under that same gate;
@@ -437,7 +496,7 @@ impl State {
         }
         bytes
     }
-    fn fail_writeback(&mut self, error: Error) -> Error {
+    pub(super) fn fail_writeback(&mut self, error: Error) -> Error {
         // No retry/recovery protocol exists for a failed dirty owner. Keep its
         // first cause and expose failed-detach even when the provider is alive
         // and its last reply was a nonterminal application-level rejection.

@@ -218,6 +218,8 @@ pub(crate) trait MemoryAccount: Clone {
 /// Physically owned page adapter. Methods never retain caller buffers.
 pub(crate) trait PageBackend: Clone {
     type Page;
+    type SharedPage: super::SharedPage;
+    type SharedSource: super::SharedSource<Page = Self::SharedPage>;
     type Error: Debug;
     /// Environment-specific proof needed by instruction publication.
     ///
@@ -234,6 +236,14 @@ pub(crate) trait PageBackend: Clone {
 
     fn allocate_zeroed(&self) -> Result<Self::Page, Self::Error>;
     fn physical_address(&self, page: &Self::Page) -> PhysicalAddress;
+
+    /// Retains a file-owned frame for a prepared kernel read, without granting
+    /// ordinary VMO writes or taking ownership of its physical accounting.
+    fn retain_shared_page(
+        &self,
+        page: Self::SharedPage,
+        pin: <Self::SharedPage as super::SharedPage>::Pin,
+    ) -> Self::Page;
 
     /// Whether retaining this owner retains exactly one ordinary physical page
     /// and no file-cache, DMA or larger-allocation lifetime. Eligibility must

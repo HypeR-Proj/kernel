@@ -28,6 +28,7 @@ use {
 };
 mod transport;
 use hyper::mm::{FallibleArc, WeakFallibleArc};
+pub(in crate::fs::vfs) use transport::Health;
 pub(super) use transport::Transport;
 use {
     crate::fs::primitives::MAX_PATH_BYTES, crate::fs::primitives::Name,
@@ -38,6 +39,7 @@ mod cache;
 mod directory;
 mod records;
 mod session;
+mod shared;
 mod writeback;
 use records::{PreparedRecord, Records};
 use session::{Backend, Session};
@@ -99,7 +101,8 @@ pub(super) struct RemoteFs {
     state: Mutex<State>,
     backend: Mutex<Box<Backend>>,
     root: FallibleArc<Node>,
-    domain: ResourceDomain,
+    pub(in crate::fs::vfs) domain: ResourceDomain,
+    shared: Option<super::shared::SharedCache>,
     epoch: AtomicU64,
     health: FallibleArc<transport::Health>,
     _charge: CommittedCharge,
@@ -126,10 +129,19 @@ impl RemoteFs {
                 + MAX_PATH_BYTES
                 + hyper_filesystem::protocol::DIRECTORY_BATCH_BYTES,
         )?;
+        // Reserve the final allocation before preparing the mount. Passing a
+        // completed mount through the fallible Arc constructor keeps another
+        // full value alive across allocation and its failure cleanup.
+        let slot = hyper::mm::UniqueFallibleArc::try_new_uninit()?;
         let metadata = metadata_scratch()?;
         let root = node(FileRecord::try_new(0, &domain)?, &domain)?;
         let health = volume.health.clone();
         let writeback = writeback::Writeback::new(volume.take_writeback().map_err(map)?, &domain)?;
+        let shared = if writeback.enabled() {
+            Some(super::shared::SharedCache::new(&domain)?)
+        } else {
+            None
+        };
         let backend = Backend::new(volume, &domain, writeback.enabled())?;
         let mut state = State {
             health: health.clone(),
@@ -151,16 +163,18 @@ impl RemoteFs {
             content: root.record.downgrade(),
             _charge: record_charge(&domain)?,
         })?);
-        FallibleArc::try_new(Self {
-            state: Mutex::new(state),
-            backend: Mutex::new(backend),
-            root,
-            domain,
-            epoch: AtomicU64::new(0),
-            health,
-            _charge: persistent,
-        })
-        .map_err(Error::from)
+        Ok(slot
+            .write(Self {
+                state: Mutex::new(state),
+                backend: Mutex::new(backend),
+                root,
+                domain,
+                shared,
+                epoch: AtomicU64::new(0),
+                health,
+                _charge: persistent,
+            })
+            .into_shared())
     }
     #[inline(never)]
     /// Serialize the final topology publication with directory renames. The
@@ -197,6 +211,7 @@ impl RemoteFs {
         &self,
         publish: impl FnOnce() -> Result<(), Error>,
     ) -> Result<(), Error> {
+        self.flush_shared(None, true)?;
         // Admission is frozen. This lock also drains read-ahead which retains
         // only weak content identity rather than a namespace Location.
         let mut state = self.session()?;
@@ -212,6 +227,9 @@ impl RemoteFs {
     pub(super) fn read_status(&self) -> Result<(), Error> {
         self.health.check().map_err(map)
     }
+    pub(in crate::fs::vfs) fn atomic_health(&self) -> FallibleArc<Health> {
+        self.health.clone()
+    }
     pub(super) fn abandon_with(
         &self,
         publish: impl FnOnce() -> Result<(), Error>,
@@ -222,10 +240,11 @@ impl RemoteFs {
         if self.health.check().is_ok() {
             return Err(Error::Busy);
         }
+        let shared_discarded = self.revoke_failed_shared()?;
         let mut state = self.session()?;
         publish()?;
         self.health.fail();
-        let discarded = state.abandon_writeback();
+        let discarded = state.abandon_writeback().saturating_add(shared_discarded);
         state.backend.batches.abandon();
         Ok(discarded)
     }
@@ -335,6 +354,7 @@ impl RemoteFs {
     }
     #[inline(never)]
     pub(super) fn set_metadata(&self, node: &Node, update: MetadataUpdate) -> Result<(), Error> {
+        self.flush_shared(Some(node.id()), false)?;
         let mut state = self.session()?;
         state.fence_cache();
         state.flush_writeback()?;
@@ -596,6 +616,9 @@ impl RemoteFs {
     }
     #[inline(never)]
     pub(super) fn sync(&self, node: &Node, scope: u64) -> Result<(), Error> {
+        let volume_scope = scope == hyper::abi::native::HYPER_NATIVE_FILE_SYNC_VOLUME
+            || self.attributes(node)?.kind() == NodeKind::Directory;
+        self.flush_shared(if volume_scope { None } else { Some(node.id()) }, false)?;
         let mut state = self.session()?;
         state.check_writeback()?;
         if scope == hyper::abi::native::HYPER_NATIVE_FILE_SYNC_VOLUME {
@@ -696,6 +719,10 @@ impl RemoteFs {
         expected: Option<u64>,
         epoch: Option<u64>,
     ) -> Result<(), Error> {
+        let shared_target = self.shared_binding(directory, name)?;
+        if let Some(node) = shared_target {
+            self.flush_shared(Some(node), true)?;
+        }
         let mut state = self.session()?;
         state.fence_cache();
         state.flush_writeback()?;
@@ -717,6 +744,17 @@ impl RemoteFs {
         if state.records.find_path(&path).is_some_and(|record| {
             record.node.upgrade().is_some() || expected.is_some_and(|id| record.id != id)
         }) {
+            return Err(Error::Busy);
+        }
+        let observed_target = state.records.find_path(&path).map(|record| record.id);
+        if observed_target != shared_target
+            || observed_target.is_some_and(|id| expected.is_some_and(|expected| expected != id))
+        {
+            return Err(Error::Busy);
+        }
+        if let Some(id) = observed_target
+            && self.shared_has_resident(id)?
+        {
             return Err(Error::Busy);
         }
         directory.invalidate_directory()?;
@@ -755,10 +793,18 @@ impl RemoteFs {
         new_name: EntryName<'_>,
         epoch: u64,
     ) -> Result<(), Error> {
+        let shared_source = self.shared_binding(source, name)?;
+        let shared_target = self.shared_binding(destination, new_name)?;
+        if let Some(target) = shared_target
+            && Some(target) != shared_source
+        {
+            self.flush_shared(Some(target), true)?;
+        }
+        self.flush_shared(None, false)?;
         let mut state = self.session()?;
         state.fence_cache();
         state.flush_writeback()?;
-        let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES * 5)?;
+        let _paths = state.scratch_charge(&self.domain, MAX_PATH_BYTES * 6)?;
         let _mutation = self.mutation(Some(epoch))?;
         let parent = state.path(source)?;
         let candidate = child(&parent, name.name)?;
@@ -777,11 +823,32 @@ impl RemoteFs {
         // A backend may resolve aliases (for example case-folded names) to
         // the same canonical entry. Preserve that spelling in the registry,
         // otherwise the next canonical lookup creates a second lock identity.
-        let same_name = state
-            .stat(&new)
-            .is_ok_and(|entry| entry.name() == original_name);
+        let (same_name, target_path) = match state.stat(&new) {
+            Ok(entry) => (
+                entry.name() == original_name,
+                Some(join(&destination_path, entry.name())?),
+            ),
+            Err(Error::Missing) => (false, None),
+            Err(error) => return Err(error),
+        };
         if parent == destination_path && same_name {
             return Ok(());
+        }
+        let observed_target = target_path
+            .as_ref()
+            .and_then(|path| state.records.find_path(path))
+            .map(|record| record.id);
+        if observed_target != shared_target {
+            return Err(Error::Busy);
+        }
+        if let Some(target) = observed_target
+            && (state
+                .records
+                .get(target)
+                .is_some_and(|record| record.node.is_alive())
+                || self.shared_has_resident(target)?)
+        {
+            return Err(Error::Busy);
         }
         if within(&new, &old) {
             return Err(Error::InvalidInput);
@@ -839,6 +906,9 @@ impl RemoteFs {
         }
         state.invalidate_metadata()?;
         state.rpc(|volume| volume.rename(&old, &new))?;
+        if let Some(target) = observed_target {
+            drop(state.records.remove(target));
+        }
         // All replacement paths and index nodes already exist. Reindexing is
         // allocation-free after the backend has committed the rename.
         for (id, path) in replacements {

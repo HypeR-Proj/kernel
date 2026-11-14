@@ -55,6 +55,21 @@ fn weak_fallible_arc_observes_value_lifetime_without_owning_it() {
 }
 
 #[test]
+fn weak_pointer_identity_survives_payload_retirement() {
+    let first = crate::require_ok(hyper::mm::FallibleArc::try_new(7_u64));
+    let other = crate::require_ok(hyper::mm::FallibleArc::try_new(7_u64));
+    let weak = first.downgrade();
+    let same = weak.clone();
+    let different = other.downgrade();
+    assert!(weak.ptr_eq(&same));
+    assert!(!weak.ptr_eq(&different));
+    drop(first);
+    assert!(!weak.is_alive());
+    assert!(weak.ptr_eq(&same));
+    assert!(!weak.ptr_eq(&different));
+}
+
+#[test]
 fn external_weak_owner_prevents_unique_arc_conversion() {
     let owner = crate::require_ok(hyper::mm::FallibleArc::try_new(41_u64));
     let observer = owner.downgrade();
@@ -361,4 +376,17 @@ fn fallible_arc_destroys_the_value_after_the_last_concurrent_owner() {
     assert_eq!(drops.load(Ordering::Relaxed), 0);
     drop(owner);
     assert_eq!(drops.load(Ordering::Relaxed), 1);
+}
+#[test]
+fn shared_pointer_owners_are_unpin_without_moving_a_pinned_payload() {
+    fn assert_unpin<T: Unpin>() {}
+    assert_unpin::<hyper::mm::FallibleArc<core::marker::PhantomPinned>>();
+    assert_unpin::<hyper::mm::WeakFallibleArc<core::marker::PhantomPinned>>();
+    let owner = crate::require_ok(hyper::mm::FallibleArc::try_new(core::marker::PhantomPinned));
+    let address = core::ptr::from_ref(&*owner);
+    let weak = owner.downgrade();
+    let moved = Box::new(owner);
+    let observed = crate::require_some(weak.upgrade());
+    assert_eq!(address, core::ptr::from_ref(&*observed));
+    assert_eq!(address, core::ptr::from_ref(&**moved));
 }

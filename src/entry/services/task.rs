@@ -252,6 +252,9 @@ fn atomic_wait_error(error: crate::process::atomic_wait::Error) -> ObjectService
         Error::Process(error) => ObjectServiceError::Process(error),
         Error::Wait(error) => ObjectServiceError::Wait(error),
         Error::InvalidInput => ObjectServiceError::InvalidInput,
+        // Address-private waits reject shared file mappings before admission;
+        // file-source failures can only originate from the explicit File APIs.
+        Error::File(_) | Error::BackingUnavailable => ObjectServiceError::InvalidInput,
     }
 }
 

@@ -54,6 +54,20 @@ pub(crate) enum Error {
     Resource(ResourceError),
 }
 
+impl Error {
+    /// A poisoned or closed provider generation cannot service this backing
+    /// again. Ordinary contention, resource denial, and unsupported mappings
+    /// are not terminal storage failure.
+    pub(crate) fn is_backing_unavailable(&self) -> bool {
+        matches!(
+            self,
+            Self::Backend(super::instance::Error::Remote(
+                hyper_filesystem::protocol::Error::Closed
+            ))
+        )
+    }
+}
+
 impl From<ObjectCreationError> for Error {
     fn from(error: ObjectCreationError) -> Self {
         Self::Object(error)
@@ -744,6 +758,7 @@ impl KernelObject for DirectoryObject {
         .union(Rights::SET_ATTRIBUTES)
         .union(Rights::LOCK_FILE)
         .union(Rights::PROTECT)
+        .union(Rights::SYNC_CONFIGURE)
         .union(Rights::MANAGE_NAMESPACE);
     const TRANSFER_CLASS: TransferClass = TransferClass::Leaf;
 }
@@ -762,6 +777,15 @@ pub(crate) struct FileObject {
 }
 
 impl FileObject {
+    pub(crate) fn shared_mapping_source(
+        &self,
+        offset: u64,
+        length: u64,
+        writable: bool,
+        sponsor: &ResourceDomain,
+    ) -> Result<super::SharedFileSource, Error> {
+        super::SharedFileSource::acquire(self.location.clone(), offset, length, writable, sponsor)
+    }
     /// Acquire content stability independently of this open handle's lifetime.
     /// The caller must check PROTECT authority before publishing the guard.
     pub(crate) fn protect(&self, sponsor: &ResourceDomain) -> Result<super::FileProtection, Error> {
@@ -1018,7 +1042,8 @@ impl KernelObject for FileObject {
         .union(Rights::EXECUTE)
         .union(Rights::SET_ATTRIBUTES)
         .union(Rights::LOCK_FILE)
-        .union(Rights::PROTECT);
+        .union(Rights::PROTECT)
+        .union(Rights::SYNC_CONFIGURE);
     const TRANSFER_CLASS: TransferClass = TransferClass::Leaf;
 
     fn supported_rights(&self) -> Rights {

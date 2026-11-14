@@ -6,6 +6,8 @@
 pub(crate) mod atomic_wait;
 pub(crate) mod bootstrap;
 pub(crate) mod formats;
+pub(crate) mod sync_domain;
+pub(crate) mod sync_wait;
 
 mod builder;
 mod builder_input;

@@ -21,8 +21,7 @@ pub(crate) struct SharedAtomicWord<Backend: PageBackend, Account: MemoryAccount>
 }
 
 impl<Backend: PageBackend, Account: MemoryAccount> SharedAtomicWord<Backend, Account> {
-    /// Physical address of one aligned u32 in retained coherent Normal memory.
-    /// Only atomic u32 accesses are permitted while this admission is retained.
+    /// Physical address of the admitted aligned word in coherent Normal memory.
     pub(crate) fn physical(&self) -> u64 {
         self.physical
     }
@@ -43,7 +42,17 @@ impl<Backend: PageBackend, Account: MemoryAccount> WritableVmo<Backend, Account>
         &self,
         offset: u64,
     ) -> VmoResult<Backend, Account, ()> {
-        let width = core::mem::size_of::<u32>() as u64;
+        self.validate_atomic_width(offset, 4)
+    }
+
+    pub(crate) fn validate_shared_atomic_u64_offset(
+        &self,
+        offset: u64,
+    ) -> VmoResult<Backend, Account, ()> {
+        self.validate_atomic_width(offset, 8)
+    }
+
+    fn validate_atomic_width(&self, offset: u64, width: u64) -> VmoResult<Backend, Account, ()> {
         if !offset.is_multiple_of(width)
             || offset
                 .checked_add(width)
@@ -61,6 +70,21 @@ impl<Backend: PageBackend, Account: MemoryAccount> WritableVmo<Backend, Account>
         offset: u64,
     ) -> VmoResult<Backend, Account, SharedAtomicWord<Backend, Account>> {
         self.validate_shared_atomic_offset(offset)?;
+        self.pin_atomic_word(offset)
+    }
+
+    pub(crate) fn pin_shared_atomic_u64(
+        &self,
+        offset: u64,
+    ) -> VmoResult<Backend, Account, SharedAtomicWord<Backend, Account>> {
+        self.validate_shared_atomic_u64_offset(offset)?;
+        self.pin_atomic_word(offset)
+    }
+
+    fn pin_atomic_word(
+        &self,
+        offset: u64,
+    ) -> VmoResult<Backend, Account, SharedAtomicWord<Backend, Account>> {
         let admission = MappingAdmission::acquire(&self.inner)?;
         let page_offset = offset / PAGE_SIZE * PAGE_SIZE;
         self.populate(page_offset, PAGE_SIZE)

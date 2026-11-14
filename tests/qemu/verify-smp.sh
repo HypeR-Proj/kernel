@@ -134,6 +134,7 @@ runtime_contract_is_ready() {
         grep -q 'HypeR test: guarded thread, IRQ, and emergency stacks passed' "$log" &&
         grep -q 'HypeR test: fatal-path readiness contract passed' "$log" &&
         grep -q 'HypeR test: Native syscall validation passed' "$log" &&
+        grep -q 'HypeR test: SyncDomain real Thread death, stale-owner handoff, quotas and retirement passed' "$log" &&
         grep -q 'HypeR test: Channel Process and user-copy transactions passed' "$log" &&
         grep -q 'HypeR test: last-thread exit with creation rollback reclaimed resources (8 cycles)' "$log" &&
         grep -q 'HypeR test: retained VM observers permit retirement and slot reuse (4 cycles)' "$log" &&

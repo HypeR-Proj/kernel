@@ -8,8 +8,10 @@ mod file;
 mod observation;
 mod records;
 mod residency;
+mod shared_file;
+pub(crate) use shared_file::ReservedSharedChange;
 mod updates;
-pub(crate) use copy::{PreparedUserRead, PreparedUserWrite};
+pub(crate) use copy::{PreparedUserRead, PreparedUserWrite, SharedOutputAdmission};
 #[cfg(test)]
 use hyper::mm::PhysicalAddress;
 pub(crate) use observation::{CrashMapping, CrashMappingKind, CrashMemory, CrashReadError};
@@ -176,6 +178,7 @@ pub(crate) struct MappingChange {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AddressSpaceError<BackendError, AccountError> {
+    UnsupportedBacking,
     Account(AccountError),
     Allocation,
     BackingNotResident,
@@ -976,7 +979,10 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
             return Err(AddressSpaceError::BackingNotResident);
         }
         let ownership = self.try_mapping_ownership()?;
-        let write_lease = if permissions.contains(Access::Write) && object.private().is_none() {
+        let write_lease = if permissions.contains(Access::Write)
+            && object.private().is_none()
+            && object.shared_file().is_none()
+        {
             Some(object.try_write_lease()?)
         } else {
             None
@@ -1202,6 +1208,9 @@ impl<Backend: PageBackend, Account: MemoryAccount> UserAddressSpace<Backend, Acc
             .containing(address)
             .filter(|mapping| mapping.snapshot.range.contains(range))
             .ok_or(AddressSpaceError::NotMapped)?;
+        if mapping.object.shared_file().is_some() {
+            return Err(AddressSpaceError::UnsupportedBacking);
+        }
         if !mapping.snapshot.permissions.contains(Access::Write) {
             return Err(AddressSpaceError::WriteDenied);
         }
@@ -1319,6 +1328,9 @@ enum MappingChangeKind {
     PrivateBacking,
     /// Drops only clean file pages, including in a sealed stopped space.
     FileReclaim,
+    /// Changes shared-file residency or write grants without changing authority.
+    SharedBacking,
+    SharedWithdrawal,
 }
 
 #[must_use = "prepared mapping state must be committed or explicitly abandoned"]
@@ -1331,6 +1343,8 @@ pub(crate) struct PreparedMappingChange<'a, Backend: PageBackend, Account: Memor
     replacement: FallibleArc<MappingSet<Backend, Account>>,
     replacement_vmars: Option<VmarSet<Account>>,
     kind: MappingChangeKind,
+    shared_guards: Vec<super::vmo::SharedChangeGuard<Backend>>,
+    shared_guard_charge: Option<Account::Charge>,
 }
 
 impl<'a, Backend: PageBackend, Account: MemoryAccount> PreparedMappingChange<'a, Backend, Account> {
@@ -1352,6 +1366,8 @@ impl<'a, Backend: PageBackend, Account: MemoryAccount> PreparedMappingChange<'a,
             replacement: replacement.0,
             replacement_vmars: Some(replacement.1),
             kind: MappingChangeKind::Authority { range },
+            shared_guards: Vec::new(),
+            shared_guard_charge: None,
         })
     }
 
@@ -1375,6 +1391,8 @@ impl<'a, Backend: PageBackend, Account: MemoryAccount> PreparedMappingChange<'a,
             replacement,
             replacement_vmars: None,
             kind: MappingChangeKind::PrivateBacking,
+            shared_guards: Vec::new(),
+            shared_guard_charge: None,
         })
     }
 
@@ -1444,11 +1462,20 @@ impl<'a, Backend: PageBackend, Account: MemoryAccount> PreparedMappingChange<'a,
         CommittedMappingChange<Backend, Account>,
         AddressSpaceError<Backend::Error, Account::Error>,
     > {
+        if self.shared_guards.iter().any(|guard| !guard.valid()) {
+            return Err(AddressSpaceError::Busy);
+        }
         let (retired, retired_vmars) = self.address_space.state.with(|state| {
-            if state.sealed && !matches!(self.kind, MappingChangeKind::FileReclaim) {
+            if state.sealed
+                && !matches!(
+                    self.kind,
+                    MappingChangeKind::FileReclaim | MappingChangeKind::SharedWithdrawal
+                )
+            {
                 return Err(AddressSpaceError::Stopped);
             }
-            if state.authority_epoch != self.base_authority_epoch
+            if (!matches!(self.kind, MappingChangeKind::SharedWithdrawal)
+                && state.authority_epoch != self.base_authority_epoch)
                 || state.mapping_epoch != self.base_mapping_epoch
             {
                 return Err(AddressSpaceError::StaleTransaction);
@@ -1464,7 +1491,9 @@ impl<'a, Backend: PageBackend, Account: MemoryAccount> PreparedMappingChange<'a,
             // Keep the prepared owner outside the lock so a stale commit never
             // runs mapping/page/account destructors with local IRQs masked.
             let old = core::mem::replace(&mut state.mappings, self.replacement.clone());
-            state.authority_epoch = self.next_authority_epoch;
+            if !matches!(self.kind, MappingChangeKind::SharedWithdrawal) {
+                state.authority_epoch = self.next_authority_epoch;
+            }
             state.mapping_epoch = self.next_mapping_epoch;
             let old_vmars = self
                 .replacement_vmars
@@ -1483,6 +1512,9 @@ impl<'a, Backend: PageBackend, Account: MemoryAccount> PreparedMappingChange<'a,
                 epoch: self.next_mapping_epoch,
             },
             retired: ManuallyDrop::new(retired),
+            current: self.replacement,
+            shared_guards: self.shared_guards,
+            _shared_guard_charge: self.shared_guard_charge,
         })
     }
 
@@ -1536,9 +1568,27 @@ impl<Backend: PageBackend, Account: MemoryAccount> PreparedPageSnapshot<Backend,
 pub(crate) struct CommittedMappingChange<Backend: PageBackend, Account: MemoryAccount> {
     change: MappingChange,
     retired: ManuallyDrop<FallibleArc<MappingSet<Backend, Account>>>,
+    current: FallibleArc<MappingSet<Backend, Account>>,
+    shared_guards: Vec<super::vmo::SharedChangeGuard<Backend>>,
+    _shared_guard_charge: Option<Account::Charge>,
 }
 
 impl<Backend: PageBackend, Account: MemoryAccount> CommittedMappingChange<Backend, Account> {
+    fn retire_removed_shared_sources(&self) {
+        for old in self.retired.records.iter() {
+            if let Some(view) = old.object.shared_file()
+                && !self.current.records.iter().any(|mapping| {
+                    mapping
+                        .object
+                        .shared_file()
+                        .is_some_and(|next| view.same_origin(next))
+                })
+            {
+                view.retire();
+            }
+        }
+    }
+
     pub(crate) const fn change(&self) -> MappingChange {
         self.change
     }
@@ -1551,6 +1601,8 @@ impl<Backend: PageBackend, Account: MemoryAccount> CommittedMappingChange<Backen
     /// previous epoch. Stage3 must establish that through its opaque
     /// invalidation acknowledgement before calling this method.
     pub(super) unsafe fn complete_machine_retirement(mut self) {
+        self.retire_removed_shared_sources();
+        self.shared_guards.clear();
         // SAFETY: The caller proves the exact translation-quiescence condition
         // required before old mapping owners and their pages may be reclaimed.
         unsafe { ManuallyDrop::drop(&mut self.retired) };
@@ -1562,6 +1614,8 @@ impl<Backend: PageBackend, Account: MemoryAccount> CommittedMappingChange<Backen
         reason = "shared test helper; hardware coverage is architecture-dependent"
     )]
     pub(crate) unsafe fn complete_retirement_for_test(mut self) {
+        self.retire_removed_shared_sources();
+        self.shared_guards.clear();
         // SAFETY: Test callers model the required acknowledged quiescence.
         unsafe { ManuallyDrop::drop(&mut self.retired) };
     }
@@ -1833,6 +1887,7 @@ fn append_fragments<Backend: PageBackend, Account: MemoryAccount>(
                 ownership,
                 write_lease: if fragment_permissions.contains(Access::Write)
                     && original.object.private().is_none()
+                    && original.object.shared_file().is_none()
                 {
                     match &original.write_lease {
                         Some(lease) => Some(lease.clone()),

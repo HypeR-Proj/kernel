@@ -26,8 +26,13 @@ pub(super) use retention::{
 };
 mod scheduling;
 pub(super) use scheduling::{sys_get_scheduling, sys_set_scheduling};
+mod synchronization;
 mod system;
 mod task;
+pub(super) use synchronization::{
+    sys_sync_domain_bind, sys_sync_domain_create, sys_sync_domain_join,
+    sys_sync_domain_owner_query, sys_sync_domain_wait_u64, sys_sync_domain_wake_u64,
+};
 mod vfs;
 mod vm;
 
@@ -70,10 +75,11 @@ pub(super) use ipc::{
     sys_capability_channel_try_send,
 };
 pub(super) use memory::{
-    sys_executable_publish, sys_vmar_allocate, sys_vmar_destroy, sys_vmar_lock_memory,
-    sys_vmar_map, sys_vmar_map_file, sys_vmar_map_private, sys_vmar_protect,
+    sys_executable_publish, sys_shared_wait_u32, sys_shared_wake_u32, sys_vmar_allocate,
+    sys_vmar_destroy, sys_vmar_lock_memory, sys_vmar_map, sys_vmar_map_file,
+    sys_vmar_map_file_shared, sys_vmar_map_private, sys_vmar_protect, sys_vmar_sync_file_range,
     sys_vmar_unlock_memory, sys_vmar_unmap, sys_vmo_create, sys_vmo_create_snapshot, sys_vmo_read,
-    sys_vmo_wait_u32, sys_vmo_wake_u32, sys_vmo_write,
+    sys_vmo_write,
 };
 pub(super) use object::{
     sys_event_create, sys_event_signal, sys_object_wait_many, sys_object_wait_one,

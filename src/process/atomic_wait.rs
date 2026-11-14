@@ -3,13 +3,14 @@
 
 //! Atomic waits keyed by private mapping lineage or explicitly retained VMO identity.
 
-use core::sync::atomic::{AtomicU32, Ordering};
 use hyper::sync::InterruptSpinLock;
 #[derive(Debug)]
 pub(crate) enum Error {
     Process(ProcessError),
     Wait(crate::object::ObjectWaitError),
     InvalidInput,
+    BackingUnavailable,
+    File(crate::fs::vfs::Error),
 }
 impl From<ProcessError> for Error {
     fn from(error: ProcessError) -> Self {
@@ -52,6 +53,11 @@ enum Key {
         vmo: crate::object::Koid,
         offset: u64,
     },
+    File {
+        filesystem: u64,
+        node: u64,
+        offset: u64,
+    },
 }
 impl From<AtomicWaitKey> for Key {
     fn from(value: AtomicWaitKey) -> Self {
@@ -70,6 +76,11 @@ impl Key {
                 }
                 mix(vmo.get()) ^ mix(offset) ^ 1
             }
+            Self::File {
+                filesystem,
+                node,
+                offset,
+            } => filesystem.rotate_left(17) ^ node.rotate_left(31) ^ (offset / 4) ^ 2,
         }
     }
 }
@@ -107,9 +118,36 @@ impl SharedWord {
     }
 }
 
+/// File waits use canonical file identity; the independent source lease keeps
+/// that identity and the pinned cache frame alive after close or unmap.
+pub(crate) struct FileWord {
+    word: crate::fs::vfs::FileAtomicWord,
+    _pin_charge: CommittedCharge,
+}
+impl FileWord {
+    pub(crate) fn prepare(
+        file: &crate::fs::vfs::FileObject,
+        offset: u64,
+        sponsor: &crate::accounting::ResourceDomain,
+    ) -> Result<Self, Error> {
+        let pin_charge = sponsor
+            .reserve(ResourceAmount::ZERO.with(ResourceKind::PinnedPages, 1))
+            .map_err(ProcessError::from)?
+            .commit();
+        let word = file
+            .pin_shared_atomic(None, offset, 4, sponsor)
+            .map_err(Error::File)?;
+        Ok(Self {
+            word,
+            _pin_charge: pin_charge,
+        })
+    }
+}
+
 enum RetainedWord {
     Private(NativePinnedAtomicWord),
     Shared(SharedWord),
+    File(FileWord),
 }
 
 impl RetainedWord {
@@ -120,12 +158,30 @@ impl RetainedWord {
                 vmo: word.object.koid(),
                 offset: word.offset,
             },
+            Self::File(word) => {
+                let (filesystem, node, offset) = word.word.key();
+                Key::File {
+                    filesystem,
+                    node,
+                    offset,
+                }
+            }
         }
     }
     fn physical(&self) -> u64 {
         match self {
             Self::Private(word) => word.physical,
             Self::Shared(word) => word.word.physical(),
+            Self::File(word) => word.word.physical(),
+        }
+    }
+    fn prepare_failure_wait(
+        &self,
+        sponsor: &crate::accounting::ResourceDomain,
+    ) -> Result<Option<crate::fs::vfs::PreparedFileFailure>, Error> {
+        match self {
+            Self::File(word) => Ok(Some(word.word.prepare_failure_wait(sponsor)?)),
+            _ => Ok(None),
         }
     }
 }
@@ -309,6 +365,22 @@ pub(crate) fn wait_shared(
     )
 }
 
+pub(crate) fn wait_file(
+    process: &Process,
+    word: FileWord,
+    expected: u32,
+    deadline: u64,
+    cancelled: impl Fn() -> bool,
+) -> Result<WaitOutcome, Error> {
+    wait_word(
+        process,
+        RetainedWord::File(word),
+        expected,
+        deadline,
+        cancelled,
+    )
+}
+
 fn wait_word(
     process: &Process,
     word: RetainedWord,
@@ -316,15 +388,69 @@ fn wait_word(
     deadline: u64,
     cancelled: impl Fn() -> bool,
 ) -> Result<WaitOutcome, Error> {
+    wait_word_inner(
+        process,
+        word,
+        expected,
+        deadline,
+        cancelled,
+        #[cfg(all(
+            feature = "kernel-test",
+            feature = "kernel-self-test",
+            CONFIG_ARCH_AARCH64
+        ))]
+        |_| {},
+    )
+}
+
+#[cfg(all(
+    feature = "kernel-test",
+    feature = "kernel-self-test",
+    CONFIG_ARCH_AARCH64
+))]
+pub(crate) fn wait_shared_with_admission_hook(
+    process: &Process,
+    word: SharedWord,
+    expected: u32,
+    deadline: u64,
+    cancelled: impl Fn() -> bool,
+    hook: impl FnOnce(WaitTicket),
+) -> Result<WaitOutcome, Error> {
+    wait_word_inner(
+        process,
+        RetainedWord::Shared(word),
+        expected,
+        deadline,
+        cancelled,
+        hook,
+    )
+}
+
+fn wait_word_inner(
+    process: &Process,
+    word: RetainedWord,
+    expected: u32,
+    deadline: u64,
+    cancelled: impl Fn() -> bool,
+    #[cfg(all(
+        feature = "kernel-test",
+        feature = "kernel-self-test",
+        CONFIG_ARCH_AARCH64
+    ))]
+    before_recheck: impl FnOnce(WaitTicket),
+) -> Result<WaitOutcome, Error> {
     let linear = crate::mm::memory::linear_address(word.physical()).ok_or(Error::InvalidInput)?;
     // SAFETY: aligned u32 is wholly within a resident writable page. `word`
     // retains mapping/storage admission through unlink, independently of unmap
     // and handle closure. All accesses here are atomic, never byte copies.
-    let atomic = unsafe { &*core::ptr::with_exposed_provenance::<AtomicU32>(linear) };
-    if atomic.load(Ordering::Relaxed) != expected {
+    let load = || unsafe {
+        crate::hal::atomic::load_external_u32(core::ptr::with_exposed_provenance(linear))
+    };
+    if load() != expected {
         return Ok(WaitOutcome::Notified);
     }
     let domain = process.resource_domain();
+    let failure = word.prepare_failure_wait(&domain)?;
     let charge = domain
         .reserve(ResourceAmount::ZERO.with(
             ResourceKind::KernelMemoryBytes,
@@ -339,6 +465,13 @@ fn wait_word(
         TimedWaitPreparation::Armed(prepared) => prepared,
     };
     let ticket = prepared.ticket();
+    let failure = failure.map(|source| source.register(ticket));
+    #[cfg(all(
+        feature = "kernel-test",
+        feature = "kernel-self-test",
+        CONFIG_ARCH_AARCH64
+    ))]
+    before_recheck(ticket);
     let bucket = bucket(word.key());
     let mut candidate = Some(Waiter {
         word,
@@ -354,7 +487,7 @@ fn wait_word(
     // The retained IRQ mask goes directly to finish or is dropped on mismatch.
     let (published, mask) = unsafe {
         bucket.with_mask_retained(|state| {
-            if atomic.load(Ordering::Relaxed) != expected {
+            if load() != expected {
                 return Publication::Mismatch(prepared);
             }
             if cancelled() {
@@ -374,15 +507,29 @@ fn wait_word(
     match published {
         Publication::Mismatch(prepared) => {
             drop(mask);
-            prepared.abort()?;
+            if cancelled() {
+                prepared.request_cancellation();
+            }
+            let outcome = prepared.complete_unpublished();
+            let backing_failed = failure.is_some_and(|source| source.finish());
             drop(candidate);
-            Ok(WaitOutcome::Notified)
+            let outcome = outcome?;
+            if backing_failed {
+                Err(Error::BackingUnavailable)
+            } else {
+                Ok(outcome)
+            }
         }
         Publication::Waiting(published, registration) => {
             let (outcome, retirement) = published.finish(mask);
+            let backing_failed = failure.is_some_and(|source| source.finish());
             drop(registration);
             retirement?;
-            Ok(outcome)
+            if backing_failed {
+                Err(Error::BackingUnavailable)
+            } else {
+                Ok(outcome)
+            }
         }
     }
 }
@@ -398,6 +545,17 @@ pub(crate) fn wake(process: &Process, address: u64, count: u32) -> Result<u64, E
 
 pub(crate) fn wake_shared(vmo: crate::object::Koid, offset: u64, count: u32) -> Result<u64, Error> {
     wake_key(Key::Shared { vmo, offset }, count)
+}
+
+pub(crate) fn wake_file(filesystem: u64, node: u64, offset: u64, count: u32) -> Result<u64, Error> {
+    wake_key(
+        Key::File {
+            filesystem,
+            node,
+            offset,
+        },
+        count,
+    )
 }
 
 fn wake_key(key: Key, count: u32) -> Result<u64, Error> {

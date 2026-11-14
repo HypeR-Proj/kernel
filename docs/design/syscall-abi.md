@@ -907,7 +907,114 @@ All concurrent accesses to a shared condition use aligned atomic u32 operations.
 The kernel does not implement lock ownership: callers publish state, wake, and
 recheck their condition after every return using their own atomic ordering.
 Spurious wakes are permitted. This adds no requeue, priority inheritance, robust
-owner recovery or implicit writable-file-mapping support.
+owner recovery or implicit address-based file waits. Explicit File operations
+provide shared-file waiting as described below.
+
+## Shared mutex owner-death observation
+
+`SyncDomain` scopes thread-lifetime observations for cooperative shared-memory
+protocols. The kernel never traverses a held-lock list, decodes application lock
+flags or repairs payloads. The Native C and Rust libraries implement a
+non-recursive mutex with syscall-free uncontended acquisition and release after
+initial binding, mapping and participant registration.
+
+The object factory creates a domain. `bind` requires `SYNC_CONFIGURE` on both
+the domain and a source (ordinary writable RAM VMO or coherent shared File),
+plus source `WRITE`. Directory derivation must explicitly retain `SYNC_CONFIGURE`
+to grant it to a File; write authority alone cannot configure a domain. Nonempty aligned
+ranges retain their domain until backing retirement; closing handles does not
+unbind or reset them. Aliases of the same writable storage share attribution.
+Overlapping ranges cannot belong to different domains. Shared u64 wait keys use
+domain identity, retained storage identity and backing-relative byte offset;
+they are distinct from existing private and shared u32 waits.
+
+`join` registers the invoking Thread, returns its existing token on repeated
+calls, and requires `SYNC_JOIN`. Successfully issued nonzero tokens never repeat
+within a domain. Active membership storage is reclaimed after real Thread
+detach; queries distinguish live, previously issued dead, and invalid tokens.
+A stop request or closing a participant handle does not publish death. Membership
+is a weak lifetime relationship: retiring an otherwise unused domain removes
+its registrations from surviving Threads.
+
+`owner_query` requires `INSPECT`. A dead result acquires the publication after
+execution has actually stopped; it makes completed owner writes visible but
+cannot make an interrupted application update consistent. `wait_u64` requires
+domain `SYNC_WAIT`, source `READ|WRITE`, a bound eight-byte word, an expected full value,
+an observed owner token and an absolute monotonic deadline. An optional Event
+with `WAIT` cancels the operation when signaled. Word notification, domain exit,
+Event cancellation and timer expiry arbitrate the same scheduler ticket. All
+registrations and retained backing retire before that ticket may be reused.
+Unknown record tails, options and reserved fields must be zero.
+SyncDomain has no generic level signal; its word operations use dedicated rights
+rather than granting the generic object `WAIT` or `SIGNAL` rights.
+
+A mismatching word returns `RECHECK`. A matching word whose observed owner is
+already dead can return `OWNER_EXITED`; neither result grants mutex ownership.
+Normal unlock uses a Release update followed by `wake_u64` (requiring
+`SYNC_WAKE`) with count one when
+notification is owed. A joined Thread's exit notifies eligible waiters throughout
+its domain, since wake-one handoff may have changed a sleeping waiter's remembered
+owner. The reaper drains finite FIFO batches without holding the domain lock
+across scheduler notifications. Each batch retains a local interrupt mask until
+its dispatch obligations are complete; resource destruction occurs after restoring
+the mask. This prevents a woken higher-priority Thread from waiting on a dispatcher
+it has preempted. Domain exit may wake O(number of admitted waiters); it is not an
+unconditional constant-time operation.
+
+Userspace rereads the current word and CASes the exact observed state before
+reporting recovery acquisition. Normal acquisition, held recovery authority, and
+unowned unrecoverable failure are different outcomes. Recovery must explicitly
+mark data consistent; abandoning recovery poisons the mutex and wakes all waiters.
+A dying recovery owner permits another recovery attempt. A selected waiter that
+cancels, times out or fails relays wake-one progress before returning. The Rust
+recovery guard exposes no arbitrary `T` reference, and ownership guards remain
+tied to the joining Thread. Reinitializing a shared slot requires external
+quiescence of all owners, waiters and potential users.
+
+The external-memory load seam uses fixed-width machine instructions rather than
+Rust references to untrusted writable bytes, including the existing u32 wait
+path. Malformed values and overlapping peer writes cannot turn control bits into
+kernel pointers. Shared-file mappings do not grant a raw VMO capability; File wait operations
+use the original File authority. This facility adds no priority inheritance, recursive
+mutexes or implicit condition-variable peer-death policy.
+
+## File-backed shared synchronization
+
+`File.wait_u32` and `File.wake_u32` use the same argument/deadline rules as their
+VMO counterparts, with READ|WRITE and WRITE rights respectively. A File source
+must support coherent writable shared mappings. The complete containing page
+must fit the fixed file extent. Address-based private atomic waits still reject
+file mappings; callers explicitly select the File capability and absolute offset.
+File u32 and domain-u64 keys use filesystem incarnation and canonical file identity
+plus absolute offset, independently of open handles, virtual addresses, cache page
+replacement, and unrelated RAM or private wait namespaces.
+
+Admission may populate a shared page, charging the caller for its pin and waiter.
+An admitted wait retains an independent file extent lease and a page pin until
+cleanup. Closing the original handle or mapping does not cancel it. The pin
+prevents cache eviction but permits normal writeback snapshots; sleeping holds no
+write admission. Existing resize/replacement/unmount busy rules continue to apply.
+Wake never fetches metadata or populates pages. It requires an already promoted
+shared source, returning INVALID_ARGUMENT if none exists, and validates range,
+health and (for u64) domain attribution even for count zero.
+
+Provider channel closure and terminal filesystem failure are additional sources
+in the same wait-ticket arbitration. Only a winning failure source returns
+BACKING_UNAVAILABLE; it does not overwrite a prior timeout, cancellation, ordinary
+notification or owner-exit result. Subsequent kernel admissions reject the failed
+source. BACKING_UNAVAILABLE does not imply an owner died or make application data
+consistent. Pure userspace CAS remains syscall-free and does not attest backend
+health or storage durability. File sync remains the persistence fence.
+
+Bindings remain with the canonical file record, which may be cached beyond the
+last close. A coordinator distributes the same domain for a live file session.
+Opening or mapping never initializes persisted mutex words. Explicit quiescent
+initialization requires excluding all owners, waiters, recovery guards and future
+entrants, after recovering application payload. Domain-local tokens cannot be
+interpreted across boots or by a new domain. Fresh sessions use a fresh file
+identity and explicitly initialized words; clearing bytes does not rebind the old
+file. Replacing an old pathname also requires retiring its active handles,
+mappings and waits. No automatic reset or rebind operation is provided.
 
 ## Process, memory, and user-copy safety
 
@@ -1050,6 +1157,62 @@ writable alias. Writable private views never permit EXECUTE.
 Ordinary shared writable VMOs and exclusive hardware backing retain
 their stable-page lease contract. This is not a live address-space clone or a
 snapshot of concurrently hardware-written guest memory.
+
+`vmar_map_file_shared(file, request, request_size)` maps canonical VFS file
+pages into the calling Process's VMAR. The extensible request contains file
+offset, virtual address, length, permissions, options and zero reserved fields.
+The File requires READ. Its captured WRITE right determines the maximum write
+permission, including for a mapping initially requested read-only. Shared file
+pages never acquire EXECUTE, raw VMO or shared atomic-wait authority. They are
+distinct from protected private file views and executable publication.
+
+The initial implementation accepts complete existing pages from a healthy
+remote filesystem which delegated periodic writeback ownership to VFS. Backend
+eligibility follows that negotiated policy, not its filesystem name or its
+asynchronous transport flag. Synchronous FAT and RAMFS are not eligible. File
+mapping residency locks are also unsupported in this initial scope; a successful
+mapping does not implicitly pin its pages. File
+offset, address and nonzero length must be page-aligned; partial EOF pages and
+extending a file through a mapping are rejected. Actual size changes return
+BUSY while any shared mapping retains the file extent. Potential write authority
+excludes FileProtection even while hardware mappings are currently read-only.
+
+Mapped stores and ordinary file reads/writes use the same mutable page. Concurrent
+unsynchronized accesses do not promise an atomic byte snapshot. Closing the File
+does not invalidate its mapping; unmap and process exit do not imply sync. A
+mapping retains mount/file authority, and normal unlink or unmount remains BUSY
+while that authority is live. Kernel output copies use short dirty admissions;
+a blocked IPC receive retains backing without holding an active mutation.
+Already admitted kernel copies and range synchronization retain independent
+file-operation leases. Last unmap releases the mapping's lease after translation
+retirement; these operations keep their extent and potential-write exclusion
+until completion, even if the original mapping has disappeared.
+
+`vmar_sync_file_range(request, request_size)` accepts a nonempty page-aligned
+contiguous range of the same shared file, with DATA or ALL scope. The range
+requires retained write authority. Success includes writes ordered before its
+finite synchronization boundary and may use a stronger whole-file fence. It
+does not promise persistence of later writes or an atomic image of concurrent
+writers. VOLUME scope is rejected; F2FS retains its existing file-sync recovery
+and periodic checkpoint policy. Neither operation is a POSIX mmap/msync ABI.
+
+Normal shared-file writeback withdraws write permission only from aliases of
+the selected canonical page; eviction removes only those aliases. Page identity
+and the closed admission epoch exclude stale callbacks. Unrelated shared-file
+pages retain their permissions and residency. Snapshot capture waits for short
+kernel mutations and acknowledged withdrawal of every writable alias, then
+reopens a new dirty generation before backend I/O.
+
+Before publishing shared-file translations, the mapper also reserves an
+all-absent logical and machine root for allocation-free emergency withdrawal
+and final process retirement. Shared-only residency and permission changes
+reuse this root's tables instead of rebuilding global withdrawal variants.
+Resource exhaustion during precise preparation may remove additional shared
+translations through this reserve; it never discards their canonical file data.
+The reserve retains no old resident-page baseline. Provider failure closes new
+admissions and revokes resident aliases; unresolved hardware faults retain the
+existing fatal-fault policy. Mapping a file does not guarantee future residency
+or suppress resource-limit errors.
 
 Explicit `GuestMemory` READ and WRITE rights allow a userspace device backend
 to copy up to 4096 guest bytes per call. They do not reopen direct VMO writes

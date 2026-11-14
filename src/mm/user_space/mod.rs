@@ -20,6 +20,10 @@ mod executable;
 mod free_ranges;
 mod index;
 mod inline_buffer;
+mod shared_contract;
+pub(crate) use shared_contract::{
+    SharedAdmission, SharedAlias, SharedFileError, SharedPage, SharedSource,
+};
 #[cfg(not(test))]
 mod kernel_adapter;
 #[cfg(not(test))]
@@ -36,6 +40,7 @@ mod vmo;
 pub(crate) use transaction::retry_stale;
 #[cfg(not(test))]
 pub(crate) use vmo::{ExclusiveHardwareWriteLease, WritableMappingLease};
+pub(crate) use vmo::{SyncBinding, SyncBindings};
 
 #[cfg(test)]
 pub(crate) use address_space::MappingToken;
@@ -113,3 +118,8 @@ pub(crate) use vmo::FilePageSource;
 
 #[cfg(test)]
 pub(crate) use vmo::PrivateViewBuilder;
+
+#[cfg(not(test))]
+pub(crate) use service::{
+    SharedFileMappingRequest, SharedFileSyncRequest, map_file_shared, sync_file_range,
+};

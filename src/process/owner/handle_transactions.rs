@@ -306,8 +306,8 @@ impl PreparedProcessHandleTransfer {
 /// Construction performs no table mutation beyond the two independently
 /// reversible reservations. Commit locks both Processes by stable `ProcessId`,
 /// validates admission, and then performs one allocation-free table and
-/// accounting transaction. A recoverable admission failure retains this
-/// complete owner for explicit rollback.
+/// accounting transaction. A recoverable admission failure rolls back both
+/// reservations before returning the error.
 #[must_use = "commit or roll back the direct process handle transfer"]
 pub(crate) struct PreparedDirectProcessHandleTransfer {
     source: Option<PreparedProcessHandleTransfer>,
@@ -355,13 +355,10 @@ impl PreparedDirectProcessHandleTransfer {
     /// Commits source removal, destination publication and quota transfer together.
     ///
     /// Process locks are ordered by ID, including the same-process case, and
-    /// both lifecycles are checked before table mutation. Rejection returns the
-    /// complete transaction for explicit rollback; retired storage is dropped
-    /// only after the locks have been released.
-    // The failure owns this complete linear transaction and is intentionally
-    // large: allocating an error owner would make rollback fallible.
-    #[allow(clippy::result_large_err)]
-    pub(crate) fn commit(mut self) -> Result<(), DirectProcessHandleTransferCommitFailure> {
+    /// both lifecycles are checked before table mutation. Rejection rolls back
+    /// the transaction after releasing both locks. Keeping rollback here avoids
+    /// a second large transaction owner in the caller's error-return storage.
+    pub(crate) fn commit(mut self) -> Result<(), ProcessError> {
         let source_process = match self.source.as_ref() {
             Some(source) => source.process.clone(),
             None => process_invariant_violation(),
@@ -420,10 +417,8 @@ impl PreparedDirectProcessHandleTransfer {
         let retired = match result {
             Ok(retired) => retired,
             Err(error) => {
-                return Err(DirectProcessHandleTransferCommitFailure {
-                    error,
-                    transfer: self,
-                });
+                self.rollback();
+                return Err(error);
             }
         };
         drop(retired);
@@ -440,16 +435,6 @@ impl Drop for PreparedDirectProcessHandleTransfer {
             process_invariant_violation();
         }
     }
-}
-
-#[must_use = "inspect the error and roll back the retained direct transfer"]
-pub(crate) struct DirectProcessHandleTransferCommitFailure {
-    #[expect(
-        dead_code,
-        reason = "Retains the commit failure cause alongside its rollback owner"
-    )]
-    pub(crate) error: ProcessError,
-    pub(crate) transfer: PreparedDirectProcessHandleTransfer,
 }
 
 fn commit_direct_same_process(

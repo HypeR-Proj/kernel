@@ -31,6 +31,9 @@ def entry_frame(body):
         push = re.search(r'\[sp,\s*#-(0x[0-9a-f]+|\d+)\]!', operation)
         if push:
             size += int(push[1], 0)
+        probe = re.search(r'\[sp\],\s*#-(0x[0-9a-f]+|\d+)', operation)
+        if probe:
+            size += int(probe[1], 0)
     return size
 
 
@@ -125,11 +128,22 @@ def check(disassembly, *, self_test=False):
         # only their bounded descriptors, not traversal scratch, remain here.
         '18NativeAddressSpace21resolve_private_write': 768,
         '18NativeAddressSpace19populate_file_range': 768,
+        # Immediate commits borrow the logical owner during image preparation
+        # and consume its parts directly. Bound the shared phases as well as
+        # their callers so outlining cannot hide a larger live stack.
+        '18NativeAddressSpace12apply_change$': 256,
+        '18NativeAddressSpace20prepare_image_change$': 1280,
+        '7machine19commit_change_parts$': 1024,
+        '20PreparedNativeChange6commit$': 128,
         # Persistent AVL cursors must use a small ancestor cache, not an array
         # sized for the theoretical maximum tree height. Two old cursors kept
         # more than 2 KiB below usercopy and asynchronous scheduler entry.
         '17KernelPageBackend.*13DomainAccountE26prepare_copy_from_snapshot': 1024,
         '17KernelPageBackend.*13DomainAccountE18prepare_user_write': 1536,
+        '17KernelPageBackend.*13DomainAccountE21prepare_copy_segments': 192,
+        '17KernelPageBackend.*13DomainAccountE19prepare_shared_copy': 768,
+        '17KernelPageBackend.*13DomainAccountE17prepare_user_read': 1024,
+        '17KernelPageBackend.*13DomainAccountE12copy_to_user': 896,
         '18NativeAddressSpace28prepare_private_write_change': 1024,
         # Path lookup already retains traversal/RPC state. Decode metadata
         # into the existing cache; never construct a full name-bearing reply.
@@ -263,6 +277,25 @@ def check(disassembly, *, self_test=False):
     if file_mapping > 1536:
         raise ValueError(f'file mapping publication: live frames {file_mapping} exceed 1536')
 
+    apply = measured['18NativeAddressSpace12apply_change$']
+    image = measured['18NativeAddressSpace20prepare_image_change$']
+    commit = measured['7machine19commit_change_parts$']
+    for phase, size, budget in (('preparation', image, 2816),
+                                ('commit', commit, 2688)):
+        live = file_mapping + apply + size
+        if live > budget:
+            raise ValueError(f'file mapping {phase}: live frames {live} exceed {budget}')
+    prepared_commit = measured['20PreparedNativeChange6commit$'] + commit
+    if prepared_commit > 1152:
+        raise ValueError(f'prepared mapping commit: live frames {prepared_commit} exceed 1152')
+    private_file = (measured['18NativeAddressSpace21resolve_private_write']
+                    + measured['18NativeAddressSpace19populate_file_range'] + apply)
+    for phase, size, budget in (('preparation', image, 2816),
+                                ('commit', commit, 2560)):
+        live = private_file + size
+        if live > budget:
+            raise ValueError(f'private file {phase}: live frames {live} exceed {budget}')
+
     for phase, budget in (('12prepare_walk', 1536), ('13restore_start', 1344),
                           ('15walk_components', 1024)):
         live = measured['vfs7resolve4walk'] + measured['vfs7resolve' + phase]
@@ -312,6 +345,20 @@ def check(disassembly, *, self_test=False):
         + measured['17KernelPageBackend.*13DomainAccountE18prepare_user_write'])
     if copy_admission > 2304:
         raise ValueError(f'user write admission: live frames {copy_admission} exceed 2304')
+
+    # Segment traversal and shared-source/pin admission are separate calls from
+    # the existing plan owner. No helper may retain another full plan beneath
+    # those phases, including on ordinary read and nontransactional copyout.
+    shared = measured['17KernelPageBackend.*13DomainAccountE19prepare_shared_copy']
+    live = measured['17KernelPageBackend.*13DomainAccountE18prepare_user_write'] + shared
+    if live > 2304:
+        raise ValueError(f'shared user write admission: live frames {live} exceed 2304')
+    segments = (measured['17KernelPageBackend.*13DomainAccountE21prepare_copy_segments']
+                + measured['17KernelPageBackend.*13DomainAccountE26prepare_copy_from_snapshot'])
+    for caller, budget in (('17prepare_user_read', 2048), ('12copy_to_user', 1920)):
+        live = measured['17KernelPageBackend.*13DomainAccountE' + caller] + max(segments, shared)
+        if live > budget:
+            raise ValueError(f'user copy {caller}: live frames {live} exceed {budget}')
 
 
 if __name__ == '__main__':

@@ -130,6 +130,7 @@ fn prepare_handles(
             .union(Rights::MANAGE_NAMESPACE)
             .union(Rights::SET_ATTRIBUTES)
             .union(Rights::LOCK_FILE)
+            .union(Rights::SYNC_CONFIGURE)
             .union(Rights::DUPLICATE)
             .union(Rights::TRANSFER)
             .union(Rights::INSPECT)

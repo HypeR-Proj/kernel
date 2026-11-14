@@ -19,7 +19,7 @@ impl MemoryServices for ProcessServices<'_> {
         crate::mm::user_space::executable_publish(self.process, authority, source)
     }
 
-    fn vmo_wait_u32(
+    fn shared_wait_u32(
         &self,
         receiver: &InvocationReceiver,
         offset: u64,
@@ -28,6 +28,25 @@ impl MemoryServices for ProcessServices<'_> {
     ) -> Result<crate::task::WaitOutcome, crate::mm::user_space::MemoryServiceError> {
         use crate::authority::Rights;
         use crate::mm::user_space::{MemoryServiceError, VmoObject};
+        if receiver.kind() == crate::object::ObjectKind::FILE {
+            let file = receiver
+                .resolve::<crate::fs::vfs::FileObject>(Rights::READ.union(Rights::WRITE))
+                .map_err(crate::process::ProcessError::from)?;
+            let word = crate::process::atomic_wait::FileWord::prepare(
+                file.object(),
+                offset,
+                &self.process.resource_domain(),
+            )
+            .map_err(shared_atomic_error)?;
+            return crate::process::atomic_wait::wait_file(
+                self.process,
+                word,
+                expected,
+                deadline,
+                || self.thread.snapshot().phase == crate::process::UserThreadPhase::StopRequested,
+            )
+            .map_err(shared_atomic_error);
+        }
         let source = receiver
             .resolve::<VmoObject>(Rights::READ.union(Rights::WRITE))
             .map_err(crate::process::ProcessError::from)?;
@@ -43,13 +62,29 @@ impl MemoryServices for ProcessServices<'_> {
         .map_err(shared_atomic_error)
     }
 
-    fn vmo_wake_u32(
+    fn shared_wake_u32(
         &self,
         receiver: &InvocationReceiver,
         offset: u64,
         count: u32,
     ) -> Result<u64, crate::mm::user_space::MemoryServiceError> {
         use crate::mm::user_space::{MemoryServiceError, VmoObject};
+        if receiver.kind() == crate::object::ObjectKind::FILE {
+            let file = receiver
+                .resolve::<crate::fs::vfs::FileObject>(crate::authority::Rights::WRITE)
+                .map_err(crate::process::ProcessError::from)?;
+            let (filesystem, node, absolute) = file
+                .object()
+                .shared_atomic_key(None, offset, 4)
+                .map_err(|error| match error {
+                    error if error.is_backing_unavailable() => {
+                        MemoryServiceError::BackingUnavailable
+                    }
+                    other => MemoryServiceError::Vfs(other),
+                })?;
+            return crate::process::atomic_wait::wake_file(filesystem, node, absolute, count)
+                .map_err(shared_atomic_error);
+        }
         let source = receiver
             .resolve::<VmoObject>(crate::authority::Rights::WRITE)
             .map_err(crate::process::ProcessError::from)?;
@@ -97,6 +132,21 @@ impl MemoryServices for ProcessServices<'_> {
         request: crate::mm::user_space::PrivateMappingRequest,
     ) -> Result<(), crate::mm::user_space::MemoryServiceError> {
         crate::mm::user_space::map_private(self.process, vmar, snapshot, request)
+    }
+    fn map_file_shared(
+        &self,
+        vmar: &InvocationReceiver,
+        file: HandleValue,
+        request: crate::mm::user_space::SharedFileMappingRequest,
+    ) -> Result<(), crate::mm::user_space::MemoryServiceError> {
+        crate::mm::user_space::map_file_shared(self.process, vmar, file, request)
+    }
+    fn sync_file_range(
+        &self,
+        vmar: &InvocationReceiver,
+        request: crate::mm::user_space::SharedFileSyncRequest,
+    ) -> Result<(), crate::mm::user_space::MemoryServiceError> {
+        crate::mm::user_space::sync_file_range(self.process, vmar, request)
     }
     fn read_vmo(
         &self,
@@ -189,5 +239,12 @@ fn shared_atomic_error(
         crate::process::atomic_wait::Error::Process(error) => MemoryServiceError::Process(error),
         crate::process::atomic_wait::Error::Wait(error) => MemoryServiceError::Wait(error),
         crate::process::atomic_wait::Error::InvalidInput => MemoryServiceError::InvalidInput,
+        crate::process::atomic_wait::Error::BackingUnavailable => {
+            MemoryServiceError::BackingUnavailable
+        }
+        crate::process::atomic_wait::Error::File(ref error) if error.is_backing_unavailable() => {
+            MemoryServiceError::BackingUnavailable
+        }
+        crate::process::atomic_wait::Error::File(error) => MemoryServiceError::Vfs(error),
     }
 }

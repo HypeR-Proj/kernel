@@ -9,6 +9,27 @@ use crate::mm::user_space::{MemoryObjectError, VmoError, VmoObject};
 use hyper::abi::native as abi;
 
 pub(super) fn run() -> Result<(), ()> {
+    // Logical permission ceilings are authority failures; unsupported shared
+    // backing operations are capability gaps, while invalid copy access still
+    // reports FAULT. Do not conflate the three at the syscall boundary.
+    for (error, expected) in [
+        (
+            crate::mm::user_space::AddressSpaceError::InvalidPermissions,
+            abi::HYPER_NATIVE_STATUS_ACCESS_DENIED,
+        ),
+        (
+            crate::mm::user_space::AddressSpaceError::UnsupportedBacking,
+            abi::HYPER_NATIVE_STATUS_NOT_SUPPORTED,
+        ),
+        (
+            crate::mm::user_space::AddressSpaceError::WriteDenied,
+            abi::HYPER_NATIVE_STATUS_FAULT,
+        ),
+    ] {
+        if crate::abi::native::status::status_from_logical_error(error) != expected {
+            return Err(());
+        }
+    }
     let domain = ResourceDomain::try_new_root(ResourceLimits::UNLIMITED).map_err(|_| ())?;
     let before = domain.usage();
     for size in [

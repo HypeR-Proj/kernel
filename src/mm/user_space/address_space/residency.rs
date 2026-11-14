@@ -180,6 +180,15 @@ impl<B: PageBackend, A: MemoryAccount> UserAddressSpace<B, A> {
                 return Err(AddressSpaceError::NotMapped);
             }
         }
+        if lock
+            && snapshot
+                .mappings
+                .records
+                .overlapping(affected)
+                .any(|mapping| mapping.object.shared_file().is_some())
+        {
+            return Err(AddressSpaceError::UnsupportedBacking);
+        }
         let storage_charge = self.try_mapping_set_charge()?;
         let mut records = snapshot.mappings.records.clone();
         for original in snapshot.mappings.records.overlapping(affected) {

@@ -242,6 +242,47 @@ pub(in crate::abi::native) fn sys_vmar_map_file(
 }
 
 #[inline(never)]
+pub(in crate::abi::native) fn sys_vmar_map_file_shared(
+    services: &(impl MemoryServices + crate::abi::native::services::UserMemoryServices),
+    receiver: &InvocationReceiver,
+    arguments: &Arguments,
+) -> NativeAction {
+    let result = (|| {
+        require_zero(&arguments[3..])?;
+        let file = parse_handle(arguments[0])?;
+        let request = crate::abi::native::wire::decode_shared_file_mapping(
+            services,
+            arguments[1],
+            arguments[2],
+        )?;
+        services
+            .map_file_shared(receiver, file, request)
+            .map_err(status_from_memory_service_error)
+    })();
+    NativeAction::Return(status_only(result))
+}
+
+#[inline(never)]
+pub(in crate::abi::native) fn sys_vmar_sync_file_range(
+    services: &(impl MemoryServices + crate::abi::native::services::UserMemoryServices),
+    receiver: &InvocationReceiver,
+    arguments: &Arguments,
+) -> NativeAction {
+    let result = (|| {
+        require_zero(&arguments[2..])?;
+        let request = crate::abi::native::wire::decode_shared_file_sync(
+            services,
+            arguments[0],
+            arguments[1],
+        )?;
+        services
+            .sync_file_range(receiver, request)
+            .map_err(status_from_memory_service_error)
+    })();
+    NativeAction::Return(status_only(result))
+}
+
+#[inline(never)]
 pub(in crate::abi::native) fn sys_vmar_lock_memory(
     services: &impl MemoryServices,
     receiver: &InvocationReceiver,
@@ -297,7 +338,7 @@ fn memory_residency(
 }
 
 #[inline(never)]
-pub(in crate::abi::native) fn sys_vmo_wait_u32(
+pub(in crate::abi::native) fn sys_shared_wait_u32(
     services: &impl MemoryServices,
     receiver: &InvocationReceiver,
     arguments: &Arguments,
@@ -306,14 +347,14 @@ pub(in crate::abi::native) fn sys_vmo_wait_u32(
         let expected =
             u32::try_from(arguments[1]).map_err(|_| HYPER_NATIVE_STATUS_INVALID_ARGUMENT)?;
         services
-            .vmo_wait_u32(receiver, arguments[0], expected, arguments[2])
+            .shared_wait_u32(receiver, arguments[0], expected, arguments[2])
             .map_err(status_from_memory_service_error)
     });
     NativeAction::Return(super::task::wait_status(result, false))
 }
 
 #[inline(never)]
-pub(in crate::abi::native) fn sys_vmo_wake_u32(
+pub(in crate::abi::native) fn sys_shared_wake_u32(
     services: &impl MemoryServices,
     receiver: &InvocationReceiver,
     arguments: &Arguments,
@@ -322,7 +363,7 @@ pub(in crate::abi::native) fn sys_vmo_wake_u32(
         let count =
             u32::try_from(arguments[1]).map_err(|_| HYPER_NATIVE_STATUS_INVALID_ARGUMENT)?;
         services
-            .vmo_wake_u32(receiver, arguments[0], count)
+            .shared_wake_u32(receiver, arguments[0], count)
             .map_err(status_from_memory_service_error)
     });
     NativeAction::Return(match result {

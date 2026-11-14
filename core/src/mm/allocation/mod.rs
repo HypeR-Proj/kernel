@@ -45,6 +45,12 @@ pub struct WeakFallibleArc<T> {
     ownership: PhantomData<SharedInner<T>>,
 }
 
+// Moving either pointer owner never moves its separately allocated payload.
+// Like Arc/Weak, their pinning property is independent of T; inheriting T's
+// auto trait also makes recursive ownership graphs needlessly recurse here.
+impl<T> Unpin for FallibleArc<T> {}
+impl<T> Unpin for WeakFallibleArc<T> {}
+
 /// Linear responsibility for destroying a value after its final shared owner
 /// has been released.
 ///
@@ -235,6 +241,12 @@ impl<T> FallibleArc<T> {
 }
 
 impl<T> WeakFallibleArc<T> {
+    /// Compare allocation identities without upgrading either weak owner.
+    /// This does not imply that the payload remains alive.
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+
     /// Reports whether a strong owner existed at the instant of observation.
     ///
     /// This is diagnostic only: the value may disappear immediately after

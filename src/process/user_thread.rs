@@ -41,6 +41,7 @@ struct UserThreadInner {
     scheduler_id: AtomicU64,
     control: ThreadLock<ThreadControl>,
     joined: Completion,
+    sync_memberships: super::sync_domain::ThreadMemberships,
     signals: SignalState,
     _metadata_charge: CommittedCharge,
 }
@@ -48,6 +49,12 @@ struct UserThreadInner {
 /// Erased object payload which gives one user thread a canonical KOID.
 pub(super) struct UserThreadObject {
     inner: UserThreadInner,
+}
+
+impl UserThreadObject {
+    pub(super) fn sync_memberships(&self) -> &super::sync_domain::ThreadMemberships {
+        &self.inner.sync_memberships
+    }
 }
 
 impl private::Sealed for UserThreadObject {}
@@ -176,6 +183,7 @@ impl UserThread {
                 active_run: None,
             }),
             joined: Completion::new(),
+            sync_memberships: super::sync_domain::ThreadMemberships::new(),
             signals: SignalState::new(),
             _metadata_charge: metadata_charge,
         };
@@ -242,6 +250,18 @@ impl UserThread {
             UserThreadOwner::Service(object) => object.snapshot(),
             UserThreadOwner::Scheduler(object) => object.snapshot(),
             UserThreadOwner::Operation(object) => object.snapshot(),
+        }
+    }
+
+    pub(super) fn sync_memberships(&self) -> &super::sync_domain::ThreadMemberships {
+        &self.inner().sync_memberships
+    }
+
+    pub(super) fn weak_object(&self) -> crate::object::WeakKernelRef<UserThreadObject> {
+        match &self.object {
+            UserThreadOwner::Service(object) => object.downgrade(),
+            UserThreadOwner::Scheduler(object) => object.downgrade(),
+            UserThreadOwner::Operation(object) => object.downgrade(),
         }
     }
 
@@ -405,6 +425,9 @@ impl UserThread {
                 ),
             }
         });
+        // Actual execution is detached. Domain publication consumes the machine
+        // stop/save synchronization before releasing owner-death observations.
+        self.inner().sync_memberships.detach_all();
         // Publish the object-visible terminal state before Process membership
         // can complete the enclosing Process. A waiter which observes Process
         // completion must never find one of its detached Thread objects still

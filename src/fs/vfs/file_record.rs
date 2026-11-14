@@ -27,7 +27,9 @@ pub(super) type ReadPages = crate::fs::cache::PageRead<FallibleArc<FileRecord>>;
 /// Emergency page reclaim may release the final record outside allocator and
 /// cache locks, while its caller holds unrelated kernel locks. Keep destruction
 /// limited to quiescent scalar/mutex storage, atomic quota release, and ordinary
-/// deallocation. Adding callbacks or other owners requires re-auditing that
+/// deallocation. Shared-file synchronization bindings may release `KernelRef`
+/// owners: their final destruction is deferred by the object reaper, never
+/// invoked here. Adding other callbacks or owners requires re-auditing that
 /// contract. Demand content guards retain an active node; speculative guards
 /// retain this record alone and do not extend namespace-lease lifetime.
 pub(crate) struct FileRecord {

@@ -315,6 +315,26 @@ impl VmoObject {
         }
     }
 
+    pub(crate) fn sync_key(
+        &self,
+        domain: u64,
+        offset: u64,
+    ) -> Result<(u64, u64), crate::process::sync_domain::Error> {
+        let storage = self
+            .writable()
+            .ok_or(crate::process::sync_domain::Error::InvalidInput)?;
+        let end = offset
+            .checked_add(8)
+            .ok_or(crate::process::sync_domain::Error::InvalidInput)?;
+        if !offset.is_multiple_of(8)
+            || end > storage.size()
+            || !storage.sync_contains(domain, offset, end)
+        {
+            return Err(crate::process::sync_domain::Error::InvalidInput);
+        }
+        Ok((storage.sync_storage_identity(), offset))
+    }
+
     pub(crate) fn writable_clone(&self) -> Option<NativeWritableVmo> {
         self.writable().cloned()
     }
@@ -388,6 +408,26 @@ impl VmoObject {
             .map_err(MemoryObjectError::Vmo)
     }
 
+    pub(crate) fn pin_shared_atomic_u64(
+        &self,
+        offset: u64,
+    ) -> Result<NativeSharedAtomicWord, MemoryObjectError> {
+        self.writable()
+            .ok_or(MemoryObjectError::WrongVariant)?
+            .pin_shared_atomic_u64(offset)
+            .map_err(MemoryObjectError::Vmo)
+    }
+
+    pub(crate) fn validate_shared_atomic_u64_offset(
+        &self,
+        offset: u64,
+    ) -> Result<(), MemoryObjectError> {
+        self.writable()
+            .ok_or(MemoryObjectError::WrongVariant)?
+            .validate_shared_atomic_u64_offset(offset)
+            .map_err(MemoryObjectError::Vmo)
+    }
+
     /// Derives a physically distinct immutable executable snapshot.
     ///
     /// The caller must independently resolve the writable VMO with `READ` and
@@ -419,6 +459,7 @@ impl KernelObject for VmoObject {
         .union(Rights::INSPECT)
         .union(Rights::READ)
         .union(Rights::WRITE)
+        .union(Rights::SYNC_CONFIGURE)
         .union(Rights::MAP)
         .union(Rights::EXECUTE);
 
@@ -429,7 +470,7 @@ impl KernelObject for VmoObject {
             .union(Rights::READ)
             .union(Rights::MAP);
         match &self.storage {
-            VmoStorage::Writable(_) => common.union(Rights::WRITE),
+            VmoStorage::Writable(_) => common.union(Rights::WRITE).union(Rights::SYNC_CONFIGURE),
             VmoStorage::Snapshot(_) | VmoStorage::ReadOnly(_) | VmoStorage::Observation(_) => {
                 common
             }

@@ -19,14 +19,14 @@ pub(crate) trait MemoryServices {
         authority: &InvocationReceiver,
         source: HandleValue,
     ) -> Result<(HandleValue, u64), MemoryServiceError>;
-    fn vmo_wait_u32(
+    fn shared_wait_u32(
         &self,
         vmo: &InvocationReceiver,
         offset: u64,
         expected: u32,
         deadline: u64,
     ) -> Result<crate::task::WaitOutcome, MemoryServiceError>;
-    fn vmo_wake_u32(
+    fn shared_wake_u32(
         &self,
         vmo: &InvocationReceiver,
         offset: u64,
@@ -44,6 +44,17 @@ pub(crate) trait MemoryServices {
         file: HandleValue,
         protection: HandleValue,
         request: crate::mm::user_space::PrivateMappingRequest,
+    ) -> Result<(), MemoryServiceError>;
+    fn map_file_shared(
+        &self,
+        vmar: &InvocationReceiver,
+        file: HandleValue,
+        request: crate::mm::user_space::SharedFileMappingRequest,
+    ) -> Result<(), MemoryServiceError>;
+    fn sync_file_range(
+        &self,
+        vmar: &InvocationReceiver,
+        request: crate::mm::user_space::SharedFileSyncRequest,
     ) -> Result<(), MemoryServiceError>;
     fn map_private(
         &self,

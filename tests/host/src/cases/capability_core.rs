@@ -44,6 +44,7 @@ const CASCADING_KIND: ObjectKind = match NonZeroU32::new(0x7fff_ff03) {
 fn process_builder_storage_policy_is_explicit_and_bounds_graph_authority() {
     for admitted in [
         ObjectKind::EVENT,
+        ObjectKind::SYNC_DOMAIN,
         ObjectKind::BYTE_CHANNEL,
         ObjectKind::CAPABILITY_CHANNEL,
         ObjectKind::TASK_GROUP,
@@ -2271,4 +2272,44 @@ fn stopping_withdraws_unclaimed_owners_without_stranding_inflight_transactions()
     assert_eq!(transitions.load(Ordering::Relaxed), 2);
     assert!(table.remove_stopping_owner(&mut cursor).is_none());
     remove_all(&mut table);
+}
+
+#[test]
+fn typed_weak_observer_cannot_revive_final_retirement_and_hook_precedes_drop() {
+    struct Retired {
+        hooks: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+    impl kernel::object::private::Sealed for Retired {}
+    impl KernelObject for Retired {
+        const KIND: ObjectKind = OTHER_KIND;
+        const SUPPORTED_RIGHTS: Rights = Rights::NONE;
+        fn on_final_reap(&self) {
+            assert_eq!(self.hooks.fetch_add(1, Ordering::AcqRel), 0);
+            assert_eq!(self.drops.load(Ordering::Acquire), 0);
+        }
+    }
+    impl Drop for Retired {
+        fn drop(&mut self) {
+            assert_eq!(self.hooks.load(Ordering::Acquire), 1);
+            self.drops.fetch_add(1, Ordering::Release);
+        }
+    }
+    let hooks = Arc::new(AtomicUsize::new(0));
+    let drops = Arc::new(AtomicUsize::new(0));
+    let object: KernelRef<Retired, KernelService> =
+        crate::require_ok(KernelRef::try_new_service(Retired {
+            hooks: hooks.clone(),
+            drops: drops.clone(),
+        }));
+    let weak = object.downgrade();
+    let retained = crate::require_some(weak.upgrade());
+    assert_eq!(retained.koid(), object.koid());
+    drop(object);
+    assert!(weak.upgrade().is_some());
+    drop(retained);
+    assert!(weak.upgrade().is_none());
+    verify_reaped_once(&drops);
+    assert_eq!(hooks.load(Ordering::Acquire), 1);
+    assert!(weak.upgrade().is_none());
 }

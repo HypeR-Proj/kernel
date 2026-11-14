@@ -112,6 +112,28 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
     {
         return Err(SelfTestError::ProcessBuilderValidation);
     }
+    let sync_domain_startup = parse_builder_handle(&[
+        0x0f37_79b9_7f4a_7c12,
+        0x80ff_0070,
+        u64::from(hyper::abi::native::HYPER_NATIVE_OBJECT_SYNC_DOMAIN),
+        Rights::SYNC_WAIT
+            .union(Rights::SYNC_WAKE)
+            .union(Rights::INSPECT)
+            .union(Rights::SYNC_JOIN)
+            .bits(),
+        hyper::abi::native::HYPER_NATIVE_CAPABILITY_DISPOSITION_DUPLICATE,
+        0,
+    ]);
+    if !matches!(
+        sync_domain_startup,
+        Ok(super::wire::ProcessBuilderHandleRequest {
+            expected_kind: crate::object::ObjectKind::SYNC_DOMAIN,
+            operation: crate::capability::HandleTransferOperation::Copy,
+            ..
+        })
+    ) {
+        return Err(SelfTestError::ProcessBuilderValidation);
+    }
     use core::cell::Cell;
 
     struct RejectingServices {
@@ -692,6 +714,50 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
         }
     }
 
+    impl crate::abi::native::SynchronizationServices for RejectingServices {
+        fn sync_domain_create(&self) -> Result<HandleValue, crate::process::sync_wait::Error> {
+            Err(crate::process::sync_wait::Error::InvalidInput)
+        }
+        fn sync_domain_bind(
+            &self,
+            _: &InvocationReceiver,
+            _: HandleValue,
+            _: u64,
+            _: u64,
+        ) -> Result<(), crate::process::sync_wait::Error> {
+            Err(crate::process::sync_wait::Error::InvalidInput)
+        }
+        fn sync_domain_join(
+            &self,
+            _: &InvocationReceiver,
+        ) -> Result<u64, crate::process::sync_wait::Error> {
+            Err(crate::process::sync_wait::Error::InvalidInput)
+        }
+        fn sync_domain_owner_query(
+            &self,
+            _: &InvocationReceiver,
+            _: u64,
+        ) -> Result<u64, crate::process::sync_wait::Error> {
+            Err(crate::process::sync_wait::Error::InvalidInput)
+        }
+        fn sync_domain_wait(
+            &self,
+            _: &InvocationReceiver,
+            _: crate::abi::native::SyncWaitRequest,
+        ) -> Result<crate::process::sync_wait::Outcome, crate::process::sync_wait::Error> {
+            Err(crate::process::sync_wait::Error::InvalidInput)
+        }
+        fn sync_domain_wake(
+            &self,
+            _: &InvocationReceiver,
+            _: HandleValue,
+            _: u64,
+            _: u32,
+        ) -> Result<u64, crate::process::sync_wait::Error> {
+            Err(crate::process::sync_wait::Error::InvalidInput)
+        }
+    }
+
     impl MemoryServices for RejectingServices {
         fn executable_publish(
             &self,
@@ -702,7 +768,7 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
             Err(MemoryServiceError::Process(ProcessError::Allocation))
         }
 
-        fn vmo_wait_u32(
+        fn shared_wait_u32(
             &self,
             _: &InvocationReceiver,
             _: u64,
@@ -712,7 +778,7 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
             self.calls.set(self.calls.get().saturating_add(1));
             Err(MemoryServiceError::Process(ProcessError::Allocation))
         }
-        fn vmo_wake_u32(
+        fn shared_wake_u32(
             &self,
             _: &InvocationReceiver,
             _: u64,
@@ -761,6 +827,23 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
             _: &InvocationReceiver,
             _: HandleValue,
             _: crate::mm::user_space::PrivateMappingRequest,
+        ) -> Result<(), MemoryServiceError> {
+            self.calls.set(self.calls.get().saturating_add(1));
+            Err(MemoryServiceError::Process(ProcessError::Allocation))
+        }
+        fn map_file_shared(
+            &self,
+            _: &InvocationReceiver,
+            _: HandleValue,
+            _: crate::mm::user_space::SharedFileMappingRequest,
+        ) -> Result<(), MemoryServiceError> {
+            self.calls.set(self.calls.get().saturating_add(1));
+            Err(MemoryServiceError::Process(ProcessError::Allocation))
+        }
+        fn sync_file_range(
+            &self,
+            _: &InvocationReceiver,
+            _: crate::mm::user_space::SharedFileSyncRequest,
         ) -> Result<(), MemoryServiceError> {
             self.calls.set(self.calls.get().saturating_add(1));
             Err(MemoryServiceError::Process(ProcessError::Allocation))
@@ -2445,6 +2528,11 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
                 0,
             ],
         ),
+        (
+            NativeOperation::VmarMapFileShared,
+            [0x0f37_79b9_7f4a_7c12, 0x2000, 48, 0, 0, 0],
+        ),
+        (NativeOperation::VmarSyncFileRange, [0x2000, 40, 0, 0, 0, 0]),
     ] {
         let mapping_services = RejectingServices {
             calls: Cell::new(0),
@@ -2455,6 +2543,57 @@ pub(crate) fn run_self_test() -> Result<(), SelfTestError> {
         {
             return Err(SelfTestError::InvalidRecordSize);
         }
+    }
+    // Shared mapping records accept their minimum prefix and future zero tails;
+    // known reserved bytes must be rejected just as strictly as unknown bytes.
+    for size in [32, 48, 56] {
+        if super::wire::decode_shared_file_mapping(&RecordInput { nonzero_at: None }, 0x5000, size)
+            .is_err()
+        {
+            return Err(SelfTestError::InvalidRecordSize);
+        }
+    }
+    for offset in [28, 32, 40, 48] {
+        if super::wire::decode_shared_file_mapping(
+            &RecordInput {
+                nonzero_at: Some(0x5000 + offset),
+            },
+            0x5000,
+            56,
+        )
+        .err()
+            != Some(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)
+        {
+            return Err(SelfTestError::InvalidRecordSize);
+        }
+    }
+    for size in [24, 40, 48] {
+        if super::wire::decode_shared_file_sync(&RecordInput { nonzero_at: None }, 0x5000, size)
+            .is_err()
+        {
+            return Err(SelfTestError::InvalidRecordSize);
+        }
+    }
+    for offset in [17, 20, 24, 32, 40] {
+        if super::wire::decode_shared_file_sync(
+            &RecordInput {
+                nonzero_at: Some(0x5000 + offset),
+            },
+            0x5000,
+            48,
+        )
+        .err()
+            != Some(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)
+        {
+            return Err(SelfTestError::InvalidRecordSize);
+        }
+    }
+    if super::wire::decode_shared_file_mapping(&RecordInput { nonzero_at: None }, 0x5000, 31).err()
+        != Some(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)
+        || super::wire::decode_shared_file_sync(&RecordInput { nonzero_at: None }, 0x5000, 23).err()
+            != Some(HYPER_NATIVE_STATUS_INVALID_ARGUMENT)
+    {
+        return Err(SelfTestError::InvalidRecordSize);
     }
     // A future private-mapping record may grow only through a zero-filled tail.
     if copy_extensible_input_record::<48>(&RecordInput { nonzero_at: None }, 0x5000, 56, 48)
