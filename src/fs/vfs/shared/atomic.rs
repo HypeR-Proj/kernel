@@ -83,11 +83,19 @@ impl PreparedFileFailure {
     }
 }
 
-#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+#[cfg(all(
+    CONFIG_ARCH_AARCH64,
+    feature = "kernel-test",
+    feature = "kernel-self-test"
+))]
 pub(crate) struct FileFailureTestControl {
     health: FallibleArc<Health>,
 }
-#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+#[cfg(all(
+    CONFIG_ARCH_AARCH64,
+    feature = "kernel-test",
+    feature = "kernel-self-test"
+))]
 impl FileFailureTestControl {
     pub(crate) fn new(
         channel: crate::object::KernelRef<crate::ipc::ByteChannel, crate::object::KernelService>,

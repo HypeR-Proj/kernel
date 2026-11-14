@@ -37,7 +37,11 @@ mod root_transition_object;
 pub(crate) use root_transition_object::RootTransitionObject;
 mod scratch;
 mod shared;
-#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+#[cfg(all(
+    CONFIG_ARCH_AARCH64,
+    feature = "kernel-test",
+    feature = "kernel-self-test"
+))]
 pub(crate) use shared::FileFailureTestControl;
 pub(crate) use shared::{
     FileAtomicWord, PreparedFileFailure, SharedFilePage, SharedFileSource, SharedPin,

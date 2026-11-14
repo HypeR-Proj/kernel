@@ -24,7 +24,11 @@ mod adapter;
 mod atomic;
 mod page;
 mod state;
-#[cfg(all(feature = "kernel-test", feature = "kernel-self-test"))]
+#[cfg(all(
+    CONFIG_ARCH_AARCH64,
+    feature = "kernel-test",
+    feature = "kernel-self-test"
+))]
 pub(crate) use atomic::FileFailureTestControl;
 pub(crate) use atomic::{FileAtomicWord, PreparedFileFailure};
 pub(crate) use page::{SharedFilePage, SharedInstall, SharedMutation, SharedPin};
